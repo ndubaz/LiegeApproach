@@ -3,11 +3,15 @@ import type { Scenario } from '../engine/types';
 import type { FreePlayOpts } from '../engine/traffic';
 import { COMPS, COMP_NAMES, type Result } from '../engine/assess';
 import { loadRecords, passedChallenges, saveSettings, type Settings } from '../store';
+import { Attract } from './attract';
+import { LESSONS, tutorialDone } from './tutorial';
+import type { Pack } from '../pack/load';
 import type { Comp } from '../engine/types';
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
 
 export interface MenuHandlers {
+  pack: Pack;
   startChallenge(sc: Scenario): void;
   startFree(o: FreePlayOpts): void;
   settings: Settings;
@@ -33,26 +37,80 @@ export function unlockedTiers(settings: Settings): Set<number> {
   return tiers;
 }
 
+let attract: Attract | undefined;
+export function stopAttract() { attract?.destroy(); attract = undefined; }
+
 export function renderHome(root: HTMLElement, hd: MenuHandlers) {
+  stopAttract();
   const recs = loadRecords();
-  const last = recs[recs.length - 1];
+  const passed = passedChallenges();
+  const tut = tutorialDone();
+  const firstTime = tut.size === 0 && recs.length === 0;
+  const strip = (go: string, kind: string, code: string, name: string, line: string, stat: string, statLabel: string, extra = '') => `
+    <button class="bay-strip ${kind} ${extra}" data-go="${go}">
+      <span class="bs-bay mono">${code}</span>
+      <span class="bs-body"><b>${name}</b><span>${line}</span></span>
+      <span class="bs-stat"><b class="mono">${stat}</b><small>${statLabel}</small></span>
+    </button>`;
+  root.innerHTML = `
+  <div class="home">
+    <canvas class="home-scope" aria-hidden="true"></canvas>
+    <div class="home-shade"></div>
+    <main class="home-main">
+      <header class="home-id">
+        <p class="home-freq mono">119.280</p>
+        <h1>Liège<br>Approach</h1>
+        <p class="home-sub">Work the approach radar at Liège Airport. Real Belgian AIP procedures, freighters around the clock, military traffic in the next sector.</p>
+        <p class="home-live mono" data-e="live"></p>
+      </header>
+      <nav class="bay" aria-label="Main menu">
+        ${strip('tutorial', 'tut', 'T', 'Learn the position', 'Seven short lessons, from first contact to the safety nets', `${tut.size}/${LESSONS.length}`, 'lessons', firstTime ? 'start' : '')}
+        ${strip('free', 'arr', 'F', 'Free play', 'Generated traffic. You pick the hour, the weather and the military activity', '∞', 'sessions')}
+        ${strip('challenges', 'dep', 'C', 'Challenges', 'Eighteen scripted scenarios, one freighter to a compound emergency', `${passed.size}/18`, 'passed')}
+        ${strip('records', 'rec', 'R', 'Records', 'Every debrief and your competency trend', String(recs.length), 'sessions')}
+        ${strip('settings', 'set', 'S', 'Settings', 'Voices, labels, input, console brightness', '', '')}
+      </nav>
+      <p class="fine">Not a training device. Procedures from the Belgian AIP; some airspace is approximate. Flights are fictional.</p>
+    </main>
+    <aside class="home-radio mono" data-e="radio" aria-live="off"></aside>
+  </div>`;
+  const canvas = root.querySelector<HTMLCanvasElement>('.home-scope')!;
+  const live = root.querySelector('[data-e="live"]')!;
+  const radio = root.querySelector('[data-e="radio"]')!;
+  try {
+    attract = new Attract(hd.pack, canvas, hd.settings);
+    const upd = () => {
+      if (!attract) return;
+      const sim = attract.sim, w = sim.weather;
+      live.innerHTML = [`${sim.utc().slice(0, 5)}Z`, `RWY ${sim.runway}`, `WIND ${String(Math.round((w.windDir - 2) / 10) * 10).padStart(3, '0')}/${w.windKt}`, `QNH ${w.qnh}`, `${sim.aircraft.filter((a) => a.state === 'assumed').length} ON FREQ`].map((x) => `<span>${x}</span>`).join('');
+    };
+    upd();
+    const iv = window.setInterval(() => { if (!attract) { clearInterval(iv); return; } upd(); }, 1000);
+    attract.onTx = (tx, sim) => {
+      if (tx.from === 'SYS' || !tx.text) return;
+      const row = document.createElement('div');
+      row.className = `hr ${tx.from === 'ATC' ? 'atc' : ''}`;
+      row.innerHTML = `<span>${sim.utc(tx.t0).slice(0, 5)}</span><b>${tx.from === 'ATC' ? 'APP' : esc(tx.cs)}</b><em>${esc(tx.text.replace(/^Liège Approach, /, ''))}</em>`;
+      radio.appendChild(row);
+      while (radio.children.length > 4) radio.firstChild!.remove();
+    };
+  } catch { /* the menu works without the live radar */ }
+}
+
+export function renderTutorial(root: HTMLElement, hd: MenuHandlers & { startLesson(i: number): void }) {
+  const done = tutorialDone();
+  const next = LESSONS.findIndex((l) => !done.has(l.id));
   root.innerHTML = shell(`
-    <header class="brand">
-      <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
-      <div>
-        <h1>Liège Approach</h1>
-        <p class="sub mono">EBLG · APP 119.280 · RWY 04R/22L</p>
-      </div>
-    </header>
-    <nav class="home-grid">
-      <button class="card big" data-go="free"><b>Free play</b><span>Generated traffic. Pick the hour, the weather and how much military and transient traffic to mix in.</span></button>
-      <button class="card big" data-go="challenges"><b>Challenges</b><span>18 scripted scenarios in four tiers, from one freighter to a compound emergency night.</span></button>
-      <button class="card" data-go="records"><b>Records</b><span>${recs.length ? `${recs.length} sessions · last: ${esc(last.title)}` : 'Your sessions and competency trend'}</span></button>
-      <button class="card" data-go="settings"><b>Settings</b><span>Voices, labels, input, brightness</span></button>
-      <button class="card" data-go="help"><b>How to control</b><span>Tap, drag, type: the clearance loop in one page</span></button>
-    </nav>
-    <p class="fine">Not a training device. Procedures transcribed from the Belgian AIP; some airspace is approximate. Flights are fictional.</p>
-  `, false);
+    <h2>Learn the position</h2>
+    <p class="lede">Each lesson runs in the real sim. The coach pauses the clock, points at the button or aircraft to use, and waits until you have done it. Take them in order the first time.</p>
+    <ol class="lessons">
+      ${LESSONS.map((l, i) => `<li><button class="bay-strip lesson ${done.has(l.id) ? 'done' : ''} ${i === next ? 'next' : ''}" data-lesson="${i}">
+        <span class="bs-bay mono">${i + 1}</span>
+        <span class="bs-body"><b>${l.title}</b><span>${l.summary}</span></span>
+        <span class="bs-stat"><b class="mono">${done.has(l.id) ? '✓' : l.minutes}</b><small>${done.has(l.id) ? 'done' : 'min'}</small></span>
+      </button></li>`).join('')}
+    </ol>`);
+  root.querySelectorAll<HTMLButtonElement>('[data-lesson]').forEach((b) => b.addEventListener('click', () => hd.startLesson(Number(b.dataset.lesson))));
 }
 
 export function renderFree(root: HTMLElement, hd: MenuHandlers) {

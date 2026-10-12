@@ -15,7 +15,8 @@ import type { Clearance } from './engine/clearance';
 import { Game } from './ui/game';
 import { Radio } from './ui/audio';
 import { loadSettings, saveRecord } from './store';
-import { renderChallenges, renderDebrief, renderFree, renderHelp, renderHome, renderRecords, renderSettings, type MenuHandlers } from './ui/menu';
+import { renderChallenges, renderDebrief, renderFree, renderHelp, renderHome, renderRecords, renderSettings, renderTutorial, stopAttract, type MenuHandlers } from './ui/menu';
+import { LESSONS, coachFor } from './ui/tutorial';
 
 if (!__SINGLE__ && 'serviceWorker' in navigator) registerSW({ immediate: true });
 
@@ -38,8 +39,10 @@ async function liveMetar(): Promise<string | undefined> {
   } catch { return undefined; }
 }
 
-const handlers: MenuHandlers = {
+const handlers: MenuHandlers & { startLesson(i: number): void } = {
+  pack,
   settings,
+  startLesson: (i: number) => lesson(i),
   liveMetar,
   startChallenge: (sc) => play(sc),
   startFree: (o: FreePlayOpts) => play(freePlay(pack, o)),
@@ -47,22 +50,34 @@ const handlers: MenuHandlers = {
 
 function go(screen: string) {
   game?.destroy(); game = undefined;
+  stopAttract();
   document.body.classList.remove('in-game');
   const map: Record<string, () => void> = {
     home: () => renderHome(app, handlers), free: () => renderFree(app, handlers), challenges: () => renderChallenges(app, handlers),
-    records: () => renderRecords(app, handlers), settings: () => renderSettings(app, handlers), help: () => renderHelp(app),
+    records: () => renderRecords(app, handlers), tutorial: () => renderTutorial(app, handlers), settings: () => renderSettings(app, handlers), help: () => renderHelp(app),
   };
   (map[screen] ?? map.home)();
   window.scrollTo(0, 0);
 }
 
-function play(sc: Scenario, replay?: { cmds: { t: number; cl: Clearance }[]; until: number }) {
+function lesson(i: number) {
+  const l = LESSONS[i];
+  play(l.scenario, undefined, coachFor(l, {
+    next: i < LESSONS.length - 1 ? () => lesson(i + 1) : undefined,
+    exit: () => go('tutorial'),
+    restart: () => lesson(i),
+  }));
+}
+
+function play(sc: Scenario, replay?: { cmds: { t: number; cl: Clearance }[]; until: number }, coach?: ReturnType<typeof coachFor>) {
   radio.unlock();
+  stopAttract();
   lastScenario = sc;
   game?.destroy();
   document.body.classList.add('in-game');
   game = new Game(pack, sc, settings, app, radio, {
     replay,
+    coach,
     onQuit: () => go('home'),
     onEnd: (r, sim) => {
       saveRecord(r);
@@ -86,4 +101,4 @@ app.addEventListener('click', (e) => {
 
 document.fonts?.ready.then(() => game?.scope.draw(performance.now()));
 go('home');
-(window as any).__lgg = { pack, get game() { return game; }, play, CHALLENGES, lastScenario: () => lastScenario };
+(window as any).__lgg = { pack, get game() { return game; }, play, lesson, LESSONS, CHALLENGES, lastScenario: () => lastScenario };

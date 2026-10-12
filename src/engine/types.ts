@@ -185,4 +185,6 @@ export interface Scenario {
   confusion?: boolean;
   pass?: PassCriteria;
   freePlay?: boolean;
+  noSayAgain?: boolean;
+  tutorial?: boolean;
 }

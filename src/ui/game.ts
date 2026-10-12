@@ -19,7 +19,7 @@ const h = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, html?: s
 };
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
 
-export interface GameOpts { replay?: { cmds: { t: number; cl: Clearance }[]; until: number }; onEnd(r: Result, sim: Sim): void; onQuit(): void }
+export interface GameOpts { replay?: { cmds: { t: number; cl: Clearance }[]; until: number }; onEnd(r: Result, sim: Sim): void; onQuit(): void; coach?: (g: Game) => { destroy(): void } }
 
 export class Game {
   sim: Sim;
@@ -29,14 +29,15 @@ export class Game {
   private acc = 0;
   private last = 0;
   private raf = 0;
-  private items: Item[] = [];
-  private cs?: string;
+  items: Item[] = [];
+  cs?: string;
+  private coach?: { destroy(): void };
   private panelTimer = 0;
   private radio: Radio;
   private mic = new Mic();
   private knownAlerts = new Set<string>();
   private endedShown = false;
-  private els: Record<string, HTMLElement> = {};
+  els: Record<string, HTMLElement> = {};
   private drawerTab: 'info' | 'aman' | 'strips' | 'comms' = 'strips';
   private commsStick = true;
   private pendingSwitch?: string;
@@ -74,10 +75,12 @@ export class Game {
     this.last = performance.now();
     this.raf = requestAnimationFrame(this.loop);
     if (opts.replay) this.toast(`Replay from ${this.sim.utc().slice(0, 5)}Z. Your earlier commands ran up to here.`);
-    else this.toast(sc.objective ?? sc.desc, 6000);
+    else if (!opts.coach) this.toast(sc.objective ?? sc.desc, 6000);
+    if (opts.coach) this.coach = opts.coach(this);
   }
 
   destroy() {
+    this.coach?.destroy();
     cancelAnimationFrame(this.raf);
     window.removeEventListener('keydown', this.onKey);
     this.radio.cancel();
@@ -104,7 +107,7 @@ export class Game {
       <main class="stage">
         <section class="scope-wrap">
           <canvas class="scope" aria-label="Radar display"></canvas>
-          <div class="zoom"><button data-z="in" aria-label="Zoom in">+</button><button data-z="out" aria-label="Zoom out">−</button><button data-z="fit" aria-label="Reset view">◎</button><button data-z="rbl" class="rbl" aria-label="Range and bearing line">RBL</button></div>
+          <div class="zoom"><button data-z="in" aria-label="Zoom in">+</button><button data-z="out" aria-label="Zoom out">−</button><button data-z="fit" aria-label="Reset view">◎</button><button data-z="rbl" class="rbl" aria-label="Range and bearing line">RBL</button><button data-z="vp" class="rbl" aria-label="Final approach monitor">VP</button></div>
           <div class="toast" data-e="toast" hidden></div>
         </section>
         <aside class="side" data-e="side">
@@ -158,8 +161,9 @@ export class Game {
     if (z) {
       if (z === 'in') this.scope.zoom(1.35);
       else if (z === 'out') this.scope.zoom(1 / 1.35);
+      else if (z === 'vp') { this.scope.showProfile = !this.scope.showProfile; t.classList.toggle('on', this.scope.showProfile); }
       else if (z === 'rbl') { this.scope.rblMode = !this.scope.rblMode; t.classList.toggle('on', this.scope.rblMode); this.toast(this.scope.rblMode ? 'RBL: drag between two points or aircraft. Tap a readout to delete it.' : 'RBL off'); }
-      else this.scope.fit();
+      else this.scope.fit(true);
       return;
     }
     if (tab) { this.drawerTab = tab as any; this.root.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', (b as HTMLElement).dataset.t === tab)); this.root.dataset.tab = tab; return; }
@@ -416,15 +420,15 @@ export class Game {
     this.scope.draw(now);
     this.panelTimer += dt;
     if (this.panelTimer > 0.5) { this.panelTimer = 0; this.renderPanels(); this.renderBarLive(); this.checkAlerts(); }
-    if (this.sim.ended && !this.endedShown) { this.endedShown = true; this.endSession(); return; }
+    if (this.sim.ended && !this.endedShown && !this.sc.tutorial) { this.endedShown = true; this.endSession(); return; }
     this.raf = requestAnimationFrame(this.loop);
   };
-  private setSpeed(s: number) {
+  setSpeed(s: number) {
     this.speed = s;
     if (s !== 1) this.radio.cancel();
     this.els.speed.querySelectorAll('button').forEach((b) => b.classList.toggle('on', Number((b as HTMLElement).dataset.s) === s));
   }
-  private endSession() {
+  endSession() {
     this.sim.finish();
     this.endedShown = true;
     cancelAnimationFrame(this.raf);

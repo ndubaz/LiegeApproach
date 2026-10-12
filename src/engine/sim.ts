@@ -43,6 +43,8 @@ export class Sim implements PilotWorld {
   ended = false;
   radarRefresh = 4;
   onTx: ((tx: Tx) => void)[] = [];
+  /** Callsigns whose next level or heading readback will be wrong (tutorial). */
+  forceWrong = new Set<string>();
   onEvent: ((e: SimEvent) => void)[] = [];
 
   private nextId = 1;
@@ -451,7 +453,7 @@ export class Sim implements PilotWorld {
       if (it.k === 'dct' || it.k === 'trans' || it.k === 'ron' || it.k === 'hold' || it.k === 'app') target.hdgSys = it.k === 'app' ? target.hdgSys : undefined;
     }
     // Occasionally a pilot misses the call entirely.
-    if (!target.radioFail && this.rng.chance(target.unfamiliar ? 0.06 : 0.03)) {
+    if (!target.radioFail && !this.forceWrong.has(target.cs) && !this.sc.noSayAgain && this.rng.chance(target.unfamiliar ? 0.06 : 0.03)) {
       this.queueCall({ from: 'PILOT', cs: target.cs, text: `Say again for ${target.cs}`, speech: `Say again for ${target.tel}` }, tx.t1 + this.rng.range(1, 2), () => { target.awaitingSince = this.t + 2; }, true);
       return { ok: true, warnings };
     }
@@ -479,7 +481,7 @@ export class Sim implements PilotWorld {
     if (ac === target && !ac.radioFail) {
       const rate = this.sc.readbackErr * (ac.unfamiliar ? 3 : 1);
       const idx = accepted.findIndex((i) => i.k === 'lvl' || i.k === 'hdg');
-      if (idx >= 0 && this.rng.chance(rate)) {
+      if (idx >= 0 && (this.forceWrong.delete(ac.cs) || this.rng.chance(rate))) {
         const it = accepted[idx];
         let bad: Item = it;
         if (it.k === 'lvl') {

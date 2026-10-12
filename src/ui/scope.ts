@@ -58,6 +58,9 @@ export class Scope {
   scale = 8; // px per NM
   selected?: string;
   rblMode = false;
+  showProfile = false;
+  marks: { cs?: string; fix?: string; text?: string }[] = [];
+  private anim?: { s0: number; s1: number; c0: XY; c1: XY; t0: number; dur: number };
   labels = new Map<string, LabelBox>();
   private symbols = new Map<string, XY>();
   private pointers = new Map<number, { x: number; y: number }>();
@@ -65,7 +68,7 @@ export class Scope {
   private hdgPreview?: { from: XY; to: { x: number; y: number }; text: string };
   private rblPreview?: { a: Anchor; b: XY };
   private userLabels = new Set<string>();
-  private rbls: { a: Anchor; b: Anchor }[] = [];
+  rbls: { a: Anchor; b: Anchor }[] = [];
   private rblHits: { i: number; x: number; y: number }[] = [];
   private map = document.createElement('canvas');
   private mapKey = '';
@@ -93,11 +96,14 @@ export class Scope {
     this.canvas.width = Math.round(this.w * this.dpr);
     this.canvas.height = Math.round(this.h * this.dpr);
   }
-  fit() {
+  fit(animate = false) {
     const half = 26;
-    this.scale = Math.min(this.w, this.h) / (2 * half);
-    this.center = { x: 2, y: -1 };
+    const s1 = Math.min(this.w, this.h) / (2 * half), c1 = { x: 2, y: -1 };
+    if (animate) this.animateTo(s1, c1); else { this.scale = s1; this.center = c1; }
   }
+  animateTo(s1: number, c1: XY, dur = 260) { this.anim = { s0: this.scale, s1, c0: { ...this.center }, c1, t0: performance.now(), dur }; }
+  /** Centre on a world point (used by the tutorial). */
+  focus(p: XY, scale?: number) { this.animateTo(scale ?? this.scale, { ...p }, 500); }
   rangeNm() { return Math.round(Math.min(this.w, this.h) / this.scale / 2); }
   toS(p: XY) { return { x: this.w / 2 + (p.x - this.center.x) * this.scale, y: this.h / 2 - (p.y - this.center.y) * this.scale }; }
   toW(x: number, y: number): XY { return { x: this.center.x + (x - this.w / 2) / this.scale, y: this.center.y - (y - this.h / 2) / this.scale }; }
@@ -107,7 +113,7 @@ export class Scope {
     const after = this.toW(x, y);
     this.center = { x: this.center.x + before.x - after.x, y: this.center.y + before.y - after.y };
   }
-  zoom(f: number) { this.zoomAt(this.w / 2, this.h / 2, f); }
+  zoom(f: number) { this.animateTo(Math.max(2.2, Math.min(60, this.scale * f)), { ...this.center }); }
   clearRbls() { this.rbls = []; }
 
   /** Position shown on the scope: the last radar plot. */
@@ -138,6 +144,7 @@ export class Scope {
     return a.p;
   }
   private down(e: PointerEvent) {
+    this.anim = undefined;
     this.canvas.setPointerCapture(e.pointerId);
     this.pointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
     if (this.pointers.size === 2) {
@@ -478,6 +485,12 @@ export class Scope {
   draw(now: number) {
     const { ctx, sim } = this;
     const S = this.skin;
+    if (this.anim) {
+      const a = this.anim, k = Math.min(1, (performance.now() - a.t0) / a.dur), e = 1 - Math.pow(1 - k, 3);
+      this.scale = a.s0 + (a.s1 - a.s0) * e;
+      this.center = { x: a.c0.x + (a.c1.x - a.c0.x) * e, y: a.c0.y + (a.c1.y - a.c0.y) * e };
+      if (k >= 1) this.anim = undefined;
+    }
     this.renderMap();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.drawImage(this.map, 0, 0);
@@ -514,7 +527,9 @@ export class Scope {
       if (!A || !B) continue;
       const pa = this.toS(this.plot(A)), pb = this.toS(this.plot(B));
       ctx.strokeStyle = S.urgent; ctx.lineWidth = al.kind === 'los' ? 2 : 1.3; ctx.setLineDash(al.kind === 'los' ? [] : [6, 4]);
+      ctx.shadowColor = S.urgent; ctx.shadowBlur = 8;
       ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke(); ctx.setLineDash([]);
+      ctx.shadowBlur = 0;
       this.haloText(`${dist(A.p, B.p).toFixed(1)}`, (pa.x + pb.x) / 2 + 5, (pa.y + pb.y) / 2 - 5, mono(this.fontPx - 1, 600), S.urgent);
     }
 
@@ -562,10 +577,15 @@ export class Scope {
       if (ac.cs === this.selected) {
         ctx.strokeStyle = S.select; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(s.x, s.y, 11, 0, Math.PI * 2); ctx.stroke();
+        ctx.globalAlpha = 0.35 + 0.25 * Math.sin(now / 260); ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(s.x, s.y, 15 + 2 * Math.sin(now / 260), 0, Math.PI * 2); ctx.stroke();
+        ctx.globalAlpha = 1;
       }
 
       // label
-      const lines = this.labelLines(ac, ac.cs === this.selected);
+      let lines = this.labelLines(ac, ac.cs === this.selected);
+      // zoomed out: minimised labels (callsign and level) for everything not selected or alerting
+      if (this.scale < 4.6 && ac.cs !== this.selected && !urgent && ac.awaitingSince === undefined) lines = lines.slice(0, 2);
       const wch = Math.max(...lines.map((l) => l.reduce((n, seg) => n + seg.t.length, 0)));
       const bw = wch * cw + 4, bh = lines.length * lh + 3;
       let lx = s.x + ac.label.dx, ly = s.y + ac.label.dy;
@@ -614,6 +634,9 @@ export class Scope {
         }
       });
     }
+
+    this.drawMarks(now);
+    if (this.showProfile) this.drawProfile();
 
     // heading drag preview
     if (this.hdgPreview && this.hdgPreview.text) {
@@ -718,6 +741,63 @@ export class Scope {
     const mx = (sa.x + sb.x) / 2, my = (sa.y + sb.y) / 2 - 6;
     this.haloText(text, mx - text.length * 3.2, my, mono(11, 600), col);
     return { x: mx, y: my };
+  }
+
+  // ================= tutorial marks =================
+  private drawMarks(now: number) {
+    const { ctx } = this;
+    const S = this.skin;
+    for (const m of this.marks) {
+      let p: XY | undefined;
+      if (m.cs) { const ac = this.sim.find(m.cs); if (ac) p = this.plot(ac); }
+      if (m.fix) p = this.sim.pack.fixes.get(m.fix)?.p;
+      if (!p) continue;
+      const s = this.toS(p);
+      const r = 20 + 5 * Math.sin(now / 220);
+      ctx.strokeStyle = S.warn; ctx.lineWidth = 2; ctx.shadowColor = S.warn; ctx.shadowBlur = 10;
+      ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.shadowBlur = 0;
+      if (m.text) this.haloText(m.text, s.x + r + 6, s.y - r * 0.6, sans(14, 600), S.warn);
+    }
+  }
+
+  // ================= final monitor (training aid) =================
+  /** Side view of the last 15 NM of the active final against the 3° glidepath. */
+  private drawProfile() {
+    const { ctx, sim } = this;
+    const S = this.skin;
+    const rw = sim.rwy;
+    const W = Math.min(380, this.w * 0.62), H = 128;
+    const x0 = 10, y0 = this.h - H - 30;
+    const maxD = 15, maxA = 6000;
+    ctx.fillStyle = 'rgba(8,14,19,0.82)'; ctx.fillRect(x0, y0, W, H);
+    ctx.strokeStyle = S.ring10; ctx.lineWidth = 1; ctx.strokeRect(x0 + 0.5, y0 + 0.5, W - 1, H - 1);
+    const pl = x0 + 34, pr = x0 + W - 10, pt = y0 + 20, pb = y0 + H - 18;
+    const X = (d: number) => pl + (d / maxD) * (pr - pl);
+    const Y = (a: number) => pb - ((a - rw.elevation) / (maxA - rw.elevation)) * (pb - pt);
+    ctx.font = mono(9.5); ctx.fillStyle = S.ringText;
+    for (let a = 1000; a <= maxA; a += 1000) { ctx.strokeStyle = S.ring; ctx.beginPath(); ctx.moveTo(pl, Y(a)); ctx.lineTo(pr, Y(a)); ctx.stroke(); ctx.fillText(String(a / 1000) + 'k', x0 + 6, Y(a) + 3); }
+    for (let d = 0; d <= maxD; d += 5) { ctx.fillText(String(d), X(d) - 3, pb + 12); }
+    // glidepath and FAF
+    ctx.strokeStyle = S.centreline; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(X(0), Y(rw.elevation + 50)); ctx.lineTo(X(maxD), Y(rw.elevation + 50 + maxD * 318.4)); ctx.stroke();
+    const faf = sim.pack.fixes.get(rw.faf);
+    if (faf) {
+      const fd = -alongTrack(faf.p, rw.thr, rw.crs);
+      ctx.strokeStyle = S.fixKey; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(X(fd), pt); ctx.lineTo(X(fd), pb); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = S.fixKey; ctx.fillText(rw.faf, X(fd) + 3, pt + 8);
+    }
+    this.haloText(`FINAL ${rw.id}  3.0°  training aid`, x0 + 8, y0 + 13, mono(10, 600), S.ringText);
+    for (const ac of sim.aircraft) {
+      const d = -alongTrack(ac.p, rw.thr, rw.crs);
+      const xt = Math.abs(crossTrack(ac.p, rw.thr, rw.crs));
+      if (d < 0 || d > maxD || xt > 4 || ac.alt > maxA) continue;
+      const dev = ac.alt - (rw.elevation + 50 + d * 318.4);
+      const c = ac.app?.locCap ? (dev > 300 ? S.warn : dev < -200 ? S.urgent : S.assumed) : S.transferred;
+      const px = X(d), py = Y(ac.alt);
+      ctx.fillStyle = c; ctx.fillRect(px - 3, py - 3, 6, 6);
+      this.haloText(ac.cs, px + 5, py - 5, mono(10, 600), c);
+    }
   }
 
   // ================= label content =================
