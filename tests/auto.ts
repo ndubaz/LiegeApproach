@@ -1,26 +1,26 @@
 import type { Sim } from '../src/engine/sim';
 
-/** A simple procedural controller: transition + ILS for arrivals, climb and transfer departures. */
+/** A simple procedural controller that re-issues until the pilot actually complies (handles "say again"). */
 export function autoControl(sim: Sim) {
   for (const ac of sim.aircraft) {
     if (ac.state !== 'assumed' || ac.radioFail) continue;
-    const done = (ac as any)._auto ?? ((ac as any)._auto = {});
+    const st = (ac as any)._auto ?? ((ac as any)._auto = { last: -99 });
+    if (sim.t - st.last < 15) continue;
+    const send = (items: any[]) => { sim.issue({ cs: ac.cs, items }); st.last = sim.t; };
+    if (ac.request) { send([{ k: 'appr' }]); continue; }
     if (ac.kind === 'arr') {
-      if (!done.cleared && (ac.route.some((l) => l.fix === 'ALHUV') || ac.mode === 'HOLD' || ac.mode === 'HDG')) {
-        const rw = sim.rwy;
+      const rw = sim.rwy;
+      if (!ac.app && (ac.route.some((l) => l.fix === 'ALHUV') || ac.mode === 'HOLD' || ac.mode === 'HDG')) {
         const tr = sim.transitionsFor(rw.id).find((t) => !t.atcDiscretion)!;
-        sim.issue({ cs: ac.cs, items: [{ k: 'trans', name: tr.name }, { k: 'lvl', lvl: { ft: rw.ifAlt } }, { k: 'app', app: 'ILS', rwy: rw.id }] });
-        done.cleared = true;
-      } else if (ac.app?.locCap && !done.twr) {
-        sim.issue({ cs: ac.cs, items: [{ k: 'xfr', unit: 'TWR' }] });
-        done.twr = true;
-      }
+        send([{ k: 'trans', name: tr.name }, { k: 'lvl', lvl: { ft: rw.ifAlt } }, { k: 'app', app: 'ILS', rwy: rw.id }]);
+      } else if (ac.app?.locCap) send([{ k: 'xfr', unit: 'TWR' }]);
+      else if (ac.awaitingSince !== undefined) send([{ k: 'lvl', lvl: ac.cleared }]);
     }
     if (ac.kind === 'dep') {
-      if (!done.climb && (ac.alt > 5000 || ac.awaitingSince !== undefined)) { sim.issue({ cs: ac.cs, items: [{ k: 'lvl', lvl: { fl: 90 } }] }); done.climb = true; }
-      if (!done.xfr && Math.hypot(ac.p.x, ac.p.y) > 20) { sim.issue({ cs: ac.cs, items: [{ k: 'xfr', unit: 'BRU' }] }); done.xfr = true; }
+      if (ac.cleared.fl !== 90 && (ac.alt > 5000 || ac.awaitingSince !== undefined)) send([{ k: 'lvl', lvl: { fl: 90 } }]);
+      else if (Math.hypot(ac.p.x, ac.p.y) > 20) send([{ k: 'xfr', unit: 'BRU' }]);
+      else if (ac.awaitingSince !== undefined) send([{ k: 'lvl', lvl: { fl: 90 } }]);
     }
-    if (ac.request && !done.req) { sim.issue({ cs: ac.cs, items: [{ k: 'appr' }] }); done.req = true; }
+    if ((ac.kind === 'ovf' || ac.kind === 'mil' || ac.kind === 'vfr' || ac.kind === 'heli' || ac.kind === 'cal') && ac.awaitingSince !== undefined) send([{ k: 'appr' }]);
   }
 }
-

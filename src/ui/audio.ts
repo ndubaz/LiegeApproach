@@ -42,6 +42,14 @@ export class Radio {
   }
   click() { this.noise(0.03, 0.25, 2500); }
   squelch() { this.noise(0.16, 0.18, 1600); }
+  /** Two carriers on frequency at once: a beating heterodyne under noise. */
+  blocked() {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const g = ctx.createGain(); g.gain.value = 0.04; g.connect(ctx.destination);
+    for (const f of [1020, 1083]) { const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f; o.connect(g); o.start(); o.stop(ctx.currentTime + 1.6); }
+    this.noise(1.6, 0.14, 1400);
+  }
   alert() {
     const ctx = this.ctx;
     if (!ctx) return;

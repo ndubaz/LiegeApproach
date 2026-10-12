@@ -42,7 +42,9 @@ export interface Aircraft {
   gs: number;
   trk: number;
   // clearances
-  cleared: Level;
+  cleared: Level;          // what the pilot is flying to (Mode S selected level)
+  cflSys?: Level;          // what the controller cleared (system CFL)
+  hdgSys?: number;         // heading the controller assigned (true)
   tgtAlt: number;
   spdAssigned?: number;
   spdUntil?: number;
@@ -113,6 +115,7 @@ export interface Tx {
   text: string;
   speech: string;
   emergency?: boolean;
+  blocked?: boolean;
 }
 
 export interface LandingRecord {

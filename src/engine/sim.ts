@@ -151,7 +151,7 @@ export class Sim implements PilotWorld {
       rules: spec.rules ?? (spec.kind === 'vfr' || spec.kind === 'heli' ? 'VFR' : spec.kind === 'mil' ? 'OAT' : 'IFR'),
       formation: spec.formation ?? 1,
       p, alt, ias: spec.spd ?? (alt < 12000 ? Math.min(250, perf.vcruiseLow) : 280), hdg, vs: 0, gs: 250, trk: hdg,
-      cleared, tgtAlt: this.ftOf(cleared), mode: 'NAV', route: [], state: spec.silent ? 'unconcerned' : 'inbound',
+      cleared, cflSys: cleared, tgtAlt: this.ftOf(cleared), mode: 'NAV', route: [], state: spec.silent ? 'unconcerned' : 'inbound',
       sqk: String(this.rng.int(4001, 4677)).replace(/[89]/g, '7'), label: { dx: 14, dy: -34 }, history: [{ ...p }],
       spawnT: this.t, flownNm: 0, baselineNm: 0, holdSec: 0, levelSegT: 0, levelOffs: 0, fuelKg: 0, lowSec: 0, txCount: 0, goArounds: 0,
       unfamiliar: spec.unfamiliar,
@@ -257,8 +257,18 @@ export class Sim implements PilotWorld {
   private queueCall(tx: Omit<Tx, 'id' | 't0' | 't1'>, notBefore: number, onStart?: () => void, priority = false) {
     if (priority) this.queue.unshift({ tx, notBefore, onStart, priority }); else this.queue.push({ tx, notBefore, onStart });
   }
+  private lastBlocked = -999;
   private pumpQueue() {
     if (this.t < this.busyUntil) return;
+    const due = this.queue.filter((q) => q.notBefore <= this.t && !q.priority);
+    if (due.length >= 2 && this.t - this.lastBlocked > 90 && this.rng.chance(0.35)) {
+      // two stations transmit at once: the controller hears a heterodyne
+      this.lastBlocked = this.t;
+      const tx = this.emitTx({ from: 'PILOT', cs: '', text: '— blocked transmission —', speech: '', blocked: true }, this.t);
+      this.busyUntil = tx.t1 + 2;
+      for (const q of due.slice(0, 2)) q.notBefore = this.t + this.rng.range(3, 7);
+      return;
+    }
     const idx = this.queue.findIndex((q) => q.notBefore <= this.t);
     if (idx < 0) return;
     const q = this.queue.splice(idx, 1)[0];
@@ -307,6 +317,10 @@ export class Sim implements PilotWorld {
       case 'dep':
         text = `Liège Approach, ${ac.cs}, passing ${Math.round(ac.alt / 100) * 100} ft climbing ${cl.text}, ${ac.proc}`;
         speech = `Liège Approach, ${ac.tel}, passing ${digits(Math.round(ac.alt / 1000))} thousand ${Math.round((ac.alt % 1000) / 100) ? digits(Math.round((ac.alt % 1000) / 100)) + ' hundred' : ''} climbing ${cl.speech}, ${this.procSpeech(ac.proc!)}`;
+        if (this.rng.chance(0.35)) {
+          text += ', request higher'; speech += ', request higher';
+          ac.request = { kind: 'climb', level: { fl: 90 }, text: 'Higher, FL090', speech: '', t: this.t };
+        }
         break;
       default: {
         const req = spec.request;
@@ -429,6 +443,18 @@ export class Sim implements PilotWorld {
     if (em) em.firstClrT = t0;
 
     if (target.radioFail) return { ok: true, warnings };
+
+    // The controller's input updates the system flight plan (label CFL, AHDG) regardless of what the pilot does.
+    for (const it of cl.items) {
+      if (it.k === 'lvl') target.cflSys = it.lvl;
+      if (it.k === 'hdg') target.hdgSys = norm360(it.hdg + this.pack.meta.magVar);
+      if (it.k === 'dct' || it.k === 'trans' || it.k === 'ron' || it.k === 'hold' || it.k === 'app') target.hdgSys = it.k === 'app' ? target.hdgSys : undefined;
+    }
+    // Occasionally a pilot misses the call entirely.
+    if (!target.radioFail && this.rng.chance(target.unfamiliar ? 0.06 : 0.03)) {
+      this.queueCall({ from: 'PILOT', cs: target.cs, text: `Say again for ${target.cs}`, speech: `Say again for ${target.tel}` }, tx.t1 + this.rng.range(1, 2), () => { target.awaitingSince = this.t + 2; }, true);
+      return { ok: true, warnings };
+    }
 
     // Who actually answers? Similar callsigns cause confusion.
     let ac = target;
@@ -566,7 +592,7 @@ export class Sim implements PilotWorld {
         case 'appr': this.answerRequest(ac, true); break;
         case 'deny': this.answerRequest(ac, false); break;
         case 'xfr':
-          ac.state = 'transferred'; ac.xfrUnit = it.unit;
+          ac.state = 'transferred'; ac.xfrUnit = it.unit; ac.awaitingSince = undefined; ac.request = undefined;
           if (it.unit === 'TWR' && ac.app) ac.twrXfrDist = distToThr(ac.p, ac.app.rwy);
           if (it.unit === 'TWR' && ac.app && ac.twrXfrDist! < 4) this.event({ kind: 'late_xfr', cs: ac.cs, comp: 'CORD', sev: 'minor', text: `${ac.cs}: transferred to Tower late (${ac.twrXfrDist!.toFixed(1)} NM)`, cost: 12 });
           if (it.unit !== 'TWR') this.onOutboundTransfer(ac);
@@ -592,7 +618,7 @@ export class Sim implements PilotWorld {
     }
     switch (r.kind) {
       case 'climb': ac.cleared = r.level!; ac.tgtAlt = this.ftOf(r.level!); break;
-      case 'direct': ac.route = [{ fix: r.fix!, p: this.fixP(r.fix!) }]; ac.mode = 'NAV'; break;
+      case 'direct': this.apply(ac, [{ k: 'dct', fix: r.fix! }], ac); break;
       case 'crossing': {
         const pts = r.route ?? ((ac as any)._plannedRoute as string[]);
         ac.route = pts.map((f) => ({ fix: f, p: this.fixP(f) }));
@@ -736,6 +762,17 @@ export class Sim implements PilotWorld {
     const spec = (ac as any)._spec as SpawnSpec | undefined;
     // emergencies
     if (spec?.emergency && !ac.emergency && t - ac.spawnT >= spec.emergency.after && ac.state === 'assumed') this.declareEmergency(ac, spec.emergency.type);
+    // freighter crews like shortcuts: an occasional request for direct ALHUV while still on the STAR
+    if (ac.kind === 'arr' && ac.state === 'assumed' && !ac.request && !ac.app && !ac.radioFail && !(ac as any)._askedDct && ac.mode === 'NAV' && ac.route.length > 1 && ac.route[ac.route.length - 1].fix === 'ALHUV' && t - ac.spawnT > 70 && ac.awaitingSince === undefined) {
+      if (this.rng.chance(0.004)) {
+        (ac as any)._askedDct = true;
+        this.queueCall({ from: 'PILOT', cs: ac.cs, text: `${ac.cs}, request direct ALHUV`, speech: `${ac.tel}, request direct ALHUV` }, t, () => {
+          if (ac.app || ac.route[ac.route.length - 1]?.fix !== 'ALHUV') return;
+          ac.request = { kind: 'direct', fix: 'ALHUV', text: 'Direct ALHUV', speech: '', t: this.t };
+          ac.awaitingSince = this.t + 3;
+        });
+      }
+    }
     // tower-initiated go-around (scenario)
     if (spec?.goAroundAt && ac.app?.locCap && !(ac as any)._gaDone && distToThr(ac.p, ac.app.rwy) < spec.goAroundAt) { (ac as any)._gaDone = true; this.goAround(ac, 'forced'); return; }
     // wrong readback not caught within 30 s
@@ -762,7 +799,8 @@ export class Sim implements PilotWorld {
     // sector exit / removal
     const r = Math.hypot(ac.p.x, ac.p.y);
     const R = this.pack.meta.sectorRadiusNm;
-    if (r > R + 2 && ac.state === 'assumed' && (ac.kind === 'dep' || ac.kind === 'ovf' || ac.kind === 'mil' || ac.kind === 'cal')) {
+    if (r < R) (ac as any)._wasInside = true;
+    if (r > R + 2 && (ac as any)._wasInside && ac.state === 'assumed' && (ac.kind === 'dep' || ac.kind === 'ovf' || ac.kind === 'mil' || ac.kind === 'cal')) {
       this.event({ kind: 'exit_unxfr', cs: ac.cs, comp: 'CORD', sev: 'major', text: `${ac.cs}: left the sector without a transfer`, cost: 30 });
       ac.state = 'transferred';
       if (ac.kind === 'dep') this.departuresHandled++;

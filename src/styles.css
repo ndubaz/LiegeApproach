@@ -191,28 +191,46 @@ canvas.scope { position: absolute; inset: 0; width: 100%; height: 100%; touch-ac
 .aman-line { position: absolute; left: 0; top: 0; bottom: 0; border-left: 1.5px solid var(--line2); }
 .aman .tick { position: absolute; left: -42px; right: 0; border-top: 1px dashed var(--line); font: 500 11px var(--mono); color: var(--faint); }
 .aman .tick span { position: relative; top: -8px; background: var(--panel); padding-right: 4px; }
-.aman-item { position: absolute; left: 6px; right: 0; transform: translateY(-50%); display: flex; justify-content: space-between; gap: 6px; font: 500 12.5px var(--mono); padding: 2px 6px; border-left: 2px solid var(--dim); background: var(--panel2); border-radius: 0 4px 4px 0; text-align: left; }
+.aman-item { min-height: 24px; align-items: center; position: absolute; left: 6px; right: 0; transform: translateY(-50%); display: flex; justify-content: space-between; gap: 6px; font: 500 12.5px var(--mono); padding: 2px 6px; border-left: 2px solid var(--dim); background: var(--panel2); border-radius: 0 4px 4px 0; text-align: left; }
 .aman-item em { font-style: normal; color: var(--amber); }
 .aman-item.sel { border-left-color: var(--accent); background: rgba(79, 209, 232, 0.14); }
 .aman-item.emer { border-left-color: var(--red); color: var(--red); }
 
 /* Strips */
 .strip-list { display: flex; flex-direction: column; gap: 5px; }
-button.strip:not(.aman-item) { display: grid; grid-template-columns: 1.3fr 1fr 0.9fr 0.8fr; gap: 1px 8px; text-align: left; padding: 6px 8px 6px 10px; background: var(--panel2); border: 1px solid var(--line); border-left: 4px solid var(--dim); border-radius: 3px; font-size: 13px; min-height: 44px; }
-.strip.arr { border-left-color: #7fb7d9; }
-.strip.dep { border-left-color: #b9a2e8; }
-.strip.mil, .strip.ovf, .strip.cal { border-left-color: #d8c06a; }
-.strip.vfr, .strip.heli { border-left-color: #8fbf9f; }
-.strip.sel { border-color: var(--accent); background: rgba(79, 209, 232, 0.12); }
-.strip.transferred, .strip.inbound { opacity: 0.6; }
-.strip.calling .s-cs { text-decoration: underline; text-decoration-color: var(--amber); text-underline-offset: 3px; }
-.strip.emer { border-left-color: var(--red); }
-.s-cs { font-weight: 600; }
-.s-ty, .s-pr, .s-sp { color: var(--dim); }
-.s-cfl { font-weight: 600; }
-.s-hd, .s-ap { color: var(--accent); }
-.s-req { grid-column: 1 / -1; color: var(--amber); font: 500 12px var(--mono); }
+button.strip:not(.aman-item) {
+  display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; grid-template-rows: auto auto auto; grid-template-areas: 'bay id cfl' 'bay rt cfl' 'bay vx ap' 'bay rq rq';
+  text-align: left; padding: 0; background: linear-gradient(180deg, #1f2d38, #1a2630); border: 1px solid var(--line); border-radius: 2px; font-size: 12.5px; min-height: 44px; overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+.strip .bay { grid-area: bay; }
+.strip .f.id { grid-area: id; flex-direction: row; gap: 8px; align-items: baseline; padding-bottom: 0; }
+.strip .f.rt { grid-area: rt; flex-direction: row; gap: 8px; padding-top: 1px; padding-bottom: 1px; }
+.strip .f.cfl { grid-area: cfl; border-left: 1px solid var(--line); justify-content: center; padding: 4px 10px; min-width: 64px; }
+.strip .f.vx { grid-area: vx; flex-direction: row; gap: 10px; padding-top: 0; border-top: 0; }
+.strip .f.ap { grid-area: ap; border-left: 1px solid var(--line); text-align: right; justify-content: center; padding: 0 8px 4px; white-space: nowrap; }
+.strip .f.id, .strip .f.rt, .strip .f.vx { border-left: 0; }
+.strip .f.vx:empty, .strip .f.ap:empty { padding: 0; }
+.strip .bay { display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 11.5px; color: #0b1117; background: #7fb7d9; }
+.strip.dep .bay { background: #b9a2e8; }
+.strip.mil .bay, .strip.ovf .bay, .strip.cal .bay { background: #d8c06a; }
+.strip.vfr .bay, .strip.heli .bay { background: #8fbf9f; }
+.strip.emer .bay { background: var(--red); }
+.strip .f { display: flex; flex-direction: column; justify-content: center; padding: 4px 6px; border-left: 1px solid var(--line); min-width: 0; }
+.strip .f b { font-size: 13.5px; font-weight: 600; letter-spacing: 0.01em; }
+.strip .f i { font-style: normal; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.strip .f.id i { font-size: 11.5px; }
+.strip .cfl { font-size: 16px; font-weight: 600; align-items: center; color: var(--ink); }
+.strip .cfl.off { color: var(--amber); }
+.strip .vx i, .strip .ap { color: var(--accent); }
+.strip .ap { font-size: 11.5px; }
+.strip.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.strip.transferred, .strip.inbound { opacity: 0.55; }
+.strip.calling .f.id b { text-decoration: underline; text-decoration-color: var(--amber); text-underline-offset: 3px; text-decoration-thickness: 2px; }
+.s-req { grid-area: rq; color: var(--amber); font: 500 12px var(--mono); padding: 3px 6px; border-top: 1px dashed var(--line); }
 .s-req.emer { color: var(--red); }
+.zoom .rbl { font: 600 11px var(--mono); letter-spacing: 0.04em; }
+.zoom .rbl.on { background: #e8d36a; color: #11181e; border-color: #e8d36a; }
 .empty { color: var(--faint); font-size: 14px; }
 
 /* Comms */
@@ -233,7 +251,7 @@ button.strip:not(.aman-item) { display: grid; grid-template-columns: 1.3fr 1fr 0
 .ticker.sys { color: var(--amber); }
 .ticker.emer, .ticker.emer b { color: var(--red); }
 .bar-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.who { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 10px; }
+.who { min-width: 0; flex: 1 1 140px; display: flex; align-items: baseline; gap: 10px; overflow: hidden; }
 .who .cs { font: 600 22px/1 var(--mono); letter-spacing: 0.02em; }
 .who .meta { color: var(--dim); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .req { display: flex; align-items: center; gap: 6px; flex: none; }
@@ -298,6 +316,9 @@ button.strip:not(.aman-item) { display: grid; grid-template-columns: 1.3fr 1fr 0
   .picker:not(.floating) { right: 12px; bottom: 150px; }
 }
 @media (max-width: 599px) {
+  .bar-head { flex-wrap: wrap; row-gap: 6px; }
+  .req:not(:empty) { order: 3; width: 100%; justify-content: space-between; }
+  .req-text { max-width: none; flex: 1; }
   .topbar { gap: 4px; padding: 6px; }
   .tag[data-e="atis"], .tag[data-e="rwy"] { display: none; }
   .clock { font-size: 14px; padding: 0 2px; }

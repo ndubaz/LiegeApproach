@@ -104,14 +104,14 @@ export class Game {
       <main class="stage">
         <section class="scope-wrap">
           <canvas class="scope" aria-label="Radar display"></canvas>
-          <div class="zoom"><button data-z="in" aria-label="Zoom in">+</button><button data-z="out" aria-label="Zoom out">−</button><button data-z="fit" aria-label="Reset view">◎</button></div>
+          <div class="zoom"><button data-z="in" aria-label="Zoom in">+</button><button data-z="out" aria-label="Zoom out">−</button><button data-z="fit" aria-label="Reset view">◎</button><button data-z="rbl" class="rbl" aria-label="Range and bearing line">RBL</button></div>
           <div class="toast" data-e="toast" hidden></div>
         </section>
         <aside class="side" data-e="side">
           <nav class="tabs" data-e="tabs"><button data-t="strips" class="on">Strips</button><button data-t="aman">AMAN</button><button data-t="comms">Comms</button><button data-t="info">Info</button></nav>
           <section class="panel info" data-p="info"><h3>Information</h3><div data-e="info"></div></section>
           <div class="mid">
-            <section class="panel aman" data-p="aman"><h3>AMAN <span data-e="amanRwy"></span></h3><div class="aman-body" data-e="aman"></div></section>
+            <section class="panel aman" data-p="aman"><h3>AMAN <span data-e="amanRwy"></span> <small>TTL min</small></h3><div class="aman-body" data-e="aman"></div></section>
             <section class="panel strips" data-p="strips"><h3>Strips</h3><div class="strip-list" data-e="strips"></div></section>
           </div>
           <section class="panel comms" data-p="comms"><h3>Comms <span class="dim">119.280</span></h3><div class="comms-log" data-e="comms"></div></section>
@@ -155,7 +155,13 @@ export class Game {
     if (t.classList.contains('strip')) { this.select(t.dataset.cs); return; }
     const a = t.dataset.a, p = t.dataset.p, s = t.dataset.s, z = t.dataset.z, tab = t.dataset.t;
     if (s !== undefined) { this.setSpeed(Number(s)); return; }
-    if (z) { if (z === 'in') this.scope.zoom(1.35); else if (z === 'out') this.scope.zoom(1 / 1.35); else this.scope.fit(); return; }
+    if (z) {
+      if (z === 'in') this.scope.zoom(1.35);
+      else if (z === 'out') this.scope.zoom(1 / 1.35);
+      else if (z === 'rbl') { this.scope.rblMode = !this.scope.rblMode; t.classList.toggle('on', this.scope.rblMode); this.toast(this.scope.rblMode ? 'RBL: drag between two points or aircraft. Tap a readout to delete it.' : 'RBL off'); }
+      else this.scope.fit();
+      return;
+    }
     if (tab) { this.drawerTab = tab as any; this.root.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', (b as HTMLElement).dataset.t === tab)); this.root.dataset.tab = tab; return; }
     if (p) { this.openPicker(p as any); return; }
     const ac = this.cs ? this.sim.find(this.cs) : undefined;
@@ -340,6 +346,7 @@ export class Game {
         opt('#pause', this.speed ? 'Pause' : 'Resume');
         opt('#end', 'End session and debrief');
         opt('#mva', `${this.settings.showMva ? 'Hide' : 'Show'} MVA overlay`);
+        opt('#rbl', 'Clear measuring lines');
         opt('#proc', `${this.settings.showProcedures ? 'Hide' : 'Show'} procedures`);
         opt('#vec', `Speed vector ${this.settings.speedVectorMin} min (change)`);
         opt('#voice', `Pilot voices ${this.radio.enabled ? 'on' : 'off'}`);
@@ -371,6 +378,7 @@ export class Game {
         case '#end': this.endSession(); break;
         case '#quit': this.destroy(); this.opts.onQuit(); break;
         case '#mva': this.settings.showMva = !this.settings.showMva; break;
+        case '#rbl': this.scope.clearRbls(); break;
         case '#proc': this.settings.showProcedures = !this.settings.showProcedures; break;
         case '#vec': this.settings.speedVectorMin = (this.settings.speedVectorMin % 3 + 1) as 1 | 2 | 3; break;
         case '#voice': this.radio.enabled = !this.radio.enabled; if (!this.radio.enabled) this.radio.cancel(); break;
@@ -436,7 +444,8 @@ export class Game {
     this.appendComms(tx);
     this.els.ticker.innerHTML = `<b>${esc(tx.from === 'ATC' ? 'YOU' : tx.from === 'SYS' ? 'SYS' : tx.cs)}</b> ${esc(tx.text)}`;
     this.els.ticker.className = `ticker mono ${tx.from.toLowerCase()} ${tx.emergency ? 'emer' : ''}`;
-    if (this.speed === 1) {
+    if (tx.blocked) { this.radio.blocked(); }
+    else if (this.speed === 1) {
       if (tx.from === 'PILOT') this.radio.speak(tx.speech, tx.cs);
       else if (tx.from === 'ATC' && this.settings.speakAtc) this.radio.speak(tx.speech, 'ATC', true);
     }
@@ -556,6 +565,7 @@ export class Game {
     const items: string[] = [];
     for (let m = 0; m <= span; m += 5) items.push(`<div class="tick" style="top:${(m / span) * 100}%"><span>${sim.utc(sim.t + m * 60).slice(0, 5)}</span></div>`);
     const hpx = Math.max(200, this.els.aman.clientHeight || 400);
+    const gapPx = 30;
     let lastTop = -100;
     for (const x of arr) {
       let adv = 0;
@@ -567,11 +577,11 @@ export class Game {
       prev = x;
       if (x.eta > span) continue;
       let topPx = (x.eta / span) * hpx;
-      topPx = Math.max(topPx, lastTop + 24);
+      topPx = Math.max(topPx, lastTop + gapPx);
       lastTop = topPx;
       const top = (topPx / hpx) * 100;
       const sel = x.a.cs === this.cs ? 'sel' : '';
-      items.push(`<button class="aman-item strip ${sel} ${x.a.emergency ? 'emer' : ''}" data-cs="${x.a.cs}" style="top:${top}%"><b>${x.a.cs}</b><span>${x.a.perf.recat}${adv >= 0.5 ? ` <em>−${adv.toFixed(adv >= 2 ? 0 : 1)}</em>` : ''}</span></button>`);
+      items.push(`<button class="aman-item strip ${sel} ${x.a.emergency ? 'emer' : ''}" data-cs="${x.a.cs}" style="top:${top}%"><b>${x.a.cs}</b><span>${adv >= 0.5 ? `<em>−${adv.toFixed(adv >= 2 ? 0 : 1)}</em>` : x.a.perf.recat}</span></button>`);
     }
     this.els.aman.innerHTML = `<div class="aman-line"></div>${items.join('')}`;
   }
@@ -580,15 +590,20 @@ export class Game {
     const order = (a: Aircraft) => (a.emergency ? -1000 : 0) + (a.kind === 'arr' ? sim.eta(a) : a.kind === 'dep' ? 100 : 200);
     const list = sim.aircraft.filter((a) => a.state !== 'unconcerned').sort((a, b) => order(a) - order(b));
     this.els.strips.innerHTML = list.map((a) => {
-      const hdg = a.mode === 'HDG' && a.hdgAssigned !== undefined ? `H${String(Math.round(norm360(a.hdgAssigned - sim.pack.meta.magVar)) || 360).padStart(3, '0')}` : a.mode === 'HOLD' ? 'HOLD' : a.mode === 'LOC' ? 'LOC' : a.route[0]?.fix ?? '';
+      const hdg = a.hdgSys !== undefined && a.mode !== 'LOC' ? `H${String(Math.round(norm360(a.hdgSys - sim.pack.meta.magVar)) || 360).padStart(3, '0')}` : a.mode === 'HOLD' ? 'HOLD' : a.mode === 'LOC' ? 'LOC' : a.route[0] ? `→${a.route[0].fix}` : '';
       const spd = a.spdAssigned ? `S${a.spdAssigned}` : a.spdMin ? 'SMIN' : '';
-      const app = a.app ? `${a.app.type} ${a.app.rwy.id}` : '';
+      const app = a.app ? (a.app.locCap ? `${a.app.type} ${a.app.rwy.id} D${sim.dthr(a).toFixed(1)}` : `${a.app.type} ${a.app.rwy.id}`) : a.kind === 'dep' ? `→ ${a.exitFix ?? ''}` : a.rules === 'VFR' ? 'VFR' : '';
       const waiting = a.awaitingSince !== undefined && sim.t >= a.awaitingSince;
+      const cfl = levelText(a.cflSys ?? a.cleared).replace(' ft', '').replace(',', '');
+      const sflOff = a.cflSys && Math.abs(sim.ftOf(a.cleared) - sim.ftOf(a.cflSys)) > 60;
       return `<button class="strip ${a.kind} ${a.cs === this.cs ? 'sel' : ''} ${a.state} ${a.emergency ? 'emer' : ''} ${waiting ? 'calling' : ''}" data-cs="${a.cs}">
-        <span class="s-cs mono">${a.cs}${a.formation > 1 ? `×${a.formation}` : ''}</span><span class="s-ty mono">${a.type}/${a.perf.wake}</span>
-        <span class="s-pr mono">${esc(a.proc ?? a.rules)}</span><span class="s-cfl mono">${levelText(a.cleared).replace(' ft', '')}</span>
-        <span class="s-hd mono">${hdg}</span><span class="s-sp mono">${spd}</span><span class="s-ap mono">${app}</span>
-        ${a.request ? `<span class="s-req">REQ ${esc(a.request.text)}</span>` : ''}${a.emergency ? `<span class="s-req emer">${a.sqk}</span>` : ''}
+        <span class="bay mono">${a.perf.wake}</span>
+        <span class="f id"><b class="mono">${a.cs}${a.formation > 1 ? `×${a.formation}` : ''}</b><i class="mono">${a.type}/${a.perf.recat}</i></span>
+        <span class="f rt"><i class="mono">${esc(a.proc ?? a.rules)}</i><i class="mono">${a.expectRwy ?? (a.kind === 'dep' ? sim.runway : '')}</i></span>
+        <span class="f cfl mono ${sflOff ? 'off' : ''}">${cfl}</span>
+        <span class="f vx"><i class="mono">${hdg}</i><i class="mono">${spd}</i></span>
+        <span class="f ap mono">${esc(app)}</span>
+        ${a.request ? `<span class="s-req">REQ ${esc(a.request.text)}</span>` : ''}${a.emergency ? `<span class="s-req emer">${a.sqk} ${a.emergency.toUpperCase()}</span>` : ''}
       </button>`;
     }).join('') || '<div class="empty">No traffic yet</div>';
   }
