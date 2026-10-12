@@ -1,0 +1,282 @@
+import { alongTrack, angDiff, bearing, clamp, crossTrack, DEG, dist, move, norm360, type XY } from '../geo';
+import { levelToFt, type Leg, type Runway } from '../pack/load';
+import type { Aircraft } from './types';
+import type { Weather } from './weather';
+import { windAt } from './weather';
+
+/** What the pilot model needs from the sim. */
+export interface PilotWorld {
+  t: number;
+  weather: Weather;
+  qnh: number;
+  holdFor(fix: string): { inbound: number; turn: 'L' | 'R'; spd: number } | undefined;
+  onRouteEnd(ac: Aircraft, last: Leg): void;
+  onTouchdown(ac: Aircraft, rwy: Runway): void;
+  goAround(ac: Aircraft, reason: string): void;
+  runwayBusy(): boolean;
+  lvp: boolean;
+}
+
+export const GS_FT_PER_NM = 318.4; // 3° glidepath
+export const tas = (ias: number, alt: number) => ias * (1 + 0.017 * Math.max(0, alt) / 1000);
+
+export function turnRate(ac: Aircraft): number {
+  if (ac.perf.heli || ac.perf.fighter) return 3;
+  return Math.min(3, 508 / Math.max(60, tas(ac.ias, ac.alt)));
+}
+export function turnRadius(ac: Aircraft): number {
+  return tas(ac.ias, ac.alt) / (20 * Math.PI * turnRate(ac));
+}
+
+export function distToThr(p: XY, rwy: Runway) { return -alongTrack(p, rwy.thr, rwy.crs); }
+export function glideAlt(rwy: Runway, dthr: number) { return rwy.elevation + 50 + dthr * GS_FT_PER_NM; }
+
+/** Heading (true) that makes good the desired track given the wind at altitude. */
+function windCorrected(ac: Aircraft, trackTrue: number, w: Weather): number {
+  const wa = windAt(w, ac.alt);
+  const toward = (wa.dir + 180) * DEG;
+  const wx = Math.sin(toward) * wa.kt, wy = Math.cos(toward) * wa.kt;
+  const nx = Math.cos(trackTrue * DEG), ny = -Math.sin(trackTrue * DEG);
+  const wp = wx * nx + wy * ny;
+  const v = tas(ac.ias, ac.alt);
+  const wca = Math.asin(clamp(wp / Math.max(v, 1), -0.9, 0.9)) / DEG;
+  return norm360(trackTrue - wca);
+}
+
+export function speedTarget(ac: Aircraft, world: PilotWorld): number {
+  const pf = ac.perf;
+  if (ac.kind === 'vfr' || ac.kind === 'heli') return pf.vfrCruise ?? pf.vcruiseLow;
+  if (ac.emergency === 'engine') return Math.min(ac.spdAssigned ?? 200, 200);
+  const app = ac.app;
+  if (app && app.locCap) {
+    const d = distToThr(ac.p, app.rwy);
+    if (d <= 4.5) return pf.vapp;
+    if (ac.spdAssigned) {
+      if (ac.spdUntil && d > ac.spdUntil) return ac.spdAssigned;
+      if (!ac.spdUntil && d > 5) return ac.spdAssigned;
+      return pf.vapp;
+    }
+    if (d <= 7) return Math.max(pf.vapp, 160);
+    if (d <= 12) return Math.max(pf.vapp, 180);
+    return Math.max(pf.vminFlap, Math.min(ac.ias, 210));
+  }
+  if (ac.spdMin) return pf.vminClean;
+  if (ac.spdAssigned) return ac.spdAssigned;
+  // slow to 250 kt before passing FL100 (pilots plan the deceleration ahead)
+  let v = ac.alt < 11500 || ac.vs < -500 && ac.tgtAlt < 10000 ? Math.min(250, pf.vcruiseLow) : 280;
+  if (pf.fighter) v = ac.alt < 10000 ? 300 : 350;
+  if (ac.kind === 'dep' && ac.alt < 3000) v = pf.vminFlap + 40;
+  const leg = ac.route[0];
+  if (ac.mode === 'NAV' && leg?.spd) v = Math.min(v, leg.spd);
+  if (ac.mode === 'HOLD' && ac.hold) v = Math.min(v, world.holdFor(ac.hold.fix)?.spd ?? 230);
+  if (ac.kind === 'arr' && ac.app) {
+    const d = distToThr(ac.p, ac.app.rwy);
+    if (d < 12) v = Math.min(v, Math.max(pf.vminClean, 200));
+    else if (d < 20) v = Math.min(v, Math.max(pf.vminClean, 220));
+  }
+  return v;
+}
+
+function startHold(ac: Aircraft, world: PilotWorld, fix: string, p: XY) {
+  const h = world.holdFor(fix);
+  const inbound = h?.inbound ?? bearing(ac.p, p);
+  ac.mode = 'HOLD';
+  ac.hold = { fix, p, inbound, turn: h?.turn ?? 'R', phase: dist(ac.p, p) < 1 ? 'turnOut' : 'entry', tPhase: world.t };
+  ac.route = [];
+}
+export { startHold };
+
+/** Advance one aircraft by dt seconds. */
+export function stepAircraft(ac: Aircraft, world: PilotWorld, dt: number) {
+  const pf = ac.perf;
+  const w = world.weather;
+  let desired = ac.hdg;
+  let forceDir: 'L' | 'R' | undefined;
+
+  // ---- Lost communications: after 60 s on a vector, rejoin and approach
+  if (ac.radioFail && ac.lostCommT !== undefined && world.t - ac.lostCommT === 60 && ac.mode === 'HDG') {
+    world.onRouteEnd(ac, { fix: '__LOSTCOMM__', p: ac.p });
+  }
+
+  // ---- Approach capture
+  const app = ac.app;
+  if (app && !app.locCap && (ac.mode === 'HDG' || (ac.mode === 'NAV' && ac.route.length === 0))) {
+    const r = app.rwy;
+    const d = distToThr(ac.p, r);
+    const xte = crossTrack(ac.p, r.thr, r.crs);
+    const a = angDiff(r.crs, ac.trk);
+    if (d > 0.8 && d < 30 && Math.abs(a) < 100 && Math.abs(xte) < Math.max(1, d * Math.tan(35 * DEG))) {
+      const lead = turnRadius(ac) * (1 - Math.cos(Math.abs(a) * DEG)) + 0.12;
+      const converging = xte * a <= 0 || Math.abs(xte) < 0.15;
+      if (converging && Math.abs(xte) <= lead) {
+        ac.mode = 'LOC';
+        app.locCap = true;
+        app.capT = world.t;
+        ac.turnDir = undefined;
+      }
+    }
+  }
+
+  // ---- Lateral
+  switch (ac.mode) {
+    case 'HDG':
+      desired = ac.hdgAssigned ?? ac.hdg;
+      forceDir = ac.turnDir;
+      break;
+    case 'ORBIT':
+      desired = norm360(ac.hdg - turnRate(ac) * dt * 1.5);
+      forceDir = 'L';
+      break;
+    case 'NAV': {
+      const leg = ac.route[0];
+      if (!leg) { ac.mode = 'HDG'; ac.hdgAssigned = ac.hdg; break; }
+      const brg = bearing(ac.p, leg.p);
+      const d = dist(ac.p, leg.p);
+      const next = ac.route[1];
+      let antic = 0.25 + (ac.gs * dt) / 3600;
+      if (next) {
+        const turn = Math.abs(angDiff(brg, bearing(leg.p, next.p)));
+        antic = Math.max(antic, Math.min(4, turnRadius(ac) * Math.tan((Math.min(turn, 150) / 2) * DEG)));
+      }
+      if (d <= antic) {
+        const passed = ac.route.shift()!;
+        if (ac.route.length === 0) world.onRouteEnd(ac, passed);
+      }
+      const tgt = ac.route[0];
+      desired = tgt ? windCorrected(ac, bearing(ac.p, tgt.p), w) : ac.hdg;
+      break;
+    }
+    case 'HOLD': {
+      const h = ac.hold!;
+      const outbound = norm360(h.inbound + 180);
+      const dirSign = h.turn === 'L' ? -1 : 1;
+      switch (h.phase) {
+        case 'entry':
+          desired = windCorrected(ac, bearing(ac.p, h.p), w);
+          if (dist(ac.p, h.p) < 0.6) { h.phase = 'turnOut'; h.tPhase = world.t; }
+          break;
+        case 'turnOut':
+          desired = outbound; forceDir = h.turn;
+          if (Math.abs(angDiff(ac.hdg, outbound)) < 5) { h.phase = 'outbound'; h.tPhase = world.t; }
+          else desired = norm360(ac.hdg + dirSign * 90);
+          break;
+        case 'outbound':
+          desired = outbound;
+          if (world.t - h.tPhase >= 60) { h.phase = 'turnIn'; h.tPhase = world.t; }
+          break;
+        case 'turnIn':
+          forceDir = h.turn;
+          desired = norm360(ac.hdg + dirSign * 90);
+          if (Math.abs(angDiff(ac.hdg, h.inbound)) < 25) { h.phase = 'inbound'; h.tPhase = world.t; }
+          break;
+        case 'inbound':
+          desired = windCorrected(ac, bearing(ac.p, h.p), w);
+          if (dist(ac.p, h.p) < 0.4 || alongTrack(ac.p, h.p, h.inbound) > 0) { h.phase = 'turnOut'; h.tPhase = world.t; }
+          break;
+      }
+      break;
+    }
+    case 'LOC': {
+      const r = app!.rwy;
+      const xte = crossTrack(ac.p, r.thr, r.crs);
+      desired = windCorrected(ac, norm360(r.crs - clamp(xte * 45, -25, 25)), w);
+      break;
+    }
+  }
+
+  // ---- Turn
+  let diff = angDiff(ac.hdg, desired);
+  if (forceDir && Math.abs(diff) > 3) {
+    if (forceDir === 'L' && diff > 0) diff -= 360;
+    if (forceDir === 'R' && diff < 0) diff += 360;
+  } else if (ac.mode === 'HDG' && Math.abs(diff) <= 3) ac.turnDir = undefined;
+  const maxTurn = turnRate(ac) * dt;
+  ac.hdg = norm360(ac.hdg + clamp(diff, -maxTurn, maxTurn));
+
+  // ---- Vertical
+  let tgtAlt = ac.tgtAlt;
+  if (app?.locCap) {
+    const d = distToThr(ac.p, app.rwy);
+    const g = glideAlt(app.rwy, d);
+    if (!app.gsCap && ac.alt >= g - 60 && ac.alt <= g + 250) app.gsCap = true;
+    if (app.gsCap) tgtAlt = g;
+  }
+  const dAlt = tgtAlt - ac.alt;
+  let vsTgt = 0;
+  if (Math.abs(dAlt) > 5) {
+    if (dAlt > 0) {
+      let rate = pf.climbFpm * Math.max(0.35, 1 - ac.alt / 45000);
+      if (ac.emergency === 'engine') rate *= 0.35;
+      vsTgt = Math.min(rate, dAlt * 1.2 + 150);
+    } else {
+      let rate = pf.descentFpm * (ac.emergency === 'smoke' ? 1.8 : 1);
+      if (app?.gsCap) rate = Math.max(rate, ac.gs * 6);
+      const decelerating = ac.ias - speedTarget(ac, world) > 8;
+      if (decelerating && !app?.gsCap) rate *= 0.6;
+      vsTgt = -Math.min(rate, -dAlt * 1.2 + 150);
+    }
+  }
+  if (app?.gsCap) {
+    // stay on the path: compute the rate needed over the next second
+    const d1 = distToThr(ac.p, app.rwy) - (ac.gs * dt) / 3600;
+    const g1 = glideAlt(app.rwy, Math.max(0, d1));
+    if (ac.alt - g1 < 60) vsTgt = ((g1 - ac.alt) / dt) * 60;
+  }
+  const vsAcc = 600 * dt;
+  ac.vs += clamp(vsTgt - ac.vs, -vsAcc, vsAcc);
+  ac.alt += (ac.vs * dt) / 60;
+  if ((dAlt > 0 && ac.alt > tgtAlt && !app?.gsCap) || (dAlt < 0 && ac.alt < tgtAlt && !app?.gsCap)) { ac.alt = tgtAlt; ac.vs = 0; }
+
+  // ---- Speed
+  const sT = speedTarget(ac, world);
+  const dv = sT - ac.ias;
+  const desc = ac.vs < -1000;
+  const rate = dv > 0 ? pf.accel : pf.decel * (desc ? 0.5 : 1) * (app?.locCap ? 1.4 : 1);
+  ac.ias += clamp(dv, -rate * dt, rate * dt);
+
+  // ---- Position
+  const v = tas(ac.ias, ac.alt);
+  const wa = windAt(w, ac.alt);
+  const toward = (wa.dir + 180) * DEG;
+  const vx = Math.sin(ac.hdg * DEG) * v + Math.sin(toward) * wa.kt;
+  const vy = Math.cos(ac.hdg * DEG) * v + Math.cos(toward) * wa.kt;
+  ac.gs = Math.hypot(vx, vy);
+  ac.trk = norm360(Math.atan2(vx, vy) / DEG);
+  ac.p = { x: ac.p.x + (vx * dt) / 3600, y: ac.p.y + (vy * dt) / 3600 };
+
+  // ---- Approach gates and touchdown
+  if (app?.locCap) {
+    const r = app.rwy;
+    const d = distToThr(ac.p, r);
+    const g = glideAlt(r, Math.max(0, d));
+    if (d <= 4 && ac.stable4 === undefined) {
+      ac.stable4 = !(ac.alt > g + 300 || ac.ias > pf.vapp + 25 || !app.gsCap);
+      if (!ac.stable4 && !ac.lowPass) { world.goAround(ac, 'unstable'); return; }
+    }
+    if (ac.lowPass) {
+      if (d < 0.6) { world.goAround(ac, 'lowpass'); return; }
+    } else {
+      if (d <= 2 && ac.kind === 'arr' && ac.state !== 'transferred' && !ac.radioFail) { world.goAround(ac, 'noclearance'); return; }
+      if (d <= 0.3 && world.runwayBusy()) { world.goAround(ac, 'occupied'); return; }
+      if (d <= 0.05 || (d < 0.4 && ac.alt - r.elevation < 60)) { world.onTouchdown(ac, r); return; }
+    }
+  }
+
+  // ---- Bookkeeping
+  ac.flownNm += (ac.gs * dt) / 3600;
+  ac.fuelKg += (pf.fuelKgH * dt * Math.max(1, ac.formation)) / 3600;
+  if (ac.mode === 'HOLD') ac.holdSec += dt;
+  if (ac.kind === 'arr') {
+    const level = Math.abs(ac.vs) < 150;
+    const relevant = ac.alt < 9500 && ac.alt > 2000 && !app?.gsCap && ac.mode !== 'HOLD';
+    if (level && relevant) {
+      ac.levelSegT += dt;
+      if (ac.levelSegT === 90) ac.levelOffs++;
+    } else if (!level) ac.levelSegT = 0;
+    if (ac.alt < 3000 && Math.hypot(ac.p.x, ac.p.y) < 15 && !app?.locCap) ac.lowSec += dt;
+  }
+}
+
+/** Resolve a level to feet with the current QNH. */
+export const ft = (l: { ft?: number; fl?: number }, qnh: number) => levelToFt(l, qnh);
+export { move };
