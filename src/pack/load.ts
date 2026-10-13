@@ -22,9 +22,10 @@ export interface Runway {
   ils?: { ident: string; freq: string; cat: string }; rnp: boolean;
   ifFix: string; ifAlt: number; faf: string; fafAlt: number; missed: string[];
   contingency: boolean; notes?: string;
+  gpDeg?: number; tch?: number; missedAlt?: number; missedSpd?: number;
 }
 export interface Hold { fix: string; p: XY; inbound: number; turn: 'L' | 'R'; min: Level; max: Level; spd: number; atcDiscretion?: boolean }
-export interface Area { name: string; poly: XY[]; floor: Level; ceiling: Level; approx?: boolean; note?: string }
+export interface Area { name: string; poly: XY[]; floor: Level; ceiling: Level; approx?: boolean; note?: string; cls?: string; hours?: string }
 
 export interface Pack {
   spec: PackSpec;
@@ -46,6 +47,8 @@ export interface Pack {
   mva: { poly: XY[]; alt: number }[];
   vfrRoutes: { name: string; points: string[]; alt: number }[];
   mapLines: { name: string; pts: XY[]; style: string }[];
+  /** All TMA sub-areas when the pack lists them. */
+  tmaParts?: Area[];
 }
 
 export function loadPack(spec: PackSpec): Pack {
@@ -95,7 +98,7 @@ export function loadPack(spec: PackSpec): Pack {
     }
     return out;
   };
-  const area = (a: PackSpec['ctr']): Area => ({ name: a.name, poly: poly(a.poly), floor: parseLevel(a.floor)!, ceiling: parseLevel(a.ceiling)!, approx: a.approx, note: a.note });
+  const area = (a: PackSpec['ctr']): Area => ({ name: a.name, poly: poly(a.poly), floor: parseLevel(a.floor)!, ceiling: parseLevel(a.ceiling)!, approx: a.approx, note: a.note, cls: a.cls, hours: a.hours });
 
   const runways = new Map<string, Runway>();
   for (const r of spec.runways) {
@@ -103,6 +106,7 @@ export function loadPack(spec: PackSpec): Pack {
       id: r.id, thr: proj.toXY(parseLatLon(r.thr.lat, r.thr.lon)), crs: r.crsTrue, elevation: r.elevation, lengthM: r.lengthM,
       ils: r.ils, rnp: r.rnp, ifFix: r.if.fix, ifAlt: r.if.alt, faf: r.faf.fix, fafAlt: r.faf.alt, missed: r.missed,
       contingency: !!r.contingency, notes: r.notes,
+      gpDeg: r.gpDeg, tch: r.tch, missedAlt: r.missedAlt, missedSpd: r.missedSpd,
     });
   }
   return {
@@ -117,7 +121,18 @@ export function loadPack(spec: PackSpec): Pack {
     mva: spec.mva.map((m) => ({ alt: m.alt, poly: poly(m.poly) })),
     vfrRoutes: spec.vfrRoutes,
     mapLines: spec.mapLines.map((l) => ({ name: l.name, style: l.style, pts: l.points.map(fx) })),
+    tmaParts: spec.tmaParts?.map(area),
   };
+}
+
+/** Transition level from the published QNH table (ENR 1.7), or undefined when the pack has none. QNH is the whole-hPa value ATC passes. */
+export function tlFromTable(meta: PackSpec['meta'], qnh: number): number | undefined {
+  const row = meta.tlTable?.find((r) => qnh >= r.qnhMin && qnh <= r.qnhMax);
+  if (row) return row.fl;
+  if (!meta.tlTable?.length) return undefined;
+  const lo = meta.tlTable.reduce((a, b) => (a.qnhMin < b.qnhMin ? a : b));
+  const hi = meta.tlTable.reduce((a, b) => (a.qnhMax > b.qnhMax ? a : b));
+  return qnh < lo.qnhMin ? lo.fl : hi.fl;
 }
 
 export function mvaAt(pack: Pack, p: XY, pointInPolygon: (p: XY, poly: XY[]) => boolean): number {

@@ -24,13 +24,20 @@ export interface RunwaySpec {
   crsTrue: number;
   elevation: number;
   lengthM: number;
-  ils?: { ident: string; freq: string; cat: string };
+  ils?: { ident: string; freq: string; cat: string; gp?: string };
   rnp: boolean;
   if: { fix: string; alt: number };
   faf: { fix: string; alt: number };
   missed: string[]; // fixes after missed approach, ending at the hold fix
   contingency?: boolean;
   notes?: string;
+  /** Glide path angle, degrees (AD 2.19). */
+  gpDeg?: number;
+  /** Threshold crossing height / RDH, ft (AD 2.19, IAC coding). */
+  tch?: number;
+  /** Missed approach: altitude at the holding fix (ft) and speed limit (KIAS) from the IAC coding. */
+  missedAlt?: number;
+  missedSpd?: number;
 }
 
 export interface ProcedureSpec {
@@ -58,6 +65,10 @@ export interface HoldSpec {
   maxAlt: LevelSpec;
   maxSpd: number;
   atcDiscretion?: boolean;
+  /** Inbound track as published, magnetic (AD 2.22 holding table). */
+  inboundMag?: number;
+  /** Outbound leg, minutes. */
+  legMin?: number;
 }
 
 export type PolySpec = Array<{ lat: string; lon: string } | { arcCentre: { lat: string; lon: string }; radius: number; to: { lat: string; lon: string }; dir: 'cw' | 'ccw' }>;
@@ -69,6 +80,10 @@ export interface AreaSpec {
   ceiling: LevelSpec;
   approx?: boolean;
   note?: string;
+  /** ICAO airspace class (A-G), where the area is controlled airspace. */
+  cls?: string;
+  /** Activation, as published. */
+  hours?: string;
 }
 
 export interface MvaSpec { poly: PolySpec; alt: number }
@@ -92,6 +107,16 @@ export interface PackSpec {
     upstream: { name: string; callsign: string; freq: string }[];
     sources: string[];
     approximations: string[];
+    /** Transition level by QNH band (ENR 1.7). qnhMin..qnhMax inclusive, hPa. */
+    tlTable?: { qnhMin: number; qnhMax: number; fl: number }[];
+    /** Ground frequency (AD 2.18). */
+    gndFreq?: string;
+    /** SSR codes the unit assigns itself (ENR 1.6 code allocation). */
+    squawkBlock?: [string, string];
+    /** Effective date of the AIRAC cycle the data was checked against. */
+    effective?: string;
+    /** SID initial climb when QNH is at or below qnhMax (AD 2.22: FL070 when QNH 995 hPa or below). */
+    initialClimbLowQnh?: { qnhMax: number; level: LevelSpec };
   };
   fixes: Record<string, FixSpec>;
   runways: RunwaySpec[];
@@ -109,4 +134,6 @@ export interface PackSpec {
   mva: MvaSpec[];
   vfrRoutes: { name: string; points: string[]; alt: number }[];
   mapLines: { name: string; points: string[]; style: 'river' | 'border' | 'road' }[];
+  /** All published sub-areas of the TMA (ENR 2.1); `tma` is the H24 core used for drawing. */
+  tmaParts?: AreaSpec[];
 }
