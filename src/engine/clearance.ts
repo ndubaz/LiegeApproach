@@ -83,8 +83,9 @@ export function freqSpeech(f: string): string {
   return `${digits(a)} decimal ${digits(said)}`;
 }
 const U = (name: string, freq: string) => ({ text: `${name} ${freq}`, speech: `${name} ${freqSpeech(freq)}` });
+// Liège Tower 118.130 (8.33 kHz channel): EBLG AD 2.18, AIRAC effective 01 OCT 2026.
 const UNIT_NAME: Record<Unit, { text: string; speech: string }> = {
-  TWR: U('Tower', '118.130'),
+  TWR: U('Liège Tower', '118.130'),
   BRU: U('Brussels Control', '131.100'),
   MUAC: U('Maastricht', '132.755'),
   BEEK: U('Beek Approach', '123.980'),
@@ -131,6 +132,33 @@ export function levelVerb(l: Level, alt: number, qnh: number): 'descend' | 'clim
 }
 const qnhSpeech = (q: number) => `Q N H ${digits(q)}`;
 
+/**
+ * Phraseology style.
+ * Speech (what the controller and the pilots say on the frequency) always follows ICAO Doc 4444
+ * chapter 12 and Doc 9432: "descend to altitude 3,000 feet", "reduce speed to 180 knots".
+ * Flight levels are said without "to" ("climb flight level 090"), the common European practice that
+ * keeps "to" and "two" apart. `icaoText` makes the written transcript use the same words; it is off
+ * until the engine tests that pin the compact transcript ("descend 4,000 ft") are updated.
+ */
+export const PHRASE_STYLE = { icaoText: false };
+
+/** Level instruction words: verb plus level, as text and speech. "to" only before an altitude, never before a flight level or after "maintain". */
+function levelWords(verb: 'descend' | 'climb' | 'maintain', l: Level, icaoText = PHRASE_STYLE.icaoText): { t: string; s: string } {
+  const to = verb !== 'maintain' && l.fl === undefined;
+  const t = l.fl === undefined && icaoText ? `${verb}${to ? ' to' : ''} altitude ${levelText(l)}` : `${verb} ${levelText(l)}`;
+  return { t, s: `${verb}${to ? ' to' : ''} ${levelSpeech(l)}` };
+}
+
+/** Speed instruction words: "reduce speed to 180 knots", "increase speed to 220 knots", "maintain 160 knots". */
+function speedWords(spd: number, ias: number | undefined, until?: number, icaoText = PHRASE_STYLE.icaoText): { t: string; s: string } {
+  const verb = ias === undefined ? 'speed' : spd < ias - 3 ? 'reduce speed' : spd > ias + 3 ? 'increase speed' : 'maintain';
+  const to = verb === 'reduce speed' || verb === 'increase speed' ? ' to' : '';
+  return {
+    t: `${verb}${icaoText ? to : ''} ${spd} kt${until ? ` until ${until} DME` : ''}`,
+    s: `${verb}${to} ${digits(spd)} knots${until ? ` until ${digits(until)} D M E` : ''}`,
+  };
+}
+
 /** ATC phraseology for a clearance, as display text and as speech text. */
 export function phraseology(cl: Clearance, ctx: Ctx): { text: string; speech: string } {
   const t: string[] = [];
@@ -169,15 +197,16 @@ export function phraseology(cl: Clearance, ctx: Ctx): { text: string; speech: st
       case 'lvl': {
         const same = !!ctx.cleared && sameLevel(ctx.cleared, it.lvl) && Math.abs(levelFt(it.lvl, ctx.qnh) - ctx.alt) < 400;
         const verb = ctx.lvlVerb ?? (same ? 'maintain' : levelVerb(it.lvl, ctx.alt, ctx.qnh));
-        t.push(`${verb} ${levelText(it.lvl)}`);
-        s.push(`${verb} ${levelSpeech(it.lvl)}`);
+        const w = levelWords(verb, it.lvl);
+        t.push(w.t);
+        s.push(w.s);
         if (!qnhDone && it.lvl.ft !== undefined) { qnhDone = true; t.push(`QNH ${ctx.qnh}`); s.push(qnhSpeech(ctx.qnh)); }
         break;
       }
       case 'spd': {
-        const verb = ctx.ias === undefined ? 'speed' : it.spd < ctx.ias - 3 ? 'reduce speed' : it.spd > ctx.ias + 3 ? 'increase speed' : 'maintain';
-        t.push(`${verb} ${it.spd} kt${it.until ? ` until ${it.until} DME` : ''}`);
-        s.push(`${verb} ${digits(it.spd)} knots${it.until ? ` until ${digits(it.until)} D M E` : ''}`);
+        const w = speedWords(it.spd, ctx.ias, it.until);
+        t.push(w.t);
+        s.push(w.s);
         break;
       }
       case 'spdmin': t.push('reduce to minimum clean speed'); s.push('reduce to minimum clean speed'); break;
@@ -198,8 +227,8 @@ export function phraseology(cl: Clearance, ctx: Ctx): { text: string; speech: st
           s.push(`cleared to cross the control zone via ${r.route.join(', ')}, V F R, ${levelSpeech({ ft: alt })} or below${r.sqk ? `, squawk ${digits(r.sqk)}` : ''}, ${qnhSpeech(ctx.qnh)}, report ${last}`);
         } else if (r?.kind === 'direct' && r.fix) { t.push(`proceed direct ${r.fix}`); s.push(`proceed direct ${r.fix}`); }
         else if (r?.kind === 'climb' && r.level) {
-          const verb = levelVerb(r.level, ctx.alt, ctx.qnh);
-          t.push(`${verb} ${levelText(r.level)}`); s.push(`${verb} ${levelSpeech(r.level)}`);
+          const w = levelWords(levelVerb(r.level, ctx.alt, ctx.qnh), r.level);
+          t.push(w.t); s.push(w.s);
         } else { t.push('approved'); s.push('approved'); }
         break;
       }

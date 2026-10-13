@@ -1,12 +1,20 @@
 import type { PackSpec } from './types';
 
 // Liège (EBLG) location pack.
-// Source: skeyes eAIP Belgium & Luxembourg, EB AD 2 EBLG (AIRAC current Oct 2026),
-// EB ENR 5.2. Fix coordinates are copied verbatim from the AIP database coding
-// tables. Fixes outside the AIP AD section (KOK, NIK, GESLO, MAK, GILOM, RUDIX,
-// RITAX) are derived from the STAR coding tables (true course + distance).
-// Items marked approximate are NOT from the AIP and must be replaced from the
-// relevant chart before anyone relies on them.
+// Checked against the skeyes eAIP Belgium & Luxembourg, AIRAC cycle effective
+// 01 OCT 2026 (eAIP_Main; the 29 OCT 2026 edition was compared for EBLG AD 2):
+//   EB AD 2 EBLG  (AD 2.2, 2.12, 2.17, 2.18, 2.19, 2.22 incl. the procedure coding tables)
+//   EB ENR 2.1    (Liège TMA sub-areas, Brussels CTA remark)
+//   EB ENR 5.2    (TSA 26, 28, 29)
+//   EB ENR 1.7    (transition level table)
+//   EB ENR 1.6    (SSR code block)
+// Fix coordinates in the AD section are copied verbatim from the AIP coding
+// tables. En-route fixes that the AD section does not list (KOK, MAK, GILOM,
+// RUDIX, GESLO, RITAX) are solved by least squares from every published STAR
+// leg that touches them (initial true course and distance), residual 0.1 NM or
+// less. NIK is the centre of the 40 NM arc in ENR 2.1 (Liège TMA), which
+// reproduces the coded NIK legs exactly. Items marked approximate are not from
+// the AIP; docs/REALISM.md lists each one and why.
 
 export const EBLG: PackSpec = {
   meta: {
@@ -30,17 +38,32 @@ export const EBLG: PackSpec = {
       { name: 'Beek Approach', callsign: 'Beek Approach', freq: '123.980' },
     ],
     sources: [
-      'skeyes eAIP EB AD 2 EBLG',
-      'skeyes eAIP EB ENR 5.2',
+      'skeyes eAIP EB AD 2 EBLG, AIRAC effective 01 OCT 2026: https://ops.skeyes.be/html/belgocontrol_static/eaip/eAIP_Main/html/eAIP/EB-AD-2.EBLG-en-GB.html',
+      'skeyes eAIP EB ENR 2.1 (Liège TMA): https://ops.skeyes.be/html/belgocontrol_static/eaip/eAIP_Main/html/eAIP/EB-ENR-2.1-en-GB.html',
+      'skeyes eAIP EB ENR 5.2 (TSA 26/28/29): https://ops.skeyes.be/html/belgocontrol_static/eaip/eAIP_Main/html/eAIP/EB-ENR-5.2-en-GB.html',
+      'skeyes eAIP EB ENR 1.7 (transition level): https://ops.skeyes.be/html/belgocontrol_static/eaip/eAIP_Main/html/eAIP/EB-ENR-1.7-en-GB.html',
+      'skeyes eAIP EB ENR 1.6 (SSR codes 6330-6343 Liège): https://ops.skeyes.be/html/belgocontrol_static/eaip/eAIP_Main/html/eAIP/EB-ENR-1.6-en-GB.html',
     ],
     approximations: [
-      'TMA outline (AIP ENR 2.1 sub-areas not yet coded)',
-      'Minimum vectoring altitudes (ATCSMAC chart not yet coded)',
-      'TSA outlines (ENR 5.2 coordinates not yet coded)',
-      'Upstream unit frequencies',
-      'Sector radius and ceiling',
+      'Minimum vectoring altitudes: the ATC Surveillance Minimum Altitude Chart (AD 2.EBLG-ATCSMAC.01) could not be retrieved; areas follow the TMA floors and terrain',
+      'Sector ceiling FL095: the Liège TMA tops at FL055; the Brussels CTA above it (FL055 to FL095) is treated as delegated to Liège Approach',
+      'Upstream unit frequencies (Brussels Control, Maastricht, Beek)',
+      'Military unit name and frequency',
+      'TMA and TSA boundaries that follow national borders are drawn as straight lines between the published border points',
       'Meuse river, motorways, national borders and town positions on the video map',
     ],
+    tlTable: [
+      { qnhMin: 942.2, qnhMax: 959.4, fl: 75 },
+      { qnhMin: 959.5, qnhMax: 977.1, fl: 70 },
+      { qnhMin: 977.2, qnhMax: 995.0, fl: 65 },
+      { qnhMin: 995.1, qnhMax: 1013.2, fl: 60 },
+      { qnhMin: 1013.3, qnhMax: 1031.6, fl: 55 },
+      { qnhMin: 1031.7, qnhMax: 1050.3, fl: 50 },
+    ],
+    gndFreq: '121.915',
+    squawkBlock: ['6330', '6343'],
+    effective: '2026-10-01',
+    initialClimbLowQnh: { qnhMax: 995, level: 'F070' },
   },
 
   fixes: {
@@ -89,14 +112,15 @@ export const EBLG: PackSpec = {
     BUB: { lat: '505408.4N', lon: '0043217.1E', kind: 'vor' },
     GSY: { lat: '502714.1N', lon: '0042629.0E', kind: 'vor' },
     ONL: { lat: '504203.9N', lon: '0053257.0E', kind: 'ndb' },
-    // Derived from STAR coding (true course and distance between fixes)
-    RUDIX: { from: 'ALHUV', brg: 224.7, dist: 20.0, note: 'RUDIX→ALHUV 044.7°T 20.0 NM' },
-    GILOM: { from: 'ALHUV', brg: 282.2, dist: 27.2, note: 'GILOM→ALHUV 102.2°T 27.2 NM' },
-    MAK: { from: 'ALHUV', brg: 283.2, dist: 77.4, kind: 'vor', note: 'MAK→ALHUV 103.2°T 77.4 NM' },
-    KOK: { from: 'MAK', brg: 283.4, dist: 32.9, kind: 'vor', note: 'KOK→MAK 103.4°T 32.9 NM' },
-    NIK: { from: 'GILOM', brg: 317.7, dist: 33.4, kind: 'vor', note: 'NIK→GILOM 137.7°T 33.4 NM' },
-    GESLO: { from: 'LNO', brg: 159.7, dist: 32.5, note: 'GESLO→LNO 339.7°T 32.5 NM' },
-    RITAX: { from: 'GESLO', brg: 269.5, dist: 7.7, note: 'GESLO→RITAX 269.5°T 7.7 NM' },
+    // En-route fixes solved from the STAR coding tables: least squares on the initial
+    // true course and distance of every coded leg that touches the fix (residual <= 0.1 NM).
+    RUDIX: { lat: '502505.0N', lon: '0050604.2E', note: 'Solved from RUDIX-ALHUV 044.7/20.0, GSY-RUDIX 094.6/25.4, GIREL-RUDIX 300.4/19.6' },
+    GILOM: { lat: '504506.7N', lon: '0044630.1E', note: 'Solved from GILOM-ALHUV 102.2/27.2, CIV-GILOM 073.1/37.5, NIK-GILOM 137.7/33.4' },
+    MAK: { lat: '505754.7N', lon: '0032926.1E', note: 'Solved from MAK-ALHUV 103.2/77.4' },
+    KOK: { lat: '510544.4N', lon: '0023843.0E', kind: 'vor', note: 'Solved from KOK-MAK 103.4/32.9 and KOK-GSY 118.8/78.3' },
+    NIK: { lat: '510954N', lon: '0041102E', kind: 'vor', note: 'Centre of the ENR 2.1 Liège TMA 40 NM arc; reproduces NIK-GSY 167.0/43.8' },
+    GESLO: { lat: '500443.7N', lon: '0060022.9E', note: 'Solved from GESLO-LNO 339.7/32.5 and GESLO-RITAX 269.5/7.7' },
+    RITAX: { lat: '500439.7N', lon: '0054824.5E', note: 'Solved from GESLO-RITAX 269.5/7.7 and RITAX-GIREL 316.0/14.7' },
     // VFR reporting points (AIP AD 2.22)
     ROMEO: { lat: '504217N', lon: '0051736E', kind: 'vfr' },
     INDIA: { lat: '503530N', lon: '0052742E', kind: 'vfr' },
@@ -157,25 +181,30 @@ export const EBLG: PackSpec = {
   runways: [
     {
       id: '22L', thr: { lat: '503852.63N', lon: '0052739.08E' }, crsTrue: 225.16, elevation: 595, lengthM: 3690,
-      ils: { ident: 'ILG', freq: '109.350', cat: 'III' }, rnp: true,
+      ils: { ident: 'ILG', freq: '109.350', cat: 'III', gp: '331.850' }, rnp: true,
       if: { fix: 'LIBVA', alt: 2500 }, faf: { fix: 'L22LF', alt: 2500 }, missed: ['L22LT', 'ALHUV'],
+      gpDeg: 3, tch: 56, missedAlt: 3000, missedSpd: 215,
     },
     {
       id: '04R', thr: { lat: '503743.10N', lon: '0052548.82E' }, crsTrue: 45.16, elevation: 644, lengthM: 3690,
-      ils: { ident: 'IHH', freq: '108.750', cat: 'III' }, rnp: true,
+      ils: { ident: 'IHH', freq: '108.750', cat: 'III', gp: '330.350' }, rnp: true,
       if: { fix: 'TUTSO', alt: 3000 }, faf: { fix: 'L04RF', alt: 3000 }, missed: ['L04RT', 'ALHUV'],
+      gpDeg: 3, tch: 58, missedAlt: 3000, missedSpd: 215,
+      notes: 'Displaced threshold (3,046 m to the 22L threshold). The ILS is also flown from ALHUV via ABLAZ 2,500 ft, PIZVE 2,200 ft, KAQZI (IF) 2,100 ft',
     },
     {
       id: '22R', thr: { lat: '503845.91N', lon: '0052713.03E' }, crsTrue: 225.16, elevation: 577, lengthM: 2340,
-      ils: { ident: 'IBI', freq: '109.350', cat: 'I' }, rnp: true, contingency: true,
+      ils: { ident: 'IBI', freq: '109.350', cat: 'I', gp: '331.850' }, rnp: true, contingency: true,
       if: { fix: 'LAVTO', alt: 2500 }, faf: { fix: 'L22RF', alt: 2500 }, missed: ['L22RT', 'ALHUV'],
-      notes: 'Contingency runway, VMC and CAT I only; also TWY B',
+      gpDeg: 3, tch: 54, missedAlt: 3000, missedSpd: 215,
+      notes: 'Contingency runway, ILS CAT I only. Shares 109.350 with ILS 22L (ident IBI); the two runways are never in use together',
     },
     {
       id: '04L', thr: { lat: '503752.59N', lon: '0052548.50E' }, crsTrue: 45.16, elevation: 629, lengthM: 2340,
       rnp: true, contingency: true,
       if: { fix: 'MAPUP', alt: 3000 }, faf: { fix: 'L04LF', alt: 3000 }, missed: ['L04LT', 'ALHUV'],
-      notes: 'Contingency runway, no ILS',
+      gpDeg: 3, tch: 50, missedAlt: 3000, missedSpd: 215,
+      notes: 'Contingency runway, no ILS (RNP APCH only)',
     },
   ],
   strips: [
@@ -221,13 +250,14 @@ export const EBLG: PackSpec = {
   ],
 
   holds: [
-    { fix: 'ALHUV', inboundTrue: 45, turn: 'L', minAlt: 3000, maxAlt: 'F050', maxSpd: 230 },
-    { fix: 'GIREL', inboundTrue: 316, turn: 'L', minAlt: 'F060', maxAlt: 'F140', maxSpd: 250, atcDiscretion: true },
-    { fix: 'GSY', inboundTrue: 94.6, turn: 'R', minAlt: 'F070', maxAlt: 'F100', maxSpd: 250, atcDiscretion: true },
+    // AD 2.22 holding table and the HM coding: 1 minute legs; inbound 043/314/093 magnetic (variation 2°E)
+    { fix: 'ALHUV', inboundTrue: 45, turn: 'L', minAlt: 3000, maxAlt: 'F050', maxSpd: 230, inboundMag: 43, legMin: 1 },
+    { fix: 'GIREL', inboundTrue: 316, turn: 'L', minAlt: 'F060', maxAlt: 'F140', maxSpd: 250, atcDiscretion: true, inboundMag: 314, legMin: 1 },
+    { fix: 'GSY', inboundTrue: 94.6, turn: 'R', minAlt: 'F070', maxAlt: 'F100', maxSpd: 250, atcDiscretion: true, inboundMag: 93, legMin: 1 },
   ],
 
   ctr: {
-    name: 'Liège CTR', floor: 0, ceiling: 2500,
+    name: 'Liège CTR', floor: 0, ceiling: 2500, cls: 'D', hours: 'H24',
     poly: [
       { lat: '504512N', lon: '0052633E' },
       { arcCentre: { lat: '504137N', lon: '0053205E' }, radius: 5, to: { lat: '503802N', lon: '0053736E' }, dir: 'cw' },
@@ -235,39 +265,132 @@ export const EBLG: PackSpec = {
       { arcCentre: { lat: '503447N', lon: '0052110E' }, radius: 5, to: { lat: '503821N', lon: '0051538E' }, dir: 'cw' },
     ],
   },
+  // ENR 2.1: the H24 core of the Liège TMA (class C, 2,500 ft to FL055; top 4,500 ft while TRA23 is active).
+  // All five published sub-areas are in tmaParts; this one is drawn on the scope.
   tma: {
-    name: 'Liège TMA (approximate)', floor: 2500, ceiling: 'F095', approx: true,
+    name: 'Liège TMA One', floor: 2500, ceiling: 'F055', cls: 'C', hours: 'H24', note: 'Upper limit 4,500 ft when TRA23 is active',
     poly: [
-      { lat: '505700N', lon: '0050000E' }, { lat: '505700N', lon: '0055800E' },
-      { lat: '502100N', lon: '0055800E' }, { lat: '502100N', lon: '0050000E' },
+      { lat: '503101N', lon: '0050701E' }, { lat: '503814N', lon: '0050408E' }, { lat: '504817N', lon: '0051953E' },
+      { lat: '505150N', lon: '0052933E' }, { lat: '505223N', lon: '0053408E' }, { lat: '505000N', lon: '0053854E' },
+      { lat: '504935N', lon: '0053857E' }, { lat: '504851N', lon: '0053815E' }, { lat: '504611N', lon: '0054446E' },
+      { lat: '504519N', lon: '0054824E' }, { lat: '504503N', lon: '0055324E' }, { lat: '503917N', lon: '0054900E' },
+      { lat: '502426N', lon: '0052347E' },
+      { arcCentre: { lat: '502912N', lon: '0051650E' }, radius: 6.5, to: { lat: '503101N', lon: '0050701E' }, dir: 'cw' },
     ],
   },
-  tsas: [
+  // ENR 2.1 sub-areas in AIP order. Names One..Five are sim labels; the AIP rows carry no name column in the extract read.
+  // Times are UTC; the bracketed AIP times apply in summer.
+  tmaParts: [
     {
-      name: 'TSA28', floor: 0, ceiling: 'F105', approx: true, note: 'Elsenborn, ground to FL105',
-      poly: [{ lat: '503100N', lon: '0060300E' }, { lat: '503100N', lon: '0062400E' }, { lat: '501900N', lon: '0062400E' }, { lat: '501900N', lon: '0060300E' }],
+      name: 'Liège TMA One', floor: 2500, ceiling: 'F055', cls: 'C', hours: 'H24', note: 'Upper limit 4,500 ft when TRA23 is active',
+      poly: [
+        { lat: '503101N', lon: '0050701E' }, { lat: '503814N', lon: '0050408E' }, { lat: '504817N', lon: '0051953E' },
+        { lat: '505150N', lon: '0052933E' }, { lat: '505223N', lon: '0053408E' }, { lat: '505000N', lon: '0053854E' },
+        { lat: '504935N', lon: '0053857E' }, { lat: '504851N', lon: '0053815E' }, { lat: '504611N', lon: '0054446E' },
+        { lat: '504519N', lon: '0054824E' }, { lat: '504503N', lon: '0055324E' }, { lat: '503917N', lon: '0054900E' },
+        { lat: '502426N', lon: '0052347E' },
+        { arcCentre: { lat: '502912N', lon: '0051650E' }, radius: 6.5, to: { lat: '503101N', lon: '0050701E' }, dir: 'cw' },
+      ],
     },
     {
-      name: 'TSA29A', floor: 4500, ceiling: 'F145', approx: true, note: 'Ardennes, 4,500 ft to FL145',
-      poly: [{ lat: '501800N', lon: '0050600E' }, { lat: '501800N', lon: '0055100E' }, { lat: '500000N', lon: '0055100E' }, { lat: '500000N', lon: '0050600E' }],
+      name: 'Liège TMA Two', floor: 2000, ceiling: 2500, cls: 'C', hours: 'H24', note: 'North-east of the CTR, partly in the Amsterdam FIR',
+      poly: [
+        { lat: '503802N', lon: '0053736E' },
+        { arcCentre: { lat: '504137N', lon: '0053205E' }, radius: 5, to: { lat: '504512N', lon: '0052633E' }, dir: 'ccw' },
+        { lat: '505119N', lon: '0053615E' }, { lat: '505000N', lon: '0053854E' }, { lat: '504935N', lon: '0053857E' },
+        { lat: '504851N', lon: '0053815E' }, { lat: '504611N', lon: '0054446E' }, { lat: '504519N', lon: '0054824E' },
+        { lat: '504516N', lon: '0054926E' },
+      ],
     },
     {
-      name: 'TSA26', floor: 0, ceiling: 'F095', approx: true, note: 'Southern Ardennes, up to FL095',
-      poly: [{ lat: '495700N', lon: '0045400E' }, { lat: '495700N', lon: '0054800E' }, { lat: '494500N', lon: '0054800E' }, { lat: '494500N', lon: '0045400E' }],
+      name: 'Liège TMA Three', floor: 2500, ceiling: 'F055', cls: 'C', hours: 'Daily 2200-0500 UTC (summer 2100-0400), not with Beauvechain TMA or TRA23 active',
+      approx: true, note: 'Night ring around TMA One. The short Belgian-Dutch border segment is straightened',
+      poly: [
+        { lat: '503917N', lon: '0054900E' }, { lat: '502426N', lon: '0052347E' },
+        { arcCentre: { lat: '502912N', lon: '0051650E' }, radius: 6.5, to: { lat: '503101N', lon: '0050701E' }, dir: 'cw' },
+        { lat: '503814N', lon: '0050408E' }, { lat: '504817N', lon: '0051953E' }, { lat: '505150N', lon: '0052933E' },
+        { lat: '505223N', lon: '0053408E' }, { lat: '505000N', lon: '0053854E' }, { lat: '505247N', lon: '0053956E' },
+        { lat: '505525N', lon: '0053956E' }, { lat: '505530N', lon: '0052754E' }, { lat: '505107N', lon: '0050712E' },
+        { arcCentre: { lat: '510954N', lon: '0041102E' }, radius: 40, to: { lat: '503810N', lon: '0044949E' }, dir: 'cw' },
+        { lat: '503640N', lon: '0045629E' }, { lat: '502239N', lon: '0045928E' },
+        { arcCentre: { lat: '501521N', lon: '0045417E' }, radius: 8, to: { lat: '501843N', lon: '0050539E' }, dir: 'cw' },
+        { arcCentre: { lat: '503914N', lon: '0052814E' }, radius: 25, to: { lat: '501418N', lon: '0053224E' }, dir: 'ccw' },
+        { lat: '502118N', lon: '0054222E' }, { lat: '502627N', lon: '0053920E' },
+      ],
+    },
+    {
+      name: 'Liège TMA Four', floor: 3000, ceiling: 'F055', cls: 'C', hours: 'As TMA Three',
+      poly: [
+        { lat: '504503N', lon: '0055324E' }, { lat: '504459N', lon: '0055454E' }, { lat: '504508N', lon: '0055956E' },
+        { lat: '503042N', lon: '0055956E' }, { lat: '502627N', lon: '0053920E' },
+      ],
+    },
+    {
+      name: 'Liège TMA Five', floor: 3500, ceiling: 'F055', cls: 'C', hours: 'As TMA Three', approx: true,
+      note: 'TSA28A excluded. The Belgian-German border segment is straightened',
+      poly: [
+        { lat: '503042N', lon: '0055956E' }, { lat: '504513N', lon: '0055956E' }, { lat: '504515N', lon: '0060116E' },
+        { lat: '503325N', lon: '0061027E' },
+      ],
     },
   ],
+  // ENR 5.2 lateral limits as published (borders straightened between the published points).
+  // Activation is by NOTAM/AUP; the sim switches them with scenario events.
+  tsas: [
+    {
+      name: 'TSA28A', floor: 0, ceiling: 'F105', note: 'Elsenborn, GND to FL105', hours: 'NOTAM', approx: true,
+      poly: [{ lat: '503420N', lon: '0055956E' }, { lat: '503754N', lon: '0061308E' }, { lat: '502557N', lon: '0062234E' }, { lat: '502557N', lon: '0060648E' }, { lat: '503042N', lon: '0055956E' }],
+    },
+    {
+      name: 'TSA28B', floor: 0, ceiling: 'F105', note: 'Elsenborn south, GND to FL105', hours: 'NOTAM', approx: true,
+      poly: [{ lat: '503042N', lon: '0055956E' }, { lat: '502557N', lon: '0060648E' }, { lat: '502557N', lon: '0062234E' }, { lat: '501328N', lon: '0061006E' }, { lat: '501328N', lon: '0060341E' }, { lat: '501955N', lon: '0055956E' }],
+    },
+    {
+      name: 'TSA29A', floor: 4500, ceiling: 'F145', note: 'Ardennes, 4,500 ft to FL145 (base FL065 inside CBA16B), Monday to Friday by NOTAM', hours: 'NOTAM',
+      poly: [
+        { lat: '495835N', lon: '0040853E' }, { lat: '500338N', lon: '0040939E' }, { lat: '501425N', lon: '0043911E' },
+        { lat: '502231N', lon: '0045226E' }, { lat: '503001N', lon: '0052456E' }, { lat: '502627N', lon: '0053920E' },
+        { lat: '500426N', lon: '0055210E' }, { lat: '500120N', lon: '0055102E' }, { lat: '500118N', lon: '0054241E' },
+        { lat: '494735N', lon: '0054237E' }, { lat: '494137N', lon: '0051624E' }, { lat: '494030N', lon: '0051133E' },
+        { lat: '494040N', lon: '0045055E' }, { lat: '494920N', lon: '0041830E' },
+      ],
+    },
+    {
+      name: 'TSA29B', floor: 4500, ceiling: 'F095', note: 'East of TSA29A, only together with it; top may be lowered to FL075', hours: 'NOTAM', approx: true,
+      poly: [
+        { lat: '502627N', lon: '0053920E' }, { lat: '503042N', lon: '0055956E' }, { lat: '501955N', lon: '0055956E' },
+        { lat: '501324N', lon: '0060343E' }, { lat: '501011N', lon: '0060832E' }, { lat: '500748N', lon: '0060816E' },
+        { lat: '500426N', lon: '0055210E' },
+      ],
+    },
+    {
+      name: 'TSA26B', floor: 4500, ceiling: 'F095', note: 'Western Ardennes, 4,500 ft to FL095 (TSA26A above it, FL095 to UNL)', hours: 'NOTAM',
+      poly: [
+        { lat: '495854N', lon: '0054241E' }, { lat: '494735N', lon: '0054237E' }, { lat: '494137N', lon: '0051624E' },
+        { lat: '494030N', lon: '0051133E' }, { lat: '494040N', lon: '0045055E' }, { lat: '494920N', lon: '0041830E' },
+        { lat: '495835N', lon: '0040853E' }, { lat: '500853N', lon: '0041028E' }, { lat: '503205N', lon: '0040655E' },
+        { lat: '503335N', lon: '0041214E' }, { lat: '503813N', lon: '0043620E' }, { lat: '503519N', lon: '0045040E' },
+        { lat: '500118N', lon: '0054241E' },
+      ],
+    },
+  ],
+  // Minimum vectoring altitudes. The ATCSMAC chart (AD 2.EBLG-ATCSMAC.01, pages dated 21 MAR 2024)
+  // could not be retrieved. Approximation: the areas follow the published TMA floors (TMA One 2,500 ft,
+  // TMA Four 3,000 ft, TMA Five 3,500 ft) and terrain plus 1,000 ft obstacle clearance rounded up to
+  // 500 ft (Condroz 3,000 ft; Hautes Fagnes, Botrange 694 m, and the Ardennes 3,500 ft). The published
+  // procedure altitudes inside the 2,500 ft area (KAQZI 2,100 ft, PIZVE 2,200 ft) are lower still.
   mva: [
     {
       alt: 2500,
-      poly: [{ lat: '505700N', lon: '0045100E' }, { lat: '505700N', lon: '0055700E' }, { lat: '504200N', lon: '0055700E' }, { lat: '503712N', lon: '0053900E' }, { lat: '503300N', lon: '0052700E' }, { lat: '502700N', lon: '0050600E' }, { lat: '502400N', lon: '0045100E' }],
+      poly: [{ lat: '505700N', lon: '0045100E' }, { lat: '505700N', lon: '0055700E' }, { lat: '504503N', lon: '0055324E' }, { lat: '503917N', lon: '0054900E' }, { lat: '503712N', lon: '0053900E' }, { lat: '503300N', lon: '0052700E' }, { lat: '502700N', lon: '0050600E' }, { lat: '502400N', lon: '0045100E' }],
     },
     {
       alt: 3000,
-      poly: [{ lat: '504200N', lon: '0055700E' }, { lat: '504200N', lon: '0061200E' }, { lat: '502700N', lon: '0061200E' }, { lat: '501800N', lon: '0053600E' }, { lat: '501800N', lon: '0045100E' }, { lat: '502400N', lon: '0045100E' }, { lat: '502700N', lon: '0050600E' }, { lat: '503300N', lon: '0052700E' }, { lat: '503712N', lon: '0053900E' }],
+      poly: [{ lat: '504503N', lon: '0055324E' }, { lat: '504508N', lon: '0055956E' }, { lat: '503042N', lon: '0055956E' }, { lat: '501800N', lon: '0055000E' }, { lat: '501800N', lon: '0045100E' }, { lat: '502400N', lon: '0045100E' }, { lat: '502700N', lon: '0050600E' }, { lat: '503300N', lon: '0052700E' }, { lat: '503712N', lon: '0053900E' }, { lat: '503917N', lon: '0054900E' }],
     },
     {
       alt: 3500,
-      poly: [{ lat: '502700N', lon: '0061200E' }, { lat: '502700N', lon: '0063600E' }, { lat: '495400N', lon: '0063600E' }, { lat: '495400N', lon: '0045100E' }, { lat: '501800N', lon: '0045100E' }, { lat: '501800N', lon: '0053600E' }],
+      poly: [{ lat: '504508N', lon: '0055956E' }, { lat: '505000N', lon: '0055956E' }, { lat: '505000N', lon: '0063600E' }, { lat: '495400N', lon: '0063600E' }, { lat: '495400N', lon: '0045100E' }, { lat: '501800N', lon: '0045100E' }, { lat: '501800N', lon: '0055000E' }, { lat: '503042N', lon: '0055956E' }],
     },
   ],
   vfrRoutes: [
