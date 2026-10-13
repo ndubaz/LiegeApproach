@@ -188,7 +188,7 @@ const WAKE: DrillDef = {
   setup(sim, st) {
     const r = sim.rwy, p = st.p;
     const L = sim.find(p.csL)!, F = sim.find(p.csF)!;
-    const min = wakeMinNm(L.perf.recat, F.perf.recat, 2.5);
+    const min = wakeMinNm(L.perf.recat, F.perf.recat, sim.finalMinNm);
     // about 2.5 NM closes up at 210 kt: left alone, the gap ends near min + delta
     const g0 = min + 2.5 + p.delta;
     const pl = move(r.thr, r.crs + 180, p.dL), pf = move(r.thr, r.crs + 180, p.dL + g0);

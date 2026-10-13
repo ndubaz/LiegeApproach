@@ -215,7 +215,7 @@ describe('pilot on the ILS', () => {
     stepUntil(sim, () => false, 40);
     expect(a.app!.gsCap).toBe(false);
     sim.issue({ cs: 'DHK7', items: [{ k: 'brk' }, { k: 'hdg', hdg: 40, dir: 'L' }, { k: 'lvl', lvl: { ft: 7000 } }] });
-    expect(texts(sim, 'ATC').pop()).toBe('DHK7, cancel approach clearance, turn left heading 040, climb 7,000 ft, QNH 1018');
+    expect(texts(sim, 'ATC').pop()).toBe('DHK7, cancel approach clearance, turn left heading 040, climb to altitude 7,000 ft, QNH 1018');
     stepUntil(sim, () => !a.app, 20);
     expect(a.app).toBeUndefined();
     expect(a.mode).toBe('HDG');
@@ -251,7 +251,7 @@ describe('holding discipline', () => {
     expect(sim.find('AAA1')!.recat).toBe('B');
     stepUntil(sim, () => sim.find('AAA1')!.state === 'assumed' && sim.find('BBB2')!.state === 'assumed', 60);
     sim.issue({ cs: 'AAA1', items: [{ k: 'hold', fix: 'ALHUV' }, { k: 'lvl', lvl: { ft: 4000 } }] });
-    expect(texts(sim, 'ATC').pop()).toBe('AAA1, hold at ALHUV as published, no delay expected, descend 4,000 ft, QNH 1018');
+    expect(texts(sim, 'ATC').pop()).toBe('AAA1, hold at ALHUV as published, no delay expected, descend to altitude 4,000 ft, QNH 1018');
     sim.step(); sim.step();
     const w = sim.issue({ cs: 'BBB2', items: [{ k: 'hold', fix: 'ALHUV' }, { k: 'lvl', lvl: { fl: 60 } }] });
     expect(w.warnings.some((x) => x.includes('holding maximum'))).toBe(true);
@@ -273,9 +273,9 @@ describe('phraseology', () => {
   const ctx = { alt: 6000, qnh: 1018, hdgMag: 200, ias: 230 };
   const say = (items: Item[], c: Partial<Ctx> = {}) => phraseology({ cs: 'QTR8125', items }, { ...ctx, ...c }).text;
   it('QNH with the first altitude, speed verbs, minimum clean speed', () => {
-    expect(say([{ k: 'lvl', lvl: { ft: 4000 } }], { qnhSay: true })).toBe('QTR8125, descend 4,000 ft, QNH 1018');
-    expect(say([{ k: 'spd', spd: 210 }])).toBe('QTR8125, reduce speed 210 kt');
-    expect(say([{ k: 'spd', spd: 250 }])).toBe('QTR8125, increase speed 250 kt');
+    expect(say([{ k: 'lvl', lvl: { ft: 4000 } }], { qnhSay: true })).toBe('QTR8125, descend to altitude 4,000 ft, QNH 1018');
+    expect(say([{ k: 'spd', spd: 210 }])).toBe('QTR8125, reduce speed to 210 kt');
+    expect(say([{ k: 'spd', spd: 250 }])).toBe('QTR8125, increase speed to 250 kt');
     expect(say([{ k: 'spd', spd: 230 }])).toBe('QTR8125, maintain 230 kt');
     expect(say([{ k: 'spdmin' }])).toBe('QTR8125, reduce to minimum clean speed');
   });
@@ -294,17 +294,17 @@ describe('phraseology', () => {
   });
   it("a wrong readback keeps the controller's verb", () => {
     const rb = readback('QTR8125', [{ k: 'lvl', lvl: { ft: 5000 } }], { ...ctx, alt: 5500 }, { idx: 0, item: { k: 'lvl', lvl: { ft: 6000 } } });
-    expect(rb.text).toBe('descend 6,000 ft, QTR8125');
+    expect(rb.text).toBe('descend to altitude 6,000 ft, QTR8125');
   });
   it('in the sim: QNH only once, vectoring only on the first heading', () => {
     const sim = new Sim(pack, scenario('22L', [ARR('DHK7', { callNow: true })], 10));
     stepUntil(sim, () => sim.find('DHK7')?.state === 'assumed', 30);
     sim.forceWrong.clear();
     sim.issue({ cs: 'DHK7', items: [{ k: 'hdg', hdg: 270, dir: 'L' }, { k: 'lvl', lvl: { ft: 5000 } }] });
-    expect(texts(sim, 'ATC').pop()).toBe('DHK7, turn left heading 270, vectoring for ILS approach runway 22L, descend 5,000 ft, QNH 1018');
+    expect(texts(sim, 'ATC').pop()).toBe('DHK7, turn left heading 270, vectoring for ILS approach runway 22L, descend to altitude 5,000 ft, QNH 1018');
     stepUntil(sim, () => !sim.readbackPending('DHK7') && !sim.freqBusy(), 30);
     sim.issue({ cs: 'DHK7', items: [{ k: 'hdg', hdg: 240 }, { k: 'lvl', lvl: { ft: 4000 } }] });
-    expect(texts(sim, 'ATC').pop()).toBe('DHK7, fly heading 240, descend 4,000 ft');
+    expect(texts(sim, 'ATC').pop()).toBe('DHK7, fly heading 240, descend to altitude 4,000 ft');
   });
 });
 

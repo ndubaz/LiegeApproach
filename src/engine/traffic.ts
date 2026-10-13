@@ -302,7 +302,7 @@ export function hotStart(spawns: SpawnSpec[], at = 2) {
 /** Session cap: 15 minutes after the last spawn, 25 after a last arrival (measured 15 to 19 min on the full published procedure, more with holding). The engine ends the session earlier once traffic is complete. */
 export function durationFor(spawns: SpawnSpec[]): number {
   let end = 0;
-  for (const s of spawns) end = Math.max(end, s.t + (s.kind === 'arr' ? 25 : 15) * 60);
+  for (const s of spawns) end = Math.max(end, s.t + (s.kind === 'arr' ? 30 : 15) * 60);
   return Math.max(10, Math.ceil(end / 60));
 }
 

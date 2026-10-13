@@ -1,5 +1,5 @@
 import { alongTrack, angDiff, bearing, crossTrack, dist, move, norm360, pointInPolygon, type XY } from '../geo';
-import { levelToFt, mvaAt, type Leg, type Level, type Pack, type Runway } from '../pack/load';
+import { levelToFt, mvaAt, parseLevel, tlFromTable, type Leg, type Level, type Pack, type Runway } from '../pack/load';
 import { airtime, levelSpeech, levelText, mergeItem, phraseology, readback, releasePhrase, telephony, unitName, digits, type Clearance, type Ctx, type Item } from './clearance';
 import { PERF, wakeMinNm, type Recat } from './perf';
 import { distToThr, glideAlt, locWindowNm, startHold, stepAircraft, type PilotWorld } from './pilot';
@@ -115,7 +115,7 @@ export class Sim implements PilotWorld {
     this.rng = new Rng(sc.seed);
     this.weather = parseMetar(sc.metar);
     this.qnh = this.weather.qnh;
-    this.tl = transitionLevel(this.qnh, pack.meta.transitionAltitude);
+    this.tl = tlFromTable(pack.meta, this.qnh) ?? transitionLevel(this.qnh, pack.meta.transitionAltitude);
     this.lvp = isLvp(this.weather);
     this.runway = sc.runway ?? selectRunway(pack, this.weather);
     this.atisIdx = 10 + (sc.seed % 8);
@@ -142,6 +142,8 @@ export class Sim implements PilotWorld {
   // ---------------- public helpers ----------------
   get atis() { return ATIS_LETTERS[this.atisIdx % 26]; }
   get durationS() { return this.sc.durationMin * 60; }
+  /** Minimum on the same final: 2.5 NM only where the unit is approved for it, else 3 NM. */
+  get finalMinNm() { return this.pack.meta.reducedFinalSep ? 2.5 : 3; }
   get rwy(): Runway { return this.pack.runways.get(this.runway)!; }
   utc(t = this.t): string {
     const [h, m] = this.sc.startUtc.split(':').map(Number);
@@ -791,7 +793,8 @@ export class Sim implements PilotWorld {
     const r = this.rwy;
     const lenNm = r.lengthM / 1852;
     const p = move(r.thr, r.crs, lenNm + 1.2);
-    const level = rel?.lvl ?? sid.initialClimb;
+    const low = this.pack.meta.initialClimbLowQnh;
+    const level = rel?.lvl ?? (low && this.qnh <= low.qnhMax ? parseLevel(low.level)! : sid.initialClimb);
     const ac = this.base({ ...spec, level, spd: spec.spd ?? (PERF[spec.type]?.vminFlap ?? 160) + 20 }, p, r.elevation + 1300, r.crs);
     ac.vs = 2000;
     ac.route = sid.legs.map((l) => ({ ...l }));
@@ -1252,7 +1255,7 @@ export class Sim implements PilotWorld {
       const vfr = ac.rules === 'VFR';
       const route = r.route ?? ((ac as any)._plannedRoute as string[] | undefined);
       let sqk: string | undefined;
-      if (r.kind === 'crossing' && vfr && has('appr')) sqk = (ac as any)._xsqk ?? ((ac as any)._xsqk = `70${ac.id % 8}${(ac.id * 3 + 1) % 8}`);
+      if (r.kind === 'crossing' && vfr && has('appr')) sqk = (ac as any)._xsqk ?? ((ac as any)._xsqk = ac.id % 12 < 8 ? `633${ac.id % 12}` : `634${(ac.id % 12) - 8}`);
       const vr = route ? this.pack.vfrRoutes.find((v) => v.points.join() === route.join()) : undefined;
       ctx.req = { kind: r.kind, route, vfr, sqk, alt: vr?.alt ?? 1500, fix: r.fix, level: r.level };
     }
@@ -1546,8 +1549,9 @@ export class Sim implements PilotWorld {
     ac.mode = 'NAV';
     (ac as any)._holdAt = r.missed[r.missed.length - 1];
     ac.app = undefined;
-    ac.cleared = ac.cflSys = { ft: 3000 }; ac.tgtAlt = 3000;
-    ac.spdAssigned = undefined; ac.spdUntil = undefined; ac.stable4 = undefined;
+    const mAlt = r.missedAlt ?? 3000;
+    ac.cleared = ac.cflSys = { ft: mAlt }; ac.tgtAlt = mAlt;
+    ac.spdAssigned = r.missedSpd; ac.spdUntil = undefined; ac.stable4 = undefined;
     const why: Record<string, string> = { unstable: 'unstable approach', noclearance: 'no landing clearance', occupied: 'runway occupied', forced: 'instructed by Tower' };
     const cost = reason === 'unstable' ? 35 : reason === 'noclearance' ? 40 : reason === 'forced' ? 0 : 30;
     const comp: Comp = reason === 'unstable' ? 'TRAF' : reason === 'noclearance' ? 'CORD' : reason === 'forced' ? 'NONR' : 'SEPC';
@@ -1596,7 +1600,7 @@ export class Sim implements PilotWorld {
     const prev = this.lastLanding.get(r.id);
     if (prev && prev.cs !== ac.cs) {
       const gap = prev.behind.get(ac.cs) ?? (((this.t - prev.t) * ac.perf.vapp) / 3600);
-      if (gap < 15) this.spacing.push({ leader: prev.cs, follower: ac.cs, gap, min: wakeMinNm(prev.recat, ac.perf.recat, 2.5), t: this.t, rwy: r.id });
+      if (gap < 15) this.spacing.push({ leader: prev.cs, follower: ac.cs, gap, min: wakeMinNm(prev.recat, ac.perf.recat, this.finalMinNm), t: this.t, rwy: r.id });
     }
     const behind = new Map<string, number>();
     for (const o of this.aircraft) {
@@ -1779,7 +1783,7 @@ export class Sim implements PilotWorld {
     const raw = buildMetar(this.pack.meta.icao, w, '12' + hh);
     this.weather = { ...w, raw };
     this.qnh = w.qnh;
-    this.tl = transitionLevel(this.qnh, this.pack.meta.transitionAltitude);
+    this.tl = tlFromTable(this.pack.meta, this.qnh) ?? transitionLevel(this.qnh, this.pack.meta.transitionAltitude);
     const was = this.lvp;
     this.lvp = isLvp(this.weather);
     this.atisIdx++;
@@ -1860,7 +1864,7 @@ export class Sim implements PilotWorld {
         const lat = dist(a.p, b.p);
         const vert = Math.abs(a.alt - b.alt);
         const sameFinal = a.app?.locCap && b.app?.locCap && a.app.rwy.id === b.app.rwy.id && Math.min(distToThr(a.p, a.app.rwy), distToThr(b.p, b.app.rwy)) < 10;
-        const latMin = sameFinal ? 2.5 : 3;
+        const latMin = sameFinal ? this.finalMinNm : 3;
         if (lat < latMin - 0.02 && vert < EPS_VERT) { seen.add('los:' + k); this.openOrUpdate('los:' + k, 'los', a.cs, b.cs, lat, vert, latMin); }
         // prediction (MTCD-like 120 s) and STCA (60 s)
         if (lat < 25 && !sameFinal) {
@@ -1886,8 +1890,8 @@ export class Sim implements PilotWorld {
           const da = distToThr(a.p, a.app.rwy), db = distToThr(b.p, b.app.rwy);
           const [lead, foll] = da < db ? [a, b] : [b, a];
           const gap = Math.abs(db - da);
-          const min = wakeMinNm(lead.perf.recat, foll.perf.recat, 2.5);
-          if (min > (sameFinal ? 2.5 : 3) && gap < min - 0.05 && Math.max(da, db) < 12) {
+          const min = wakeMinNm(lead.perf.recat, foll.perf.recat, this.finalMinNm);
+          if (min > (sameFinal ? this.finalMinNm : 3) && gap < min - 0.05 && Math.max(da, db) < 12) {
             const wk = 'wk:' + k;
             seen.add(wk);
             this.openOrUpdate(wk, 'wake', foll.cs, lead.cs, gap, 0, min);

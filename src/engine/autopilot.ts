@@ -97,7 +97,7 @@ export function autoControl(sim: Sim) {
         const want = rw.ifAlt + 1000 * depth;
         if ((nearAlh || depth > 0) && sim.ftOf(ac.cleared) > want + 50) { send([{ k: 'lvl', lvl: { ft: want } }, { k: 'app', app: 'ILS', rwy: rw.id }]); continue; }
         if (leader) {
-          const need = wakeMinNm(leader.perf.recat, ac.perf.recat, 3) + 2;
+          const need = wakeMinNm(leader.perf.recat, ac.perf.recat, 3) + 2.5;
           const gap = remainNm(sim, ac) - remainNm(sim, leader);
           const minSpd = distToThr(ac.p, rw) < 15 ? Math.max(ac.perf.vminFlap, 160) : ac.perf.vminClean;
           if (gap < need + 4) {
@@ -118,7 +118,7 @@ export function autoControl(sim: Sim) {
       if (k === 0) {
         const leaderCs = S.released[S.released.length - 1];
         const leader = leaderCs ? live(leaderCs) : undefined;
-        const need = leader ? wakeMinNm(leader.perf.recat, ac.perf.recat, 3) + 7 : 0;
+        const need = leader ? wakeMinNm(leader.perf.recat, ac.perf.recat, 3) + 8 : 0;
         if (!leader || remainNm(sim, ac) - remainNm(sim, leader) >= need) {
           send(approach);
           S.released.push(ac.cs);

@@ -36,7 +36,7 @@ export function turnRadius(ac: Aircraft): number {
 export const locWindowNm = (d: number) => Math.max(0.3, d * 0.15);
 
 export function distToThr(p: XY, rwy: Runway) { return -alongTrack(p, rwy.thr, rwy.crs); }
-export function glideAlt(rwy: Runway, dthr: number) { return rwy.elevation + 50 + dthr * GS_FT_PER_NM; }
+export function glideAlt(rwy: Runway, dthr: number) { return rwy.elevation + (rwy.tch ?? 50) + dthr * GS_FT_PER_NM; }
 
 /** Heading (true) that makes good the desired track given the wind at altitude. */
 function windCorrected(ac: Aircraft, trackTrue: number, w: Weather): number {

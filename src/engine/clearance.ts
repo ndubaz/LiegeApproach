@@ -144,7 +144,7 @@ const qnhSpeech = (q: number) => `Q N H ${digits(q)}`;
  * keeps "to" and "two" apart. `icaoText` makes the written transcript use the same words; it is off
  * until the engine tests that pin the compact transcript ("descend 4,000 ft") are updated.
  */
-export const PHRASE_STYLE = { icaoText: false };
+export const PHRASE_STYLE = { icaoText: true };
 
 /** Level instruction words: verb plus level, as text and speech. "to" only before an altitude, never before a flight level or after "maintain". */
 function levelWords(verb: 'descend' | 'climb' | 'maintain', l: Level, icaoText = PHRASE_STYLE.icaoText): { t: string; s: string } {

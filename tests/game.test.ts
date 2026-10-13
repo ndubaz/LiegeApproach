@@ -121,13 +121,13 @@ describe('free-play traffic generation', () => {
 });
 
 describe('challenges', () => {
-  it('every challenge starts hot and is capped 15 to 25 min after its last spawn', () => {
+  it('every challenge starts hot and is capped 15 to 30 min after its last spawn', () => {
     for (const sc of CHALLENGES) {
       const first = [...sc.spawns].sort((a, b) => a.t - b.t)[0];
       expect(first.t, sc.id).toBeLessThanOrEqual(5);
       expect(first.callNow, sc.id).toBe(true);
       const last = Math.max(...sc.spawns.map((s) => s.t));
-      expect(sc.durationMin * 60 - last, sc.id).toBeLessThanOrEqual(26 * 60);
+      expect(sc.durationMin * 60 - last, sc.id).toBeLessThanOrEqual(31 * 60);
       expect(handoverViolations(pack, sc.spawns), sc.id).toEqual([]);
     }
   });

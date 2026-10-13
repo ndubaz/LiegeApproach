@@ -162,7 +162,7 @@ describe('validation and phraseology', () => {
     a.awaitingSince = undefined;
     a.cleared = a.cflSys = { ft: 3000 }; a.alt = 2950; a.tgtAlt = 3000;
     expect(sim.validate({ cs: 'TST1', items: [{ k: 'lvl', lvl: { ft: 3000 } }] })).toContain('Already cleared to 3,000 ft');
-    expect(sim.previewPhrase({ cs: 'TST1', items: [{ k: 'lvl', lvl: { ft: 3000 } }] })!.text).toMatch(/maintain 3,000 ft/);
+    expect(sim.previewPhrase({ cs: 'TST1', items: [{ k: 'lvl', lvl: { ft: 3000 } }] })!.text).toMatch(/maintain altitude 3,000 ft/);
     const ctx = { alt: 5000, qnh: 1018, hdgMag: 0 };
     expect(readback('TST1', [{ k: 'deny' }], ctx).text).toBe('roger, TST1');
     expect(readback('TST1', [{ k: 'deny' }], ctx).text).not.toMatch(/unable/);

@@ -39,11 +39,11 @@ export const PERF: Record<string, Perf> = {
   A306: P({ type: 'A306', name: 'A300-600F', recat: 'C', wake: 'H', vapp: 140, vminClean: 210, vminFlap: 160, vcruiseLow: 250, climbFpm: 2200, descentFpm: 2000, accel: 1.1, decel: 0.75, fuelKgH: 5200 }),
   E3TF: P({ type: 'E3TF', name: 'E-3A Sentry', recat: 'C', wake: 'H', vapp: 145, vminClean: 230, vminFlap: 170, vcruiseLow: 250, climbFpm: 1500, descentFpm: 1800, accel: 0.8, decel: 0.6, fuelKgH: 6500 }),
   A400: P({ type: 'A400', name: 'A400M', recat: 'C', wake: 'H', vapp: 120, vminClean: 180, vminFlap: 140, vcruiseLow: 250, climbFpm: 2000, descentFpm: 2000, accel: 1.2, decel: 1.0, fuelKgH: 3800 }),
-  B752: P({ type: 'B752', name: 'B757-200F', recat: 'D', wake: 'M', vapp: 135, vminClean: 200, vminFlap: 150, vcruiseLow: 250, climbFpm: 3000, descentFpm: 2300, accel: 1.4, decel: 0.9, fuelKgH: 3200 }),
+  B752: P({ type: 'B752', name: 'B757-200F', recat: 'C', wake: 'M', vapp: 135, vminClean: 200, vminFlap: 150, vcruiseLow: 250, climbFpm: 3000, descentFpm: 2300, accel: 1.4, decel: 0.9, fuelKgH: 3200 }),
   C30J: P({ type: 'C30J', name: 'C-130J', recat: 'D', wake: 'M', vapp: 120, vminClean: 160, vminFlap: 130, vcruiseLow: 220, climbFpm: 1800, descentFpm: 1800, accel: 1.0, decel: 1.0, fuelKgH: 2300 }),
-  A321: P({ type: 'A321', name: 'A321', recat: 'E', wake: 'M', vapp: 140, vminClean: 210, vminFlap: 155, vcruiseLow: 250, climbFpm: 2800, descentFpm: 2300, accel: 1.5, decel: 1.0, fuelKgH: 2600 }),
-  A320: P({ type: 'A320', name: 'A320', recat: 'E', wake: 'M', vapp: 135, vminClean: 200, vminFlap: 150, vcruiseLow: 250, climbFpm: 3000, descentFpm: 2300, accel: 1.5, decel: 1.0, fuelKgH: 2400 }),
-  B738: P({ type: 'B738', name: 'B737-800', recat: 'E', wake: 'M', vapp: 145, vminClean: 210, vminFlap: 160, vcruiseLow: 250, climbFpm: 2800, descentFpm: 2300, accel: 1.5, decel: 1.0, fuelKgH: 2500 }),
+  A321: P({ type: 'A321', name: 'A321', recat: 'D', wake: 'M', vapp: 140, vminClean: 210, vminFlap: 155, vcruiseLow: 250, climbFpm: 2800, descentFpm: 2300, accel: 1.5, decel: 1.0, fuelKgH: 2600 }),
+  A320: P({ type: 'A320', name: 'A320', recat: 'D', wake: 'M', vapp: 135, vminClean: 200, vminFlap: 150, vcruiseLow: 250, climbFpm: 3000, descentFpm: 2300, accel: 1.5, decel: 1.0, fuelKgH: 2400 }),
+  B738: P({ type: 'B738', name: 'B737-800', recat: 'D', wake: 'M', vapp: 145, vminClean: 210, vminFlap: 160, vcruiseLow: 250, climbFpm: 2800, descentFpm: 2300, accel: 1.5, decel: 1.0, fuelKgH: 2500 }),
   E190: P({ type: 'E190', name: 'E190', recat: 'E', wake: 'M', vapp: 130, vminClean: 190, vminFlap: 145, vcruiseLow: 250, climbFpm: 3000, descentFpm: 2300, accel: 1.6, decel: 1.1, fuelKgH: 2000 }),
   F35: P({ type: 'F35', name: 'F-35A', recat: 'E', wake: 'M', vapp: 150, vminClean: 220, vminFlap: 170, vcruiseLow: 300, climbFpm: 12000, descentFpm: 5000, accel: 4, decel: 3, fuelKgH: 3000, fighter: true }),
   F16: P({ type: 'F16', name: 'F-16AM', recat: 'E', wake: 'M', vapp: 145, vminClean: 220, vminFlap: 170, vcruiseLow: 300, climbFpm: 12000, descentFpm: 5000, accel: 4, decel: 3, fuelKgH: 3000, fighter: true }),
@@ -59,8 +59,8 @@ export const PERF: Record<string, Perf> = {
 const RECAT_NM: Record<string, number> = {
   AA: 3, AB: 4, AC: 5, AD: 5, AE: 6, AF: 8,
   BB: 3, BC: 4, BD: 4, BE: 5, BF: 7,
-  CD: 3, CE: 3.5, CF: 6,
-  DF: 5, EF: 4,
+  CD: 3, CE: 4, CF: 6,
+  DF: 5, EF: 4, FF: 3,
 };
 export function wakeMinNm(leader: Recat, follower: Recat, radarMin = 3): number {
   return Math.max(RECAT_NM[leader + follower] ?? 0, radarMin);

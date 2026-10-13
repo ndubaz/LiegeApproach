@@ -117,6 +117,8 @@ export interface PackSpec {
     effective?: string;
     /** SID initial climb when QNH is at or below qnhMax (AD 2.22: FL070 when QNH 995 hPa or below). */
     initialClimbLowQnh?: { qnhMax: number; level: LevelSpec };
+    /** 2.5 NM on the same final approach is approved at this unit (ICAO Doc 4444 8.7.4.4). */
+    reducedFinalSep?: boolean;
   };
   fixes: Record<string, FixSpec>;
   runways: RunwaySpec[];
