@@ -62,7 +62,7 @@ export class Game {
     this.scope = new Scope(canvas, this.sim, settings, {
       select: (cs) => this.select(cs),
       item: (cs, it) => { if (this.cs !== cs) this.select(cs); this.addItem(it); },
-      field: (cs, f, at) => { if (this.cs !== cs) this.select(cs); this.openPicker(f === 'lvl' ? 'lvl' : f === 'spd' ? 'spd' : 'app', at); },
+      field: (cs, f, at) => { if (this.cs !== cs) this.select(cs); this.openPicker(f === 'lvl' ? 'lvl' : f === 'spd' ? 'spd' : f === 'hdg' ? 'hdg' : 'app', at); },
       longPress: (cs) => { this.select(cs); this.openPicker('more'); },
       emptyTap: () => this.closePicker(),
     });
