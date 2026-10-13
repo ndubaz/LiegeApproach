@@ -9,13 +9,16 @@ import { registerSW } from 'virtual:pwa-register';
 import { loadPack } from './pack/load';
 import { EBLG } from './pack/eblg';
 import { CHALLENGES } from './engine/scenarios';
-import { freePlay, type FreePlayOpts } from './engine/traffic';
+import { dailyShift, freePlay, type FreePlayOpts } from './engine/traffic';
+import { track } from './engine/assess';
+import { autoControl } from './engine/autopilot';
+import type { Sim } from './engine/sim';
 import type { Scenario } from './engine/types';
 import type { Clearance } from './engine/clearance';
-import { Game } from './ui/game';
+import { Game, type GameOpts } from './ui/game';
 import { Radio } from './ui/audio';
 import { loadSettings, saveRecord } from './store';
-import { renderChallenges, renderDebrief, renderFree, renderHelp, renderHome, renderRecords, renderSettings, renderTutorial, stopAttract, type MenuHandlers } from './ui/menu';
+import { debriefData, renderBriefing, renderChallenges, renderDebrief, renderFree, renderHelp, renderHome, renderRecords, renderSettings, renderTutorial, startTrace, stopAttract, type MenuHandlers } from './ui/menu';
 import { LESSONS, coachFor } from './ui/tutorial';
 
 if (!__SINGLE__ && 'serviceWorker' in navigator) registerSW({ immediate: true });
@@ -44,9 +47,19 @@ const handlers: MenuHandlers & { startLesson(i: number): void } = {
   settings,
   startLesson: (i: number) => lesson(i),
   liveMetar,
-  startChallenge: (sc) => play(sc),
-  startFree: (o: FreePlayOpts) => play(freePlay(pack, o)),
+  startChallenge: (sc) => brief(sc, 'challenges'),
+  startFree: (o: FreePlayOpts) => brief(freePlay(pack, o), 'free'),
+  startDaily: () => brief(dailyShift(pack, new Date()), 'home'),
 };
+
+/** The handover sheet before every session; "Take the position" starts it. */
+function brief(sc: Scenario, back: string) {
+  game?.destroy(); game = undefined;
+  stopAttract();
+  document.body.classList.remove('in-game');
+  renderBriefing(app, pack, sc, { start: () => play(sc), back: () => go(back) });
+  window.scrollTo(0, 0);
+}
 
 function go(screen: string) {
   game?.destroy(); game = undefined;
@@ -54,7 +67,7 @@ function go(screen: string) {
   document.body.classList.remove('in-game');
   const map: Record<string, () => void> = {
     home: () => renderHome(app, handlers), free: () => renderFree(app, handlers), challenges: () => renderChallenges(app, handlers),
-    records: () => renderRecords(app, handlers), tutorial: () => renderTutorial(app, handlers), settings: () => renderSettings(app, handlers), help: () => renderHelp(app),
+    records: () => renderRecords(app, handlers), tutorial: () => renderTutorial(app, handlers), settings: () => renderSettings(app, handlers), help: () => renderHelp(app), daily: () => handlers.startDaily!(),
   };
   (map[screen] ?? map.home)();
   window.scrollTo(0, 0);
@@ -75,23 +88,36 @@ function play(sc: Scenario, replay?: { cmds: { t: number; cl: Clearance }[]; unt
   lastScenario = sc;
   game?.destroy();
   document.body.classList.add('in-game');
-  game = new Game(pack, sc, settings, app, radio, {
+  /** Called by Game as soon as its Sim exists (before a replay fast-forwards), if Game supports it. */
+  const onSim = (sim: Sim) => { track(sim); startTrace(sim); };
+  const opts: GameOpts & { onSim?: (sim: Sim) => void } = {
     replay,
     coach,
+    onSim,
     onQuit: () => go('home'),
     onEnd: (r, sim) => {
-      saveRecord(r);
+      const data = debriefData(sim);
+      saveRecord(r, {
+        moves: sim.landings.length + sim.departuresHandled,
+        departures: sim.departuresHandled,
+        emergencies: sim.emergencies.map((e) => ({ cs: e.cs, type: e.type, landed: e.landedT !== undefined })),
+        seconds: replay ? Math.max(0, sim.t - replay.until) : sim.t,
+        counts: !replay && !sc.tutorial,
+      });
       const cmds = sim.cmdLog.slice();
       game = undefined;
       document.body.classList.remove('in-game');
       renderDebrief(app, r, {
         replay: (t) => play(sc, { cmds: cmds.filter((c) => c.t < t), until: t }),
-        retry: () => play(sc.freePlay ? { ...sc } : sc),
+        retry: () => brief(sc.freePlay ? { ...sc } : sc, 'home'),
         home: () => go('home'),
-        next: r.suggested ? () => { const n = CHALLENGES.find((c) => c.id === r.suggested); if (n) play(n); } : undefined,
-      });
+        next: r.suggested ? () => { const n = CHALLENGES.find((c) => c.id === r.suggested); if (n) brief(n, 'challenges'); } : undefined,
+      }, data);
+      window.scrollTo(0, 0);
     },
-  });
+  };
+  game = new Game(pack, sc, settings, app, radio, opts);
+  onSim(game.sim);
 }
 
 app.addEventListener('click', (e) => {
@@ -101,4 +127,4 @@ app.addEventListener('click', (e) => {
 
 document.fonts?.ready.then(() => game?.scope.draw(performance.now()));
 go('home');
-(window as any).__lgg = { pack, get game() { return game; }, play, lesson, LESSONS, CHALLENGES, lastScenario: () => lastScenario };
+(window as any).__lgg = { pack, get game() { return game; }, play, brief, autoControl, lesson, LESSONS, CHALLENGES, lastScenario: () => lastScenario };
