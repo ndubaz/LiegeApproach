@@ -155,9 +155,9 @@ describe('tutorial text', () => {
     for (const s of l.steps) { texts.push([`${l.id}/${s.id}.title`, s.title]); if (typeof s.body === 'string') texts.push([`${l.id}/${s.id}`, s.body]); if (s.ask && typeof s.ask.why === 'string') texts.push([`${l.id}/${s.id}.why`, s.ask.why]); }
     if (l.exam) texts.push([`${l.id}.exam`, l.exam.brief + ' ' + l.exam.rule + ' ' + l.exam.title]);
   }
-  it('has ten lessons, each ending in an exam, with unique ids', () => {
-    expect(LESSONS.length).toBe(10);
-    expect(new Set(LESSONS.map((l) => l.id)).size).toBe(10);
+  it('has eleven lessons, each ending in an exam, with unique ids', () => {
+    expect(LESSONS.length).toBe(11);
+    expect(new Set(LESSONS.map((l) => l.id)).size).toBe(11);
     for (const l of LESSONS) { expect(l.exam, l.id).toBeDefined(); expect(new Set(l.steps.map((s) => s.id)).size, l.id).toBe(l.steps.length); }
   });
   it('uses plain English: no em dashes, none of the banned words', () => {
@@ -370,6 +370,22 @@ describe('lessons fly the way the coach says', () => {
     });
     expect(good.v?.pass, good.v?.why).toBe(true);
     const ignored = exam(L('departures'), () => {});
+    expect(ignored.v?.pass).toBe(false);
+  });
+
+  it('11 the full position: estimates, sequence, correction, and the short night', () => {
+    const { sim } = walk(L('position'), {
+      seq: (f) => { const order = ['TAY4EK', 'CLX7HK']; f.sim.setSequence(order); },
+      corr: (f) => { const r = say(f, 'CLX7HK', [{ k: 'spd', spd: 160 }]); expect(r.ok).toBe(true); expect(f.sim.correct('CLX7HK')).toBe(true); },
+    });
+    expect(sim.events.filter((e) => ['los', 'wake'].includes(e.kind))).toEqual([]);
+    const good = exam(L('position'), (sim) => {
+      autoControl(sim);
+      for (const r of sim.coordReqs) if (r.state === 'pending') sim.issue({ cs: r.cs, items: [{ k: 'appr' }] });
+      for (const r of sim.releases) if (r.state === 'pending' && sim.t - r.t > 3) sim.issue({ cs: r.cs, items: [{ k: 'rel' }] });
+    });
+    expect(good.v?.pass, good.v?.why).toBe(true);
+    const ignored = exam(L('position'), () => {});
     expect(ignored.v?.pass).toBe(false);
   });
 

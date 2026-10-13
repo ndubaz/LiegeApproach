@@ -953,7 +953,85 @@ const L10: Lesson = {
   },
 };
 
-export const LESSONS: Lesson[] = [L1, L2, L3, L4, L5, L6, L7, L8, L9, L10];
+
+// ---- 11. The full position
+const L11: Lesson = {
+  id: 'position', title: 'The full position', minutes: 8,
+  summary: 'The whole console: strip bay, landing order, Brussels estimates, push-to-talk, the correction window and the safety-net list.',
+  scenario: sc('position', [A(150, 'CLX7HK', 'B748', 'KOK7X', 26), A(200, 'TAY4EK', 'B763', 'LNO6X', 22)], { coordination: true, earlyTransferRate: 0 }),
+  steps: [
+    {
+      id: 'tour', title: 'Your working position',
+      body: `On a wide screen the whole position is in front of you: the ${G('Strip', 'strip bay')} on the left, the radar in the middle, and on the right the ${G('AMAN')} landing ladder, coordination with Tower, Brussels and the military, the ${G('Safety nets', 'safety-net list')}, and the weather. On an iPad the right-hand panels sit under tabs; on a phone, under the ▤ button.`,
+    },
+    {
+      id: 'est', title: 'Brussels passes an estimate', run: 2,
+      body: `Before Brussels hands an arrival over, it tells you on the ${G('Intercom')} when the aircraft will reach your boundary and at what level: an estimate. It appears as a green strip under “Offered by Brussels”, so you can plan before the pilot calls.`,
+      done: (g) => g.sim.estimates.length > 0, until: (g) => g.sim.estimates.length > 0,
+    },
+    {
+      id: 'calls', title: 'Let both check in', run: 2,
+      body: `CLX7HK comes from the west and TAY4EK from the south-east. The coach clears both for their transitions when they call.`,
+      done: (g) => {
+        for (const [cs, tr] of [['CLX7HK', 'ALHUV1A'], ['TAY4EK', 'ALHUV1B']] as const) if (isCalling(g.sim, cs) && !find(g, cs)?.app && !g.sim.readbackPending(cs)) g.sim.issue({ cs, items: [{ k: 'trans', name: tr }, { k: 'lvl', lvl: { ft: 3000 } }, ILS] });
+        return !!find(g, 'CLX7HK')?.app && !!find(g, 'TAY4EK')?.app;
+      },
+    },
+    {
+      id: 'seq', title: 'Drag a strip to change the landing order',
+      body: `The AMAN guessed an order from the times alone. You decide it. In the landing sequence bay, press the coloured tab on the left of a strip and drag it above or below the other one. The ladder on the right, the gap ruler and the suggestions all follow your order. On a phone, open the strips with ▤.`,
+      el: (g) => g.root.querySelector('[data-e2="seq"] .strip .bay'),
+      done: (g, x) => g.sim.cmdLog.slice(x.cmdStart).some((c) => c.op === 'seq'),
+    },
+    {
+      id: 'ptt', title: 'Push to talk',
+      body: `Real controllers key the transmitter, speak, and let go. Hold the Space bar (or a foot pedal set up in Settings, or the 🎙 button) and say the clearance the way you would on frequency: “TAY4EK, reduce speed one eight zero knots”. When you let go, the bar shows what it heard; if it is sure, it sends; if not, check it and press Enter. Shift and Space pauses the sim.`,
+    },
+    {
+      id: 'corr', title: 'Say it, then take it back: CORRECTION',
+      body: `Clear CLX7HK to ${K('Speed 160')} with ${K('SPD')} and ${K('TRANSMIT')}, then tap the amber ${K('CORRECTION')} button within three seconds. The pilot hears “correction, disregard” and the old clearance stands. After the readback has started it is too late: give the right clearance instead.`,
+      cs: 'CLX7HK',
+      done: (g, x) => g.sim.cmdLog.slice(x.cmdStart).some((c) => c.op === 'correct'),
+    },
+    {
+      id: 'nets', title: 'The safety-net list',
+      body: `Below the coordination cards, every live alarm has a line: ${G('STCA')} with distance and time to closest approach, a Mode S level that differs from what you cleared, ${G('MSAW')} for an aircraft below the minimum altitude, and a pilot climbing or descending through the cleared level. Tap a line to select the aircraft. Empty means clear.`,
+    },
+    {
+      id: 'land', title: 'Bring them in', run: 4,
+      body: `Hand each one to Tower with its chip once it is established, then you have finished the course.`,
+      done: (g) => {
+        for (const cs of ['CLX7HK', 'TAY4EK']) { const a = find(g, cs); if (a?.app?.locCap && a.state === 'assumed' && !g.sim.readbackPending(cs) && g.sim.dthr(a) < 10) g.sim.issue({ cs, items: [{ k: 'xfr', unit: 'TWR' }] }); }
+        return ['CLX7HK', 'TAY4EK'].every((cs) => gone(g.sim, cs) || landed(g.sim, cs));
+      },
+    },
+  ],
+  exam: {
+    title: 'A short night on the position', run: 2, limitS: 22 * 60,
+    brief: 'Three arrivals and a departure, with Brussels coordinating. Brussels will ask to transfer one early: answer it. Release the departure into a gap. Land everyone with no loss of separation.',
+    rule: '<b>Pass:</b> all three arrivals with Tower or landed, the departure with Brussels, Brussels and Tower answered within a minute, no loss of separation. <b>Stars:</b> no conflict alerts and quick answers.',
+    scenario: sc('position-exam', [A(2, 'QTR8125', 'B77L', 'KOK7X', 24, { callNow: true }), A(120, 'ETH3721', 'B77L', 'LNO6X', 26), A(260, 'AZG7321', 'B748', 'CIV7X', 30), D(200, 'CHG7302', 'B748', 'LNO9S')], { seed: 23, coordination: true, earlyTransferRate: 1 }),
+    watch: (sim, m) => {
+      m.wait ??= {} as Record<string, number>;
+      for (const r of sim.releases) if (r.state === 'pending') m.wait[r.cs] = Math.max(m.wait[r.cs] ?? 0, sim.t - r.t);
+      for (const r of sim.coordReqs) if (r.state === 'pending') m.wait['BRU ' + r.cs] = Math.max(m.wait['BRU ' + r.cs] ?? 0, sim.t - r.t);
+    },
+    status: (sim) => `${sim.landings.length + sim.aircraft.filter((a) => a.kind === 'arr' && a.state === 'transferred').length} of 3 arrivals done · ${sim.departuresHandled} of 1 departure with Brussels`,
+    judge: (sim, m) => {
+      const bad = sim.events.find((e) => ['los', 'wake', 'mva', 'exit_unxfr', 'coord_unanswered', 'release_delay'].includes(e.kind));
+      if (bad) return { pass: false, stars: 0, why: bad.text };
+      const slow = Object.entries((m.wait ?? {}) as Record<string, number>).find(([, w]) => w > 60);
+      if (slow) return { pass: false, stars: 0, why: `${slow[0]} waited ${Math.round(slow[1])} s for an answer. Answer the intercom within a minute.` };
+      const arrDone = ['QTR8125', 'ETH3721', 'AZG7321'].every((cs) => landed(sim, cs) || sim.find(cs)?.state === 'transferred');
+      if (!arrDone || sim.departuresHandled < 1) return undefined;
+      const quick = Object.values((m.wait ?? {}) as Record<string, number>).every((w) => w <= 20);
+      const stca = sim.events.some((e) => e.kind === 'stca');
+      return { pass: true, stars: !stca && quick ? 3 : !stca || quick ? 2 : 1, why: `Everyone handled${stca ? ', with a conflict alert on the way' : ' with no conflict alerts'}.` };
+    },
+  },
+};
+
+export const LESSONS: Lesson[] = [L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11];
 
 // =====================================================================================
 // RESULTS

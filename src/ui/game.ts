@@ -1,8 +1,10 @@
 import type { Pack, Level } from '../pack/load';
-import { Sim } from '../engine/sim';
+import { Sim, type CmdEntry } from '../engine/sim';
 import type { Aircraft, ReleaseReq, Scenario, Tx } from '../engine/types';
 import { itemChip, levelText, mergeItem, sortItems, type Clearance, type Item } from '../engine/clearance';
-import { parseShorthand, voiceToShorthand } from '../engine/parser';
+import { parseShorthand, parseVoiceAlternatives } from '../engine/parser';
+import { landingOrder } from '../engine/sequence';
+import { createPtt, type PttController } from './ptt';
 import { wakeMinNm } from '../engine/perf';
 import { windComponents } from '../engine/weather';
 import { assess, liveStats, seqChain, type Result } from '../engine/assess';
@@ -30,7 +32,7 @@ const touchFirst = () => { try { return matchMedia('(pointer: coarse)').matches;
 type PickerKind = 'hdg' | 'lvl' | 'spd' | 'dct' | 'trans' | 'more' | 'app' | 'menu';
 
 export interface GameOpts {
-  replay?: { cmds: { t: number; cl: Clearance }[]; until: number };
+  replay?: { cmds: CmdEntry[]; until: number };
   onEnd(r: Result, sim: Sim): void;
   onQuit(): void;
   coach?: (g: Game) => { destroy(): void };
@@ -51,11 +53,14 @@ export class Game {
   private coach?: { destroy(): void };
   private panelTimer = 0;
   private radio: Radio;
-  private mic = new Mic();
+  private mic: Mic;
+  private ptt?: PttController;
+  private corrTimer = 0;
+  private lastSentCs?: string;
   private knownAlerts = new Set<string>();
   private endedShown = false;
   els: Record<string, HTMLElement> = {};
-  private drawerTab: 'info' | 'aman' | 'strips' | 'comms' = 'strips';
+  private drawerTab: 'info' | 'aman' | 'strips' | 'comms' | 'coord' = 'strips';
   private commsStick = true;
   private voiceText = '';
   private typed?: { cs?: string; items: Item[]; errors: string[]; armed: boolean };
@@ -81,13 +86,14 @@ export class Game {
     this.radio = radio;
     this.radio.enabled = settings.voice;
     this.radio.rate = settings.speechRate;
+    this.mic = new Mic({ lang: settings.voiceLang ?? 'en-GB', radio: this.radio });
     this.sim = new Sim(pack, sc, { radarRefresh: settings.radarRefresh });
     opts.onSim?.(this.sim);
     if (opts.replay) {
       const { cmds, until } = opts.replay;
       let i = 0;
       while (this.sim.t < until && !this.sim.ended) {
-        while (i < cmds.length && cmds[i].t === this.sim.t) this.sim.issue(cmds[i++].cl, { replay: true });
+        while (i < cmds.length && cmds[i].t === this.sim.t) this.sim.replay(cmds[i++]);
         this.sim.step();
       }
     }
@@ -145,6 +151,8 @@ export class Game {
     if (this.destroyed) return;
     this.destroyed = true;
     this.ro?.disconnect();
+    this.ptt?.destroy();
+    this.mic.abort();
     this.coach?.destroy();
     cancelAnimationFrame(this.raf);
     window.removeEventListener('keydown', this.onKey);
@@ -161,6 +169,7 @@ export class Game {
         <div class="tag" data-e="atis">ATIS -</div>
         <div class="tag" data-e="rwy">RWY --</div>
         <div class="tag warn" data-e="lvp" hidden>LVP</div>
+        <div class="tag tb-wide" data-e="tqnh">QNH</div><div class="tag tb-wide" data-e="ttl">TL</div><div class="tag tb-wide" data-e="twind">WIND</div><div class="tag tb-wide warn" data-e="ttsa" hidden></div>
         <div class="tx" data-e="tx" title="Frequency in use"><span></span>119.280</div>
         <div class="stats mono" data-e="stats" title="Landed · sequence chain · delay"></div>
         <div class="grow"></div>
@@ -173,19 +182,20 @@ export class Game {
       <main class="stage">
         <section class="scope-wrap">
           <canvas class="scope" aria-label="Radar display"></canvas>
-          <div class="zoom"><button data-z="in" aria-label="Zoom in">+</button><button data-z="out" aria-label="Zoom out">−</button><button data-z="fit" aria-label="Reset view">◎</button><button data-z="rbl" class="rbl" aria-label="Range and bearing line">RBL</button><button data-z="vp" class="rbl" aria-label="Final approach monitor">VP</button></div>
+          <div class="zoom"><span class="presets"><button data-z="r20" class="rbl">20</button><button data-z="r40" class="rbl">40</button><button data-z="r60" class="rbl">60</button></span><button data-z="in" aria-label="Zoom in">+</button><button data-z="out" aria-label="Zoom out">−</button><button data-z="fit" aria-label="Reset view">◎</button><button data-z="rbl" class="rbl" aria-label="Range and bearing line">RBL</button><button data-z="vp" class="rbl" aria-label="Final approach monitor">VP</button></div>
           <div class="emer-card" data-e="emer" hidden></div>
           <div class="feed" data-e="feed" aria-live="polite"></div>
           <div class="toast" data-e="toast" hidden></div>
           <div class="icom" data-e="icom" aria-live="polite"></div>
         </section>
         <aside class="side" data-e="side">
-          <nav class="tabs" data-e="tabs"><button data-t="strips" class="on">Strips</button><button data-t="aman">AMAN</button><button data-t="comms">Comms</button><button data-t="info">Info</button></nav>
+          <nav class="tabs" data-e="tabs"><button data-t="strips" class="on">Strips</button><button data-t="aman">AMAN</button><button data-t="coord">Coord</button><button data-t="comms">Comms</button><button data-t="info">Info</button></nav>
           <section class="panel info" data-p="info"><h3>Information</h3><div data-e="info"></div></section>
           <div class="mid">
             <section class="panel aman" data-p="aman"><h3>AMAN <span data-e="amanRwy"></span> <small>TTL min</small></h3><div class="aman-body" data-e="aman"></div></section>
             <section class="panel strips" data-p="strips"><h3>Strips</h3><div class="strip-list" data-e="strips"></div></section>
           </div>
+          <section class="panel coord" data-p="coord"><h3>Coordination <small>intercom</small></h3><div data-e="coord"></div></section>
           <section class="panel comms" data-p="comms"><h3>Comms <span class="dim">119.280 · intercom</span></h3><div class="comms-log" data-e="comms"></div></section>
         </aside>
       </main>
@@ -206,6 +216,12 @@ export class Game {
           <button data-p="trans" class="wide-only">TRANS</button><button data-a="hold" class="wide-only">HOLD</button><button data-a="twr" class="wide-only">TWR</button><button data-a="bru" class="wide-only">BRU</button><button data-p="more">MORE</button>
           <button class="send" data-a="send" data-e="send">TRANSMIT</button>
         </div>
+        <div class="mon" data-e="mon">
+          <button class="send big" data-a="send">TRANSMIT</button>
+          <button class="corr" data-a="corr" data-e="corr" hidden>CORRECTION · disregard</button>
+          <div class="rx"><span class="led" data-e="rxled"></span><span class="mono">119.280</span><span class="vu" data-e="vu"><i></i><i></i><i></i><i></i><i></i></span><span class="ptt-k mono" data-e="pttk"></span></div>
+          <div class="last mono" data-e="last"></div>
+        </div>
         <form class="cmd" data-e="cmdForm"><input data-e="cmd" class="mono" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Type: DHK7 L250 D40 S210 ILS · CHG7302 REL · Tab next caller · ↑↓ level ←→ heading"></form>
       </footer>
       <div class="picker" data-e="picker" hidden></div>
@@ -216,11 +232,15 @@ export class Game {
     const form = this.els.cmdForm as HTMLFormElement;
     form.addEventListener('submit', (e) => { e.preventDefault(); this.submitCmd(); });
     this.els.cmd.addEventListener('input', () => this.previewCmd());
-    const mic = this.els.mic;
-    if (!this.mic.available) mic.classList.add('off');
-    mic.addEventListener('pointerdown', (e) => { e.preventDefault(); this.startVoice(); });
-    mic.addEventListener('pointerup', () => this.mic.stop());
-    mic.addEventListener('pointerleave', () => this.mic.stop());
+    if (!this.mic.available) this.els.mic.classList.add('off');
+    this.ptt = createPtt({
+      target: this.els.mic,
+      key: this.settings.pttKey ?? 'Space',
+      pedal: this.settings.pedal ?? null,
+      onDown: () => this.voiceDown(),
+      onUp: (i) => (i?.reason === 'cancel' ? this.voiceCancel() : this.voiceUp()),
+    });
+    this.els.pttk.textContent = this.settings.pttKey ? `PTT ${this.settings.pttKey === 'Space' ? 'SPACE' : this.settings.pttKey.replace('Backquote', '`').replace('ControlRight', 'R-CTRL')}` : '';
     // long-press on a suggestion stages it for editing instead of sending
     let lp = 0;
     this.els.sugg.addEventListener('pointerdown', (e) => {
@@ -242,10 +262,12 @@ export class Game {
     if (t.dataset.sg !== undefined) { if (t.dataset.staged) { delete t.dataset.staged; return; } this.sendSuggestion(Number(t.dataset.sg)); return; }
     if (t.dataset.rel !== undefined) { this.answerIcom(t.dataset.rel, t.dataset.v ?? ''); return; }
     if (t.dataset.gloss) { this.explain(t.dataset.gloss); return; }
-    if (t.classList.contains('strip')) { this.select(t.dataset.cs, true); return; }
+    if (t.classList.contains('strip') || t.classList.contains('net')) { this.select(t.dataset.cs, true); if (t.dataset.cs) this.keepVisible(t.dataset.cs); return; }
+    if (t.dataset.ikey) { const u = t.dataset.ikey; const m = [...this.sim.log].reverse().find((x) => x.channel === 'icom' && (x.from === u || (u === 'TWR' && x.from === 'ATC' && /released|hold/i.test(x.text)))); this.toast(m ? `${u}: ${m.text}` : `${u}: nothing pending.`, 4500); return; }
     const a = t.dataset.a, p = t.dataset.p, s = t.dataset.s, z = t.dataset.z, tab = t.dataset.t;
     if (s !== undefined) { this.setSpeed(Number(s)); return; }
     if (z) {
+      if (/^r\d+$/.test(z)) { const nm = Number(z.slice(1)); this.scope.animateTo(Math.min(this.scope.w, this.scope.h) / (2 * nm), { x: 2, y: -1 }); return; }
       if (z === 'in') this.scope.zoom(1.35);
       else if (z === 'out') this.scope.zoom(1 / 1.35);
       else if (z === 'vp') { this.scope.showProfile = !this.scope.showProfile; t.classList.toggle('on', this.scope.showProfile); }
@@ -263,6 +285,8 @@ export class Game {
       case 'clear': this.items = []; this.voiceText = ''; this.typed = undefined; (this.els.cmd as HTMLInputElement).value = ''; this.renderBar(); break;
       case 'send': this.send(); break;
       case 'roger': if (ac) this.quick(ac.cs, [{ k: 'roger' }]); break;
+      case 'sayagain': if (ac) this.quick(ac.cs, [{ k: 'sayagain' }]); break;
+      case 'corr': if (this.lastSentCs) { const ok = this.sim.correct(this.lastSentCs); this.toast(ok ? `${this.lastSentCs}: correction, disregard.` : 'Too late: the pilot is already reading back. Give the right clearance instead.'); this.els.corr.hidden = true; } break;
       case 'stby': if (ac) this.quick(ac.cs, [{ k: 'standby' }]); break;
       case 'kbd': { const on = this.root.classList.toggle('kbd'); if (on) (this.els.cmd as HTMLInputElement).focus(); break; }
       case 'app': if (ac) this.addItem({ k: 'app', app: 'ILS', rwy: this.sim.runway }); else this.toast('Select an aircraft first'); break;
@@ -281,7 +305,7 @@ export class Game {
     if (e.key === 'Tab') { e.preventDefault(); this.nextCaller(); return; }
     if (e.key === 'Escape') { this.closePicker(); this.scope.closeTransient(); this.items = []; this.typed = undefined; (this.els.cmd as HTMLInputElement).value = ''; this.renderBar(); return; }
     if (inInput) return;
-    if (e.key === ' ') { e.preventDefault(); this.setSpeed(this.speed ? 0 : 1); return; }
+    if (e.key === ' ') { if (this.settings.pttKey === 'Space' && !e.shiftKey) return; e.preventDefault(); this.setSpeed(this.speed ? 0 : 1); return; }
     if (e.key === 'Enter') { this.send(); return; }
     const ac = this.cs ? this.sim.find(this.cs) : undefined;
     if (ac && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
@@ -350,10 +374,11 @@ export class Game {
     const warns = this.sim.validate(cl);
     if (this.settings.trainingWheels && warns.length) { this.toast(`Blocked: ${warns.join('; ')}`); return; }
     const sig = JSON.stringify(cl);
-    if (warns.length && this.sendArmed !== sig) { this.sendArmed = sig; this.toast(`${warns[0]}. Transmit again to send anyway.`, 2600); this.els.send.classList.add('armed'); return; }
-    this.sendArmed = ''; this.els.send.classList.remove('armed');
+    if (warns.length && this.sendArmed !== sig) { this.sendArmed = sig; this.toast(`${warns[0]}. Transmit again to send anyway.`, 2600); this.sends().forEach((b) => b.classList.add('armed')); return; }
+    this.sendArmed = ''; this.sends().forEach((b) => b.classList.remove('armed'));
     const r = this.sim.issue(cl);
     if (r.ok) {
+      this.lastSentCs = cl.cs; this.els.corr.hidden = false; clearTimeout(this.corrTimer); this.corrTimer = window.setTimeout(() => (this.els.corr.hidden = true), 3000);
       this.items = []; this.typed = undefined; this.suggestSig = '';
       this.renderBar(); this.renderPanels(); this.renderIcom();
       for (const f of this.onSent) f(cl);
@@ -379,6 +404,7 @@ export class Game {
     return {
       callsigns: [...this.sim.aircraft.map((a) => a.cs), ...this.sim.releases.map((r) => r.cs)], selected: this.cs, runway: this.sim.runway, tl: this.sim.tl,
       fixes: new Set([...this.sim.pack.fixes.keys()]), transitions: new Set(this.sim.pack.transitions.map((t) => t.name)),
+      stars: new Set(this.sim.pack.stars.map((t) => t.name)),
     };
   }
   private previewCmd() {
@@ -397,6 +423,8 @@ export class Game {
     if (res.errors.length) { this.toast(res.errors.join('; ')); return; }
     const cs = res.cs ?? this.cs;
     if (!cs) { this.toast('Select an aircraft or start with a callsign'); return; }
+    if (res.correction) { const ok = this.sim.correct(cs); this.toast(ok ? `${cs}: correction, disregard.` : 'Too late to correct: give the right clearance instead.'); inp.value = ''; this.typed = undefined; this.renderBar(); return; }
+    res.items.push(...((res.ext ?? []) as Item[]));
     if (!res.items.length) { this.select(cs, true); inp.value = ''; this.typed = undefined; this.keepVisible(cs); return; }
     const isRel = res.items.some((i) => i.k === 'rel' || i.k === 'relhold');
     const warns = isRel ? [] : this.sim.validate({ cs, items: res.items });
@@ -414,24 +442,33 @@ export class Game {
     for (const it of res.items) this.items = mergeItem(this.items, it);
     this.send();
   }
-  private startVoice() {
+  // ---------------- push-to-talk voice ----------------
+  private voiceDown() {
     this.radio.unlock();
-    if (!this.mic.available) { this.toast('Voice input is not supported in this browser. Use tap or typed commands.'); return; }
     this.els.mic.classList.add('live');
-    this.mic.start((text, final) => {
-      this.voiceText = text;
-      if (final) {
-        this.els.mic.classList.remove('live');
-        const tels: Record<string, string> = {};
-        for (const a of this.sim.aircraft) tels[a.cs] = a.tel;
-        const sh = voiceToShorthand(text, tels, [...this.sim.pack.fixes.keys()]);
-        const res = parseShorthand(sh, this.parseCtx());
-        if (res.cs && res.cs !== this.cs) this.select(res.cs, true);
-        for (const it of res.items) this.items = mergeItem(this.items, it);
-        this.voiceText = `“${text}”`;
-      }
-      this.renderBar();
-    }, (err) => { this.els.mic.classList.remove('live'); this.toast(err); });
+    this.els.rxled.classList.add('tx');
+    if (!this.mic.available) return;
+    this.voiceText = '';
+    this.mic.begin({
+      onInterim: (t) => { this.voiceText = t; this.renderBar(); },
+      onFinal: (t, alts) => this.voiceFinal(t, alts),
+      onError: (_c, msg) => { this.els.mic.classList.remove('live'); this.toast(msg); },
+    });
+  }
+  private voiceUp() { this.els.mic.classList.remove('live'); this.els.rxled.classList.remove('tx'); if (this.mic.available) this.mic.end(); else this.toast('Speech recognition is not available in this browser. Type or tap instead.'); }
+  private voiceCancel() { this.els.mic.classList.remove('live'); this.els.rxled.classList.remove('tx'); this.mic.abort(); this.voiceText = ''; this.renderBar(); }
+  private voiceFinal(text: string, alts: string[]) {
+    if (!text) { this.voiceText = ''; this.renderBar(); return; }
+    const tels: Record<string, string> = {};
+    for (const a of this.sim.aircraft) tels[a.cs] = a.tel;
+    const v = parseVoiceAlternatives(alts.length ? alts : [text], { ...this.parseCtx(), tels });
+    this.voiceText = `“${text}”`;
+    const inp = this.els.cmd as HTMLInputElement;
+    inp.value = v.shorthand;
+    this.root.classList.add('kbd');
+    this.previewCmd();
+    if (v.confidence >= 0.75 && !v.unsure.length && (v.parse.items.length || v.parse.ext?.length || v.correction)) this.submitCmd();
+    else this.toast(v.unsure.length ? `Check: ${v.unsure.join('; ')}. Enter to send.` : 'Check it, then Enter to send.', 3200);
   }
 
   // ---------------- options shared by pickers and the scope ladder ----------------
@@ -778,6 +815,12 @@ export class Game {
   // ---------------- comms ----------------
   private onTx(tx: Tx) {
     this.appendComms(tx);
+    if (tx.channel !== 'icom') {
+      this.els.last.innerHTML = `<b>${esc(tx.from === 'ATC' ? 'YOU' : tx.cs)}</b> ${esc(tx.text)}`;
+      const led = this.els.rxled; const cls = tx.from === 'ATC' ? 'tx' : 'rx';
+      led.classList.add(cls); this.els.vu.classList.add('on');
+      window.setTimeout(() => { led.classList.remove(cls); this.els.vu.classList.remove('on'); }, Math.max(500, ((tx.t1 - tx.t0) * 1000) / Math.max(1, this.speed)));
+    }
     const icom = tx.channel === 'icom';
     const who = tx.from === 'ATC' ? 'YOU' : tx.from === 'SYS' ? 'SYS' : icom ? tx.from : tx.cs;
     this.els.ticker.innerHTML = `<b>${esc(who)}</b> ${esc(tx.text)}`;
@@ -863,7 +906,8 @@ export class Game {
     this.icomSig = sig;
     const card = (r: ReleaseReq) => {
       const wait = sim.t - r.t;
-      const after = this.icomArrival();
+      const gap = sim.departureGap(r.cs);
+      const after = gap.after ?? this.icomArrival();
       const head = `<div class="ic-h"><span class="ic-from">TWR ⇄</span><b class="mono">${esc(r.cs)}</b><span class="mono dim">${esc(r.type)} · ${esc(r.sid)} · ${esc(r.rwy)}</span><span class="ic-t mono ${wait > 120 ? 'warn' : ''}">${mmss(wait)}</span></div>`;
       if (r.state === 'released') return `<div class="ic-card done">${head}<div class="ic-s">Released${r.after ? ` after ${esc(r.after)}` : ''}. Tower will launch when the runway is free.</div></div>`;
       if (r.state === 'held') return `<div class="ic-card held">${head}<div class="ic-s">Holding on the ground${r.expectAt ? `, expect ${sim.utc(r.expectAt).slice(0, 5)}Z` : ''}.</div><div class="ic-b"><button data-rel="${esc(r.cs)}" data-v="rel" class="ok">Release</button>${after ? `<button data-rel="${esc(r.cs)}" data-v="after:${esc(after)}">After ${esc(after)}</button>` : ''}</div></div>`;
@@ -871,7 +915,8 @@ export class Game {
       return `<div class="ic-card">${head}<div class="ic-s">Request release. <span class="${adv.ok ? 'ok' : 'warn'}">${esc(adv.why)}</span></div><div class="ic-b"><button data-rel="${esc(r.cs)}" data-v="rel" class="ok">Release</button>${after ? `<button data-rel="${esc(r.cs)}" data-v="after:${esc(after)}">After ${esc(after)}</button>` : ''}<button data-rel="${esc(r.cs)}" data-v="hold">Hold 3 min</button></div></div>`;
     };
     const milCard = (a: Aircraft) => `<div class="ic-card mil"><div class="ic-h"><span class="ic-from">MIL ⇄</span><b class="mono">${esc(a.cs)}${a.formation > 1 ? ` ×${a.formation}` : ''}</b><span class="mono dim">${esc(a.type)}</span></div><div class="ic-s">${esc(a.request!.text)}</div><div class="ic-b"><button data-rel="${esc(a.cs)}" data-v="milok" class="ok">Approve</button><button data-rel="${esc(a.cs)}" data-v="milno">Unable</button></div></div>`;
-    this.els.icom.innerHTML = rel.map(card).join('') + mil.map(milCard).join('');
+    this.icomHtml = rel.map(card).join('') + mil.map(milCard).join('');
+    this.els.icom.innerHTML = this.icomHtml;
   }
   /** The arrival a departure would most naturally go after: the next one on or joining final. */
   private icomArrival(): string {
@@ -883,7 +928,7 @@ export class Game {
     if (v === 'rel') items = [{ k: 'rel' }];
     else if (v.startsWith('after:')) items = [{ k: 'rel', after: v.slice(6) }];
     else if (v === 'hold') items = [{ k: 'relhold', mins: 3 }];
-    else if (v === 'milok') items = [{ k: 'appr' }];
+    else if (v === 'milok' || v === 'bruok') items = [{ k: 'appr' }];
     else items = [{ k: 'deny' }];
     const veto = this.onBeforeSend?.({ cs, items }); // tutorial hook
     if (veto) { this.toast(veto); return; }
@@ -918,6 +963,7 @@ export class Game {
   }
 
   // ---------------- bar ----------------
+  private sends() { return this.root.querySelectorAll<HTMLButtonElement>('[data-a="send"]'); }
   private renderBar() {
     const ac = this.cs ? this.sim.find(this.cs) : undefined;
     const { who, chips, phrase, send, req, sugg, mid } = this.els;
@@ -936,14 +982,14 @@ export class Game {
       chips.innerHTML = this.typedChips();
       phrase.innerHTML = typedPh ? esc(typedPh) : esc(this.voiceText);
       mid.classList.toggle('empty', !chips.innerHTML && !phrase.textContent);
-      (send as HTMLButtonElement).disabled = true;
+      this.sends().forEach((b) => (b.disabled = true));
       return;
     }
     const proc = ac.proc ?? (ac.rules === 'VFR' ? 'VFR' : ac.kind.toUpperCase());
     who.innerHTML = `<div class="cs mono">${esc(ac.cs)}</div><div class="meta"><span class="rc">${ac.recat ?? ac.perf.recat}</span> ${esc(ac.type)} · ${esc(proc)} · <span data-e2="state">${this.stateText(ac)}</span></div>`;
     const calling = ac.awaitingSince !== undefined && this.sim.t >= ac.awaitingSince && ac.state === 'assumed';
     req.innerHTML = ac.request && ac.state === 'assumed' ? `<div class="req-text"><b>REQ</b> ${esc(ac.request.text)}</div>` : ac.wrong ? `<div class="req-text bad"><b>READBACK</b> wrong, check it</div>` : '';
-    if (calling && !ac.request) req.innerHTML += `<button data-a="roger" class="ok" title="Answer without a clearance">Roger</button><button data-a="stby" title="They will call again">Standby</button>`;
+    if (calling && !ac.request) req.innerHTML += `<button data-a="roger" class="ok" title="Answer without a clearance">Roger</button><button data-a="stby" title="They will call again">Standby</button><button data-a="sayagain" title="Ask the pilot to repeat">Say again</button>`;
     // suggestions
     this.suggestions = this.items.length || this.typed ? [] : suggest(this.sim, ac);
     this.suggestSig = this.suggestions.map((s) => s.label).join('|');
@@ -958,8 +1004,7 @@ export class Game {
     phrase.innerHTML = `${esc(ph)}${warn.length ? `<span class="warn">⚠ ${esc(warn.join(' · '))}</span>` : ''}${this.typed?.errors.length ? `<span class="warn">${esc(this.typed.errors.join(' · '))}</span>` : ''}`;
     mid.classList.toggle('empty', !items.length && !this.voiceText && !this.typed);
     const blocked = this.settings.trainingWheels && warn.length > 0;
-    (send as HTMLButtonElement).disabled = !this.items.length || blocked;
-    send.classList.toggle('warned', warn.length > 0);
+    this.sends().forEach((b) => { b.disabled = !this.items.length || blocked; b.classList.toggle('warned', warn.length > 0); });
   }
   private typedChips() {
     if (!this.typed) return '';
@@ -1002,11 +1047,15 @@ export class Game {
     this.els.atis.textContent = `ATIS ${sim.atis}`;
     this.els.rwy.textContent = `RWY ${sim.runway}`;
     this.els.lvp.hidden = !sim.lvp;
+    this.els.tqnh.textContent = `QNH ${sim.qnh}`; this.els.ttl.textContent = `TL FL${String(sim.tl).padStart(3, '0')}`;
+    this.els.twind.textContent = `WIND ${String(Math.round(((sim.weather.windDir - sim.pack.meta.magVar + 360) % 360) / 10) * 10).padStart(3, '0')}/${sim.weather.windKt}`;
+    const tsa = [...sim.tsaOn][0] ?? [...sim.tsaPending.keys()][0]; this.els.ttsa.hidden = !tsa; if (tsa) this.els.ttsa.textContent = `${tsa} ${sim.tsaOn.has(tsa) ? 'ACTIVE' : 'SOON'}`;
     const callers = this.waiting();
     this.els.callers.textContent = window.innerWidth < 600 ? `☎ ${callers.length}` : `CALLS ${callers.length}`;
     this.els.callers.classList.toggle('hot', callers.length > 0);
     this.els.callers.classList.toggle('urgent', callers.some((a) => sim.t - a.awaitingSince! > 15 || a.emergency));
     if (this.root.classList.contains('drawer-open') || window.innerWidth >= 900) {
+      this.renderCoord();
       this.renderInfo();
       this.renderAman();
       this.renderStrips();
@@ -1040,53 +1089,149 @@ export class Game {
   private renderAman() {
     const sim = this.sim;
     this.els.amanRwy.textContent = sim.runway;
-    const arr = sim.aircraft.filter((a) => a.kind === 'arr' && a.state !== 'unconcerned').map((a) => ({ a, eta: sim.eta(a) })).sort((x, y) => x.eta - y.eta);
+    const order = landingOrder(sim);
     const span = 30;
-    let prev: { a: Aircraft; eta: number } | undefined;
     const items: string[] = [];
     for (let m = 0; m <= span; m += 5) items.push(`<div class="tick" style="top:${(m / span) * 100}%"><span>${sim.utc(sim.t + m * 60).slice(0, 5)}</span></div>`);
     const hpx = Math.max(200, this.els.aman.clientHeight || 400);
-    const gapPx = 30;
-    let lastTop = -100;
-    for (const x of arr) {
+    let prevEta = -1e9, prev: Aircraft | undefined, lastTop = -100;
+    for (const x of order) {
+      let eta = x.etaS / 60;
       let adv = 0;
       if (prev) {
-        const need = (Math.max(wakeMinNm(prev.a.perf.recat, x.a.perf.recat, 3), sim.lvp ? 5 : 3) / 150) * 60 + 0.15;
-        adv = Math.max(0, prev.eta + need - x.eta);
-        x.eta = Math.max(x.eta, prev.eta + need);
+        const need = (Math.max(wakeMinNm(prev.perf.recat, x.ac.perf.recat, sim.finalMinNm), sim.lvp ? 5 : sim.finalMinNm) / 150) * 60 + 0.15;
+        adv = Math.max(0, prevEta + need - eta);
+        eta = Math.max(eta, prevEta + need);
       }
-      prev = x;
-      if (x.eta > span) continue;
-      let topPx = (x.eta / span) * hpx;
-      topPx = Math.max(topPx, lastTop + gapPx);
+      prev = x.ac; prevEta = eta;
+      if (eta > span) continue;
+      const topPx = Math.max((eta / span) * hpx, lastTop + 26);
       lastTop = topPx;
-      const top = (topPx / hpx) * 100;
-      const sel = x.a.cs === this.cs ? 'sel' : '';
-      items.push(`<button class="aman-item strip ${sel} ${x.a.emergency ? 'emer' : ''} ${x.a.mode === 'HOLD' ? 'hold' : ''}" data-cs="${x.a.cs}" style="top:${top}%"><b>${x.a.cs}</b><span>${adv >= 0.5 ? `<em>−${adv.toFixed(adv >= 2 ? 0 : 1)}</em>` : x.a.recat ?? x.a.perf.recat}</span></button>`);
+      const st = x.ac.state === 'transferred' ? 'xfr' : x.ac.state === 'inbound' ? 'inb' : x.ac.mode === 'HOLD' ? 'hold' : '';
+      const tail = x.ac.state === 'transferred' ? 'TWR' : x.ac.app?.locCap ? 'LOC' : adv >= 0.5 ? `<em>−${adv.toFixed(adv >= 2 ? 0 : 1)}</em>` : sim.utc(sim.t + eta * 60).slice(0, 5).replace(':', '');
+      items.push(`<button class="aman-item strip ${x.ac.cs === this.cs ? 'sel' : ''} ${x.ac.emergency ? 'emer' : ''} ${st} ${x.sequenced ? 'seqd' : ''}" data-cs="${x.ac.cs}" style="top:${(topPx / hpx) * 100}%"><b>${x.ac.cs}</b><i>${x.ac.recat ?? x.ac.perf.recat}</i><span>${tail}</span></button>`);
+    }
+    for (const r of sim.releases.filter((r) => r.state === 'pending' || r.state === 'released')) {
+      const g = sim.departureGap(r.cs);
+      if (!g.after) continue;
+      const a = order.findIndex((x) => x.ac.cs === g.after);
+      if (a < 0) continue;
+      items.push(`<div class="aman-gap" style="top:${Math.min(96, ((order[a].etaS / 60 + 0.8) / span) * 100)}%">${esc(r.cs)} ↑ ${g.nm !== null ? g.nm.toFixed(1) + ' NM' : ''}</div>`);
     }
     this.els.aman.innerHTML = `<div class="aman-line"></div>${items.join('')}`;
   }
-  private renderStrips() {
+
+  // ---------------- strip bay ----------------
+  private stripHtml(a: Aircraft, extra = '') {
     const sim = this.sim;
-    const order = (a: Aircraft) => (a.emergency ? -1000 : 0) + (a.kind === 'arr' ? sim.eta(a) : a.kind === 'dep' ? 100 : 200);
-    const list = sim.aircraft.filter((a) => a.state !== 'unconcerned').sort((a, b) => order(a) - order(b));
-    const pend = sim.releases.filter((r) => r.state === 'pending' || r.state === 'held');
-    this.els.strips.innerHTML = pend.map((r) => `<div class="strip-pend mono"><span class="bay">⏸</span><b>${esc(r.cs)}</b><i>${esc(r.type)} ${esc(r.sid)}</i><em>${r.state === 'held' ? 'held' : 'release?'}</em></div>`).join('') + (list.map((a) => {
-      const hdg = a.hdgSys !== undefined && a.mode !== 'LOC' ? `H${p3(norm360(a.hdgSys - sim.pack.meta.magVar))}` : a.mode === 'HOLD' ? 'HOLD' : a.mode === 'LOC' ? 'LOC' : a.route[0] ? `→${a.route[0].fix}` : '';
-      const spd = a.spdAssigned ? `S${a.spdAssigned}` : a.spdMin ? 'SMIN' : '';
-      const app = a.app ? (a.app.locCap ? `${a.app.type} ${a.app.rwy.id} D${sim.dthr(a).toFixed(1)}` : `${a.app.type} ${a.app.rwy.id}`) : a.kind === 'dep' ? `→ ${a.exitFix ?? ''}` : a.rules === 'VFR' ? 'VFR' : '';
-      const waiting = a.awaitingSince !== undefined && sim.t >= a.awaitingSince;
-      const cfl = levelText(a.cflSys ?? a.cleared).replace(' ft', '').replace(',', '');
-      const sflOff = a.cflSys && Math.abs(sim.ftOf(a.cleared) - sim.ftOf(a.cflSys)) > 60;
-      return `<button class="strip ${a.kind} ${a.cs === this.cs ? 'sel' : ''} ${a.state} ${a.emergency ? 'emer' : ''} ${waiting ? 'calling' : ''}" data-cs="${a.cs}">
+    const hdg = a.hdgSys !== undefined && a.mode !== 'LOC' ? `H${p3(norm360(a.hdgSys - sim.pack.meta.magVar))}` : a.mode === 'HOLD' ? `HLD ${a.hold?.fix ?? ''}` : a.mode === 'LOC' ? 'LOC' : a.route[0] ? `→${a.route[0].fix}` : '';
+    const spd = a.spdAssigned ? `S${a.spdAssigned}` : a.spdMin ? 'SMIN' : '';
+    const app = a.app ? (a.app.locCap ? `${a.app.type} ${a.app.rwy.id} D${sim.dthr(a).toFixed(1)}` : `${a.app.type} ${a.app.rwy.id}`) : a.kind === 'dep' ? `→ ${a.exitFix ?? ''}` : a.rules === 'VFR' ? 'VFR' : '';
+    const waiting = a.awaitingSince !== undefined && sim.t >= a.awaitingSince;
+    const cfl = levelText(a.cflSys ?? a.cleared).replace(' ft', '').replace(',', '');
+    const sflOff = a.cflSys && Math.abs(sim.ftOf(a.cleared) - sim.ftOf(a.cflSys)) > 60;
+    const efc = a.mode === 'HOLD' && a.efc !== undefined ? ` · EFC ${sim.utc(a.efc).slice(0, 5).replace(':', '')}` : '';
+    return `<button class="strip ${a.kind} ${a.cs === this.cs ? 'sel' : ''} ${a.state} ${a.emergency ? 'emer' : ''} ${waiting ? 'calling' : ''}" data-cs="${a.cs}" ${extra}>
         <span class="bay mono">${a.recat ?? a.perf.recat}</span>
         <span class="f id"><b class="mono">${a.cs}${a.formation > 1 ? `×${a.formation}` : ''}</b><i class="mono">${a.type}</i></span>
-        <span class="f rt"><i class="mono">${esc(a.proc ?? a.rules)}</i><i class="mono">${a.expectRwy ?? (a.kind === 'dep' ? sim.runway : '')}</i></span>
+        <span class="f rt"><i class="mono">${esc(a.proc ?? a.rules)}${efc}</i><i class="mono">${a.expectRwy ?? (a.kind === 'dep' ? sim.runway : '')}</i></span>
         <span class="f cfl mono ${sflOff ? 'off' : ''}">${cfl}</span>
         <span class="f vx"><i class="mono">${hdg}</i><i class="mono">${spd}</i></span>
         <span class="f ap mono">${esc(app)}</span>
-        ${a.request ? `<span class="s-req">REQ ${esc(a.request.text)}</span>` : ''}${a.emergency ? `<span class="s-req emer">${a.sqk} ${a.emergency.toUpperCase()}</span>` : ''}
+        ${a.request ? `<span class="s-req">REQ ${esc(a.request.text)}</span>` : ''}${a.emergency ? `<span class="s-req emer">${a.sqk} ${esc(a.emergencyText ?? a.emergency.toUpperCase())}</span>` : ''}
       </button>`;
-    }).join('') || (pend.length ? '' : '<div class="empty">No traffic yet</div>'));
   }
+  private stripSig = '';
+  private renderStrips() {
+    const sim = this.sim;
+    const live = sim.aircraft.filter((a) => !a.remove && a.state !== 'unconcerned');
+    const order = landingOrder(sim);
+    const seq = order.map((x) => x.ac).filter((a) => a.state === 'assumed' && a.mode !== 'HOLD');
+    const hold = live.filter((a) => a.state === 'assumed' && a.mode === 'HOLD');
+    const offered = live.filter((a) => a.state === 'inbound');
+    const est = sim.estimates.filter((e) => e.state === 'expected');
+    const deps = live.filter((a) => a.kind === 'dep' && a.state === 'assumed');
+    const pend = sim.releases.filter((r) => r.state === 'pending' || r.state === 'held');
+    const other = live.filter((a) => a.state === 'assumed' && a.kind !== 'arr' && a.kind !== 'dep');
+    const xfr = live.filter((a) => a.state === 'transferred').slice(-4);
+    const sig = JSON.stringify([seq.map((a) => a.cs), sim.sequence, this.cs, Math.floor(sim.t / 2)]);
+    if (sig === this.stripSig && !this.dragging) return;
+    if (this.dragging) return;
+    this.stripSig = sig;
+    const bay = (title: string, n: number | string, body: string, cls = '') => body ? `<div class="bayh ${cls}"><span>${title}</span><b class="mono">${n}</b></div>${body}` : '';
+    this.els.strips.innerHTML =
+      bay('Offered by Brussels', offered.length + est.length,
+        est.map((e) => `<div class="strip-pend est mono"><span class="bay">E</span><b>${esc(e.cs)}</b><i>${esc(e.type)} ${esc(e.star)} · ${esc(e.fix)} ${sim.utc(e.t).slice(3, 5)}</i><em>${esc(levelText(e.xfl).replace(' ft', ''))}${e.revised ? ' rev' : ''}</em></div>`).join('') + offered.map((a) => this.stripHtml(a)).join(''), 'offered') +
+      bay('Landing sequence <small>drag to reorder</small>', seq.length, `<div class="seq" data-e2="seq">${seq.map((a) => this.stripHtml(a, 'data-seq="1"')).join('')}</div>`, 'seqh') +
+      bay(`Hold ${hold[0]?.hold?.fix ?? 'ALHUV'}`, hold.length, hold.sort((a, b) => a.tgtAlt - b.tgtAlt).map((a) => this.stripHtml(a)).join(''), 'holdh') +
+      bay('Departures', deps.length + pend.length, pend.map((r) => `<div class="strip-pend mono"><span class="bay">⏸</span><b>${esc(r.cs)}</b><i>${esc(r.type)} ${esc(r.sid)}</i><em>${r.state === 'held' ? 'held' : 'release?'}</em></div>`).join('') + deps.map((a) => this.stripHtml(a)).join(''), 'deph') +
+      bay('Other traffic', other.length, other.map((a) => this.stripHtml(a)).join('')) +
+      bay('Transferred', xfr.length, xfr.map((a) => this.stripHtml(a)).join(''), 'xfrh') ||
+      '<div class="empty">No traffic yet</div>';
+    this.bindSeqDrag();
+  }
+  private dragging = false;
+  /** Drag a strip in the landing sequence (by its bay tab or a long press) to change the order. */
+  private bindSeqDrag() {
+    const box = this.els.strips.querySelector<HTMLElement>('[data-e2="seq"]');
+    if (!box) return;
+    box.querySelectorAll<HTMLElement>('.strip').forEach((el) => {
+      el.addEventListener('pointerdown', (e) => {
+        if (!(e.target as HTMLElement).closest('.bay')) return;
+        e.preventDefault(); e.stopPropagation();
+        this.dragging = true;
+        el.setPointerCapture(e.pointerId);
+        el.classList.add('dragging');
+        const y0 = e.clientY;
+        const move = (ev: PointerEvent) => { el.style.transform = `translateY(${ev.clientY - y0}px)`; };
+        const up = (ev: PointerEvent) => {
+          el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up);
+          el.classList.remove('dragging'); el.style.transform = '';
+          const sibs = [...box.querySelectorAll<HTMLElement>('.strip')].filter((x) => x !== el);
+          let idx = sibs.findIndex((x) => { const r = x.getBoundingClientRect(); return ev.clientY < r.top + r.height / 2; });
+          if (idx < 0) idx = sibs.length;
+          const order = sibs.map((x) => x.dataset.cs!);
+          order.splice(idx, 0, el.dataset.cs!);
+          this.sim.setSequence(order);
+          this.dragging = false; this.stripSig = '';
+          this.toast(`Landing order: ${order.slice(0, 5).join(', ')}${order.length > 5 ? '…' : ''}`, 2200);
+          this.renderStrips(); this.renderAman();
+        };
+        el.addEventListener('pointermove', move); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+      });
+    });
+  }
+
+  // ---------------- coordination panel: releases, Brussels, military, safety nets ----------------
+  private coordSig = '';
+  private renderCoord() {
+    const sim = this.sim;
+    const nets = sim.safetyNets();
+    const reqs = sim.coordReqs.filter((r) => r.state === 'pending');
+    const lastBy = (from: string) => { for (let i = sim.log.length - 1; i >= 0 && i > sim.log.length - 40; i--) { const t = sim.log[i]; if (t.channel === 'icom' && t.from === from) return sim.t - t.t0; } return 1e9; };
+    const lit = {
+      TWR: sim.releases.some((r) => r.state === 'pending') || lastBy('TWR') < 20,
+      BRU: reqs.length > 0 || lastBy('BRU') < 20,
+      MIL: sim.aircraft.some((a) => a.request?.kind === 'milxing' && a.state === 'inbound') || sim.tsaPending.size > 0 || lastBy('MIL') < 20,
+      SUP: lastBy('SUP') < 30,
+    } as Record<string, boolean>;
+    const sig = JSON.stringify([this.icomHtml.length, this.icomSig, reqs.map((r) => r.id), nets.map((n) => n.id), lit, Math.floor(sim.t / 2)]);
+    if (sig === this.coordSig) return;
+    this.coordSig = sig;
+    const key = (u: string, sub: string) => `<button class="ikey ${lit[u] ? 'lit' : ''}" data-ikey="${u}"><b>${u}</b><small>${sub}</small></button>`;
+    const brus = reqs.map((r) => `<div class="ic-card bru"><div class="ic-h"><span class="ic-from">BRU ⇄</span><b class="mono">${esc(r.cs)}</b><span class="ic-t mono">${mmss(r.expireT - sim.t)}</span></div><div class="ic-s">Early transfer at ${esc(levelText(r.level))}?</div><div class="ic-b"><button data-rel="${esc(r.cs)}" data-v="bruok" class="ok">Approve</button><button data-rel="${esc(r.cs)}" data-v="bruno">As coordinated</button></div></div>`).join('');
+    const tsas = [...sim.tsaPending].map(([n, t]) => `<div class="net mil"><span>TSA</span><b>${esc(n)}</b><em>live ${sim.utc(t).slice(0, 5)}Z</em></div>`).join('');
+    const netRows = nets.map((n) => {
+      if (n.kind === 'STCA' || n.kind === 'LOS') return `<button class="net red" data-cs="${n.a}"><span>${n.kind}</span><b>${n.a} / ${n.b}</b><em>${n.nm.toFixed(1)} NM ${Math.round(n.vertFt / 100) * 100} ft${n.kind === 'STCA' ? ` · ${mmss(n.tCpa)}` : ''}</em></button>`;
+      if (n.kind === 'SFL') return `<button class="net amb" data-cs="${n.cs}"><span>MODE S</span><b>${n.cs}</b><em>sel ${esc(levelText(n.sfl).replace(' ft', ''))} ≠ ${esc(levelText(n.cfl).replace(' ft', ''))}</em></button>`;
+      if (n.kind === 'MSAW') return `<button class="net red" data-cs="${n.cs}"><span>MSAW</span><b>${n.cs}</b><em>${Math.round(n.alt / 100) * 100} ft &lt; ${n.mva}</em></button>`;
+      if (n.kind !== 'CLAM') return '';
+      return `<button class="net amb" data-cs="${n.cs}"><span>CLAM</span><b>${n.cs}</b><em>${Math.round(n.alt / 100) * 100} ft vs ${esc(levelText(n.cfl))}</em></button>`;
+    }).join('');
+    this.els.coord.innerHTML = `
+      <div class="ikeys">${key('TWR', '118.130')}${key('BRU', 'ACC')}${key('MIL', 'Semmerzake')}${key('BEEK', '123.975')}${key('MUAC', '> FL245')}${key('SUP', 'supervisor')}</div>
+      ${this.icomHtml || brus ? `<div class="coord-cards">${this.icomHtml}${brus}</div>` : '<div class="empty">No coordination waiting.</div>'}
+      <div class="nets"><div class="nets-h">Safety nets <b class="mono ${nets.length ? 'bad' : ''}">${nets.length || 'clear'}</b></div>${netRows}${tsas}</div>`;
+  }
+  private icomHtml = '';
 }

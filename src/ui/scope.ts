@@ -693,6 +693,19 @@ export class Scope {
 
     // TMA and CTR
     ctx.strokeStyle = S.tma; ctx.lineWidth = 1; ctx.setLineDash([7, 6]); this.path(ctx, pack.tma.poly); ctx.stroke(); ctx.setLineDash([]);
+    // published TMA sub-areas (Two to Five), fainter; the night-only ones only when they are active (2200-0500 UTC)
+    if (pack.tmaParts?.length) {
+      const hhmm = Number(this.sim.utc().slice(0, 5).replace(':', ''));
+      const night = hhmm >= 2200 || hhmm < 500;
+      ctx.save(); ctx.globalAlpha = 0.55; ctx.setLineDash([3, 6]);
+      for (const part of pack.tmaParts) {
+        if (part.name === pack.tma.name) continue;
+        const nightOnly = /2200/.test(part.hours ?? '');
+        if (nightOnly && !night) continue;
+        this.path(ctx, part.poly); ctx.stroke();
+      }
+      ctx.restore(); ctx.setLineDash([]);
+    }
     ctx.strokeStyle = S.ctr; ctx.lineWidth = 1.2; this.path(ctx, pack.ctr.poly); ctx.stroke();
     // TSAs, labelled at the centroid with their vertical limits
     for (const t of pack.tsas) {

@@ -50,6 +50,11 @@ export const GLOSSARY: Record<string, string> = {
   'Track miles': 'The distance an aircraft still has to fly to the runway. Vectors add or remove track miles.',
   LVP: 'Low visibility procedures: in fog, only the CAT III ILS is used and spacing grows to protect the ILS signal.',
   RVR: 'Runway visual range: how far a pilot can see along the runway, in metres.',
+  Strip: 'An electronic flight strip: one card per flight with its type, route, cleared level and what you last told it. The strip bay sorts them by state: offered by Brussels, landing sequence, hold, departures, other, transferred.',
+  'Safety nets': 'The automatic alarms on the position: STCA for converging aircraft, MSAW for an aircraft too low, CLAM for one that passes its cleared level, and the Mode S check that the pilot set the level you cleared.',
+  Estimate: 'Brussels tells you on the intercom when an arrival will reach your boundary and at what level, a few minutes before it hands it over.',
+  'Push to talk': 'Hold a key, pedal or button to transmit, speak, and let go. Only one voice can use the frequency at a time.',
+  Correction: 'Said straight after a wrong transmission: "correction, disregard". It only works before the pilot starts the readback.',
   Flow: 'A restriction from Brussels, such as 10 NM in trail, that departures must meet before you hand them on.',
 };
 
@@ -60,5 +65,5 @@ export const GLOSSARY_GROUPS: { title: string; terms: string[] }[] = [
   { title: 'Airspace', terms: ['TMA', 'CTR', 'TSA', 'MVA', 'Flow'] },
   { title: 'Spacing and wake', terms: ['RECAT-EU', 'Wake minima', 'Sequence', 'Vectors', 'Track miles', 'FTDi', 'AMAN', 'EFC'] },
   { title: 'Safety nets and tools', terms: ['STCA', 'LoS', 'MSAW', 'CLAM', 'Mode S SFL', 'CPA', 'RBL'] },
-  { title: 'Working the position', terms: ['Readback', 'Handoff', 'Release', 'Intercom', 'Squawk', 'MAYDAY'] },
+  { title: 'Working the position', terms: ['Readback', 'Handoff', 'Release', 'Intercom', 'Estimate', 'Strip', 'Safety nets', 'Push to talk', 'Correction', 'Squawk', 'MAYDAY'] },
 ];

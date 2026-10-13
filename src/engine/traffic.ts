@@ -19,6 +19,7 @@ export const CARGO_OPS: { op: string; types: string[]; w: number }[] = [
   { op: 'CKS', types: ['B744', 'B77L'], w: 2 },
   { op: 'CLX', types: ['B748', 'B744'], w: 2 },
   { op: 'DHK', types: ['B763', 'A306'], w: 2 },
+  { op: 'ABR', types: ['B738'], w: 2 },
   { op: 'BCS', types: ['A306', 'B752'], w: 2 },
 ];
 /** The night inbound bank: long-haul heavies, mostly from the Gulf, Africa and Asia. */
@@ -345,6 +346,9 @@ function playCard(card: DeckCard, t: number, c: DeckCtx) {
   const { rng } = c;
   switch (card) {
     case 'tsa': {
+      // TSA 29A is a weekday daytime area (by NOTAM): at night the card becomes a military crossing instead
+      const hr = Number(utcPlus(c.start, t).slice(0, 2));
+      if (hr >= 20 || hr < 6) { playCard('military', t, c); break; }
       c.events.push({ t, kind: 'tsa', name: 'TSA29A', on: true });
       c.events.push({ t: t + rng.int(15, 25) * 60, kind: 'tsa', name: 'TSA29A', on: false });
       c.notes.push(`TSA 29A active from ${utcPlus(c.start, t)}.`);

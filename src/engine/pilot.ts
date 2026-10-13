@@ -100,11 +100,18 @@ export function speedTarget(ac: Aircraft, world: PilotWorld): number {
   return v;
 }
 
+/** ICAO Doc 8168 holding entry from the heading over the fix: direct, teardrop (offset) or parallel. */
+export function holdEntry(hdg: number, inbound: number, turn: 'L' | 'R'): 'direct' | 'teardrop' | 'parallel' {
+  const d = angDiff(inbound, hdg) * (turn === 'L' ? -1 : 1); // heading relative to the inbound course, mirrored for left-hand holds
+  return d >= -70 && d <= 110 ? 'direct' : d > 110 ? 'teardrop' : 'parallel';
+}
 function startHold(ac: Aircraft, world: PilotWorld, fix: string, p: XY) {
   const h = world.holdFor(fix);
   const inbound = h?.inbound ?? bearing(ac.p, p);
   ac.mode = 'HOLD';
-  ac.hold = { fix, p, inbound, turn: h?.turn ?? 'R', phase: dist(ac.p, p) < 1 ? 'turnOut' : 'entry', tPhase: world.t };
+  const turn = h?.turn ?? 'R';
+  const entry = dist(ac.p, p) < 1 ? holdEntry(ac.hdg, inbound, turn) : undefined;
+  ac.hold = { fix, p, inbound, turn, phase: entry ? (entry === 'direct' ? 'turnOut' : entry) : 'entry', tPhase: world.t, entry };
   ac.route = [];
 }
 export { startHold };
@@ -185,7 +192,28 @@ export function stepAircraft(ac: Aircraft, world: PilotWorld, dt: number) {
       switch (h.phase) {
         case 'entry':
           desired = windCorrected(ac, bearing(ac.p, h.p), w);
-          if (dist(ac.p, h.p) < 0.6) { h.phase = 'turnOut'; h.tPhase = world.t; }
+          if (dist(ac.p, h.p) < 0.6) {
+            // ICAO Doc 8168 entry sectors, from the heading over the fix relative to the inbound course
+            h.entry = holdEntry(ac.hdg, h.inbound, h.turn);
+            h.phase = h.entry === 'direct' ? 'turnOut' : h.entry; h.tPhase = world.t;
+          }
+          break;
+        case 'teardrop':
+          // outbound on a track 30° into the holding side for one minute, then turn in
+          desired = norm360(outbound - dirSign * 30);
+          if (world.t - h.tPhase >= 60) { h.phase = 'turnIn'; h.tPhase = world.t; }
+          break;
+        case 'parallel':
+          // parallel to the inbound course on the non-holding side for one minute
+          desired = outbound; forceDir = h.turn === 'L' ? 'R' : 'L';
+          if (Math.abs(angDiff(ac.hdg, outbound)) < 5) forceDir = undefined;
+          if (world.t - h.tPhase >= 75) { h.phase = 'parTurn'; h.tPhase = world.t; }
+          break;
+        case 'parTurn':
+          // turn towards the holding side, through more than 180°, back to the fix
+          forceDir = h.turn === 'L' ? 'R' : 'L';
+          desired = norm360(ac.hdg - dirSign * 90);
+          if (Math.abs(angDiff(ac.hdg, bearing(ac.p, h.p))) < 30) { h.phase = 'inbound'; h.tPhase = world.t; }
           break;
         case 'turnOut':
           desired = outbound; forceDir = h.turn;

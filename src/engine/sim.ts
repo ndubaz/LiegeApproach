@@ -1595,7 +1595,8 @@ export class Sim implements PilotWorld {
     ac.landed = true; ac.remove = true;
     if (this.sequence.includes(ac.cs)) this.sequence = this.sequence.filter((x) => x !== ac.cs);
     (this as any)._lowLanded = ((this as any)._lowLanded ?? 0) + ac.lowSec;
-    this.runwayBusyUntil = this.t + (this.lvp ? 120 : 50);
+    // runway occupancy: wide-body freighters vacate 22L in about a minute; LVP adds the protected area
+    this.runwayBusyUntil = this.t + (this.lvp ? 120 : ac.perf.wake === 'H' || ac.perf.wake === 'J' ? 60 : 50);
     // Spacing pairs consecutive landings on this runway: this aircraft's distance out when the previous one touched down.
     const prev = this.lastLanding.get(r.id);
     if (prev && prev.cs !== ac.cs) {

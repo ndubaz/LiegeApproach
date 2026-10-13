@@ -106,29 +106,31 @@ The sim treats an active TSA as closed to your traffic over its full published v
 - The 04R ILS initial from ALHUV via ABLAZ (2,500 ft), PIZVE (2,200 ft), KAQZI (IF 2,100 ft) is published but not modelled as a procedure (noted on the runway).
 - Video map (river, roads, borders, towns) is drawn by hand.
 
-## 6. Remaining deviations
+## 6. Deviations found, and their status in 1.0
 
-Severity: **High** = a rated controller would call it wrong in normal play. **Medium** = visible to a rated controller, rarely matters to the game. **Low** = cosmetic or edge case.
+Severity: **High** = a rated controller would call it wrong in normal play. **Medium** = visible to a rated controller, rarely matters to the game. **Low** = cosmetic or edge case. Status is as of the 1.0 build.
 
-| # | Deviation | Where | Real | Severity |
+| # | Deviation found | Real | Severity | Status in 1.0 |
 |---|---|---|---|---|
-| 1 | RECAT-EU categories: A320, A321, B738 are E; B752 is D | `perf.ts` PERF | A320/A321/B738 are D (upper medium); B752 is C (lower heavy) | High |
-| 2 | RECAT-EU table: C to E 3.5 NM; F to F missing | `perf.ts` RECAT_NM | C to E 4 NM; F to F 3 NM; C to C is the radar minimum | Medium |
-| 3 | 2.5 NM on the same final inside 10 NM used everywhere | `sim.ts` monitor(), onTouchdown() | Doc 4444 8.7.3.2 allows it only where the authority approves it (ROT 50 s or less, braking good, wake minima not applicable). Not found in the EBLG AIP | Medium (unverified) |
-| 4 | Transition level computed (27 ft/hPa, 1,000 ft layer) | `weather.ts` transitionLevel() | ENR 1.7 table. Differs at QNH 995, 977, 959 (sim one FL low) | Medium |
-| 5 | SID initial climb is FL060 at every QNH | `sim.ts` release (line ~377) | FL070 when QNH is 995 hPa or below (AD 2.22) | Medium |
-| 6 | Transcript shows "descend 4,000 ft", "reduce speed 210 kt" | `clearance.ts` PHRASE_STYLE | ICAO wording, already used in speech | Medium |
-| 7 | Hold entry: always direct to the fix then turn outbound | `pilot.ts` HOLD 'entry' | Doc 8168 sector entries: parallel, offset (teardrop), direct | Medium |
-| 8 | Active TSA closed over its whole volume (5.3) | `sim.ts` monitor(), pack TSAs | GAT in CAS keeps its airspace unless delegated | Medium |
-| 9 | Bank arrival rate up to 24-27 per hour | `traffic.ts` SHIFT_CURVE, TEMPLATES | 2025 average: 7.4 movements in the 00:00 hour, 6.3 at 04:00, about 32 per night (23:00-06:00). Declared capacity 34 (RWY 22) / 35 (RWY 04) per hour | Medium (deliberate game compression; within declared capacity) |
-| 10 | VFR crossing squawks 70xx | `sim.ts` around line 790 | Liège assigns from 6330-6343 (ENR 1.6) | Low |
-| 11 | Glide path reference 50 ft above threshold | `pilot.ts` glideAlt() | TCH 56/58/54/50 ft per runway (`rwy.tch`) | Low |
-| 12 | Missed approach speed not applied | `sim.ts` goAround | 215 kt to ALHUV at 3,000 ft (`rwy.missedSpd`) | Low |
-| 13 | Readback error rate 2-4 % of level/heading clearances (x3 for "unfamiliar" crews) | `scenarios.ts` readbackErr | About 1 % of TRACON readbacks (0.5 % with two items, 3.6 % with five or more), Cardosi 1996 | Low (training emphasis) |
-| 14 | Runway occupancy 50 s (120 s in LVP) for every type | `sim.ts` onTouchdown() | Wide-body freighters on 22L typically 55-70 s (estimate; no Liège ROT data found) | Low |
-| 15 | Type mix has almost no narrow-body freighters or turboprops | `traffic.ts` CARGO_OPS | Liège sees B737F (ASL), A321P2F and ATR 72F alongside the wide-bodies (fleet knowledge, not a published count) | Low |
-| 16 | Free-play TSA card can activate TSA29A at night | `traffic.ts` deck | TSA29A: Monday to Friday by NOTAM, mostly daytime CSAR | Low |
-| 17 | Maastricht callsign "Maastricht" on transfer | `clearance.ts` UNIT_NAME | Probably "Maastricht Radar" (pack meta uses that); not verified, an engine test pins the current word | Low |
+| 1 | RECAT-EU categories: A320, A321, B738 were E; B752 was D | A320/A321/B738 are D; B752 is C (RECAT-EU Ed. 1.1 Table 2) | High | **Fixed** (`perf.ts`) |
+| 2 | RECAT-EU table: C to E 3.5 NM; F to F missing | C to E 4 NM; F to F 3 NM | Medium | **Fixed** (`perf.ts`) |
+| 3 | 2.5 NM on the same final inside 10 NM used everywhere | Doc 4444 8.7.3.2: only where the authority approves it. Not found in the EBLG AIP | Medium | **Fixed**: 3 NM unless the pack sets `meta.reducedFinalSep`; EBLG does not |
+| 4 | Transition level computed from a formula | ENR 1.7 table; the formula was one FL low at QNH 995, 977, 959 | Medium | **Fixed**: the published table is used (`tlFromTable`) |
+| 5 | SID initial climb FL060 at every QNH | FL070 when QNH is 995 hPa or below (AD 2.22) | Medium | **Fixed** |
+| 6 | Transcript showed "descend 4,000 ft", "reduce speed 210 kt" | ICAO: "descend to altitude 4,000 ft", "reduce speed to 210 knots" | Medium | **Fixed**: transcript and speech both use ICAO wording |
+| 7 | Hold entry always direct | Doc 8168 sectors: parallel, offset (teardrop), direct | Medium | **Fixed** (`pilot.ts` `holdEntry`, tested for every STAR) |
+| 8 | Active TSA closed over its whole volume (5.3) | GAT in controlled airspace keeps it unless delegated | Medium | Open: deliberate, stricter than reality |
+| 9 | Bank arrival rate up to 24-27 per hour | 2025 average about 32 movements per night; declared capacity 34-35 per hour | Medium | Open: deliberate compression, within declared capacity |
+| 10 | VFR crossing squawks 70xx | 6330-6343 (ENR 1.6) | Low | **Fixed** |
+| 11 | Glide path reference 50 ft for every runway | TCH 56/58/54/50 ft | Low | **Fixed** (`rwy.tch`) |
+| 12 | Missed approach speed not applied | 215 kt to ALHUV at 3,000 ft | Low | **Fixed** (`missedSpd`, `missedAlt`) |
+| 13 | Readback error rate 2-4 % | About 1 % (Cardosi 1996); higher after 0300 with fatigue | Low | Open: training emphasis; fatigue now raises it after 0300 |
+| 14 | Runway occupancy 50 s for every type | Wide-body freighters about 55-70 s | Low | **Fixed**: 60 s for heavies, 50 s otherwise, 120 s in LVP |
+| 15 | Almost no narrow-body freighters | B737F (ASL), A321P2F, ATR 72F also operate | Low | **Partly fixed**: ASL B738 added; ATR 72F not modelled |
+| 16 | TSA card could activate TSA29A at night | Weekday daytime area by NOTAM | Low | **Fixed**: at night the card becomes a military crossing |
+| 17 | Maastricht transfer callsign | Probably "Maastricht Radar" | Low | Open: not verified |
+
+Still approximate after 1.0: the minimum vectoring altitudes (the ATCSMAC chart could not be downloaded; areas follow the TMA floors and terrain), the delegation of the Brussels CTA above FL055 to Liège, upstream unit frequencies and callsigns, and the hand-drawn video map.
 
 ## 7. Engine measurements
 
@@ -143,15 +145,15 @@ All from headless runs (`Sim.step()` at 1 s, calm wind, QNH 1013). Not edited he
 | Turn rate | Bank limited to 25°, capped at 3°/s: 1.9°/s at 250 kt, 2.3°/s at 210 kt, 3°/s at 160 kt | Autopilot heading mode 25-30° bank | Realistic |
 | LOC capture | 30° intercept: captures on the centreline, overshoot about 0.3 NM; 45° about 0.5 NM | Small overshoot at 45°, near zero at 30° | Acceptable |
 | ILS speeds | 180 kt to 12 NM, 160 kt to about 4.5 NM, Vapp inside; stable gate 1,000 ft | Common European pattern (160 kt to 4 NM) | Realistic |
-| Hold at ALHUV, 230 kt | Lap 292 s: 74 s turn, 60 s outbound, about 76 s turn, 82 s inbound | 1 min legs at 25° bank: about 290 s | Realistic timing; entries simplified (row 7) |
+| Hold at ALHUV, 230 kt | Lap 292 s: 74 s turn, 60 s outbound, about 76 s turn, 82 s inbound | 1 min legs at 25° bank: about 290 s | Realistic timing; Doc 8168 entries since 1.0 |
 | Go-arounds, autopilot on all challenges | 2 in 113 landings (17.7 per 1,000) | 1-4 per 1,000 approaches in normal operations | Driven by the autopilot player, not the pilot model |
-| Wake and radar minima | 3 NM, 2.5 NM on final inside 10 NM, RECAT-EU table | See rows 1-3 | Fix rows 1-3 |
+| Wake and radar minima | 3 NM everywhere (2.5 NM only with unit approval), RECAT-EU table corrected | See rows 1-3 | Fixed in 1.0 |
 | Runway occupancy | 50 s (120 s LVP) | See row 14 | Acceptable |
 | Readback errors | 2-4 % per level/heading clearance | See row 13 | Higher than real, by design |
 | Traffic, free play 120 min | Night template: 22 then 12 arrivals per hour, 6-7 departures. Shift: 27 then 7 arrivals; 13 departures in hour two | See row 9 | Busy-night peak, not an average night |
 | TSA events after the outline change (autopilot) | Hot TSA: 2 before, 8 after. Five 04 shifts with military: 6 before, 11 after | | The autopilot does not route round the larger TSA29A |
 
-## 8. Changes recommended in files this track does not own
+## 8. Changes recommended by the validation (applied in 1.0 except items 11 and 17)
 
 Exact changes, in priority order.
 

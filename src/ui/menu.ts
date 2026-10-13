@@ -1,3 +1,4 @@
+import { createPtt } from './ptt';
 import './menu.css';
 import { CHALLENGES, TIER_NAMES, unlockedTiers } from '../engine/scenarios';
 import type { Aircraft, Comp, Scenario, SimEvent } from '../engine/types';
@@ -89,7 +90,7 @@ export function renderHome(root: HTMLElement, hd: MenuHandlers) {
         <p class="home-live mono" data-e="live"></p>
       </header>
       <nav class="bay" aria-label="Main menu">
-        ${strip('tutorial', 'tut', 'T', 'Learn the position', 'Ten short lessons with exams, from the scope to a checkride', `${tut.size}/${LESSONS.length}`, 'lessons', firstTime ? 'start' : '')}
+        ${strip('tutorial', 'tut', 'T', 'Learn the position', 'Eleven short lessons with exams, from the scope to the full position', `${tut.size}/${LESSONS.length}`, 'lessons', firstTime ? 'start' : '')}
         ${strip('daily', 'day', 'D', 'Daily shift', dLine, String(daily.streak), daily.streak === 1 ? 'day streak' : 'day streak', daily.today ? 'played' : '')}
         ${strip('free', 'arr', 'F', 'Free play', 'Cargo night shift or your own mix of hour, weather and military activity', '∞', 'sessions')}
         ${strip('challenges', 'dep', 'C', 'Challenges', `${CHALLENGES.length} scripted scenarios, one freighter to a compound emergency`, `${passed.size}/${CHALLENGES.length}`, 'passed')}
@@ -473,10 +474,22 @@ export function renderSettings(root: HTMLElement, hd: MenuHandlers) {
       ${radio('brightness', 'Console brightness', [['night', 'Night'], ['day', 'Day']])}
       ${radio('speedVectorMin', 'Speed vector', [['1', '1 min'], ['2', '2 min'], ['3', '3 min']])}
       <fieldset><legend>Voice speed</legend><input type="range" min="0.8" max="1.4" step="0.02" data-k="speechRate" value="${s.speechRate}"></fieldset>
+      ${radio('pttKey', 'Push-to-talk key <small>hold to speak a clearance; pause moves to P</small>', [['Space', 'Space bar'], ['Backquote', '` key'], ['ControlRight', 'Right Ctrl'], ['', 'Off']])}
+      ${radio('voiceLang', 'Speech recognition accent', [['en-GB', 'English (UK)'], ['en-US', 'English (US)']])}
+      <fieldset><legend>Foot pedal <small>${s.pedal ? `bound: ${s.pedal.kind === 'key' ? s.pedal.code : `gamepad button ${s.pedal.button}`}` : 'none'}</small></legend><button class="link" type="button" data-pedal="learn">Press to learn your pedal</button>${s.pedal ? ' · <button class="link" type="button" data-pedal="clear">Clear</button>' : ''}<span data-e="pedalMsg" class="dim"></span></fieldset>
     </div>
     ${savePanelHtml()}
   `);
   wireSavePanel(root, hd, () => renderSettings(root, hd));
+  root.querySelectorAll<HTMLButtonElement>('[data-pedal]').forEach((b) => b.addEventListener('click', async () => {
+    if (b.dataset.pedal === 'clear') { s.pedal = null; saveSettings(s); renderSettings(root, hd); return; }
+    const msg = root.querySelector('[data-e="pedalMsg"]'); if (msg) msg.textContent = ' Press the pedal now (Escape to cancel)…';
+    const ptt = createPtt({ target: document.createElement('button'), key: '', onDown() {}, onUp() {} });
+    const got = await ptt.learnPedal(10000);
+    ptt.destroy();
+    if (got) { s.pedal = got as Settings['pedal']; saveSettings(s); }
+    renderSettings(root, hd);
+  }));
   root.querySelectorAll<HTMLInputElement>('[data-k]').forEach((inp) => inp.addEventListener('change', () => {
     const k = inp.dataset.k as keyof Settings;
     const v = inp.type === 'checkbox' ? inp.checked : inp.type === 'range' ? Number(inp.value) : (['radarRefresh', 'speedVectorMin'].includes(k) ? Number(inp.value) : inp.value);

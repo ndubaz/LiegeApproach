@@ -21,11 +21,15 @@ export interface Settings {
   showMva: boolean;
   showProcedures: boolean;
   hints: boolean;          // supervisor hints during free play and challenges
+  pttKey: string;          // KeyboardEvent.code held to talk ('' = off); pause then moves to P
+  pedal: { kind: 'key'; code: string } | { kind: 'pad'; button: number; pad?: string } | null; // foot pedal binding
+  voiceLang: 'en-GB' | 'en-US';
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   voice: true, speakAtc: false, speechRate: 1.08, radarRefresh: 4, quickMode: false, trainingWheels: false,
   leftHanded: false, labelSize: 'M', brightness: 'night', unlockAll: false, speedVectorMin: 1, showMva: false, showProcedures: true, hints: true,
+  pttKey: 'Space', pedal: null, voiceLang: 'en-GB',
 };
 
 const get = <T>(k: string, d: T): T => {

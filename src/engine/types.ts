@@ -22,7 +22,7 @@ export interface Request {
   band?: [Level, Level];
 }
 
-export interface HoldState { fix: string; p: XY; inbound: number; turn: 'L' | 'R'; phase: 'entry' | 'turnOut' | 'outbound' | 'turnIn' | 'inbound'; tPhase: number }
+export interface HoldState { fix: string; p: XY; inbound: number; turn: 'L' | 'R'; phase: 'entry' | 'turnOut' | 'outbound' | 'turnIn' | 'inbound' | 'teardrop' | 'parallel' | 'parTurn'; tPhase: number; entry?: 'direct' | 'teardrop' | 'parallel' }
 
 export interface ApproachState { type: ApproachType; rwy: Runway; locCap: boolean; gsCap: boolean; capT?: number; tooHigh?: boolean }
 

@@ -179,7 +179,7 @@ export function createPtt(opts: PttOptions): PttController {
       return;
     }
     const isPedal = pedal?.kind === 'key' && e.code === pedal.code;
-    const isKey = !!key && e.code === key && !isTypingTarget(e.target) && !e.ctrlKey && !e.metaKey && !e.altKey;
+    const isKey = !!key && e.code === key && !isTypingTarget(e.target) && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey;
     if (!isPedal && !isKey) return;
     e.preventDefault?.();
     if (e.repeat) return;                       // auto-repeat is not a new press
