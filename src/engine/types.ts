@@ -146,6 +146,7 @@ export type SpawnSpec = {
   spawnDist?: number;       // arrivals: track miles before the STAR end
   silent?: boolean;         // never calls (unconcerned traffic)
   goAroundAt?: number;      // forced go-around (tower) at this distance from threshold
+  callNow?: boolean;        // checks in immediately on spawn (hot start)
 };
 
 export type ScEvent =
@@ -165,6 +166,7 @@ export interface PassCriteria {
   minRatings?: Partial<Record<Comp, number>>;
   noMissedReadbacks?: boolean;
   noTsa?: boolean;
+  minDeparturesHandled?: number;
 }
 
 export interface Scenario {
@@ -187,4 +189,6 @@ export interface Scenario {
   freePlay?: boolean;
   noSayAgain?: boolean;
   tutorial?: boolean;
+  briefing?: string;   // one-paragraph shift briefing shown before the session
+  objectives?: { cs: string; text: string; byT: number }[]; // timed objectives (emergencies), byT in sim seconds
 }
