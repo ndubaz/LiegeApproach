@@ -71,11 +71,13 @@ export function etaS(ac: Aircraft, d: number): number {
   // [from NM, to NM, speed]
   const segs: [number, number, number][] = [[0, 4, pf.vapp], [4, 7, Math.max(pf.vapp, 160)], [7, 12, Math.max(pf.vapp, 180)], [12, 22, clean], [22, Infinity, far]];
   const limitFrom = ac.spdAssigned ? (ac.spdUntil ?? 6) : Infinity;
+  // on the localizer the crew never speeds up without an instruction: no faster than it is now
+  const cap = ac.app?.locCap && !ac.spdAssigned ? Math.max(ac.ias, pf.vapp) : Infinity;
   let t = 0;
   for (const [a, b, v0] of segs) {
     if (d <= a) break;
     const len = Math.min(d, b) - a;
-    const v = a >= limitFrom - 0.01 ? Math.min(v0, Math.max(ac.spdAssigned!, pf.vapp)) : v0;
+    const v = Math.min(cap, a >= limitFrom - 0.01 ? Math.min(v0, Math.max(ac.spdAssigned!, pf.vapp)) : v0);
     t += (len / Math.max(60, v)) * 3600;
   }
   return t;
@@ -95,9 +97,12 @@ export function sequenceMembers(sim: Sim, except?: Aircraft): Aircraft[] {
   return sim.aircraft.filter((o) => {
     if (o === except || o.remove || o.landed || o.kind !== 'arr' || o.lowPass) return false;
     if (o.state === 'unconcerned') return false;
-    if (o.mode === 'HOLD' || (o as any)._holdAt) return false;
+    // cleared for the approach (or in an emergency): committed, whatever hold instruction came before
     if (o.app || o.emergency) return true;
-    if (o.mode === 'NAV' && o.route.some((l) => l.fix === (o.app?.rwy ?? sim.rwy).ifFix) && isTransition(sim, o.proc)) return true;
+    if (o.mode === 'HOLD') return false;
+    // on a transition to the final (an earlier hold instruction no longer counts once it is on one)
+    if (o.mode === 'NAV' && o.route.some((l) => l.fix === sim.rwy.ifFix || l.fix === (o.expectRwy && sim.pack.runways.get(o.expectRwy)?.ifFix)) && isTransition(sim, o.proc)) return true;
+    if ((o as any)._holdAt) return false;
     if (o.mode === 'HDG' && o.state === 'assumed') {
       const r = sim.rwy;
       return Math.abs(crossTrack(o.p, r.thr, r.crs)) < 12 && alongTrack(o.p, r.thr, norm360(r.crs + 180)) > -2 && dist(o.p, r.thr) < 25;
@@ -200,13 +205,16 @@ export function asCleared(sim: Sim, trName: string | undefined, ft: number | und
       const legs = tr.legs.map((l) => ({ ...l }));
       const i = c.route.findIndex((l) => l.fix === legs[0].fix);
       c.route = i >= 0 ? [...c.route.slice(0, i), ...legs] : legs.slice(dist(c.p, legs[0].p) < 2 ? 1 : 0);
-      c.mode = 'NAV'; c.hold = undefined; c.proc = tr.name;
+      c.mode = 'NAV'; c.hold = undefined; c.proc = tr.name; (c as any)._holdAt = undefined;
     }
     if (ft !== undefined) c.tgtAlt = ft;
     const r = sim.pack.runways.get(rwyId);
-    if (r) c.app = { type: 'ILS', rwy: r, locCap: false, gsCap: false };
+    if (r) { c.app = { type: 'ILS', rwy: r, locCap: false, gsCap: false }; (c as any)._holdAt = undefined; }
   };
 }
+
+/** Look-ahead for a transition or approach clearance: long enough to cover the whole transition to the final. */
+export const TRANSITION_HORIZON_S = 600;
 
 /**
  * The first aircraft this one would lose separation with (3 NM, 1,000 ft) in the next `horizon` seconds,
@@ -215,9 +223,9 @@ export function asCleared(sim: Sim, trName: string | undefined, ft: number | und
 export function predictedConflict(sim: Sim, ac: Aircraft, mutate?: (c: Aircraft) => void, horizon = 300): { with: Aircraft; t: number } | undefined {
   const on10 = (q: { t: number }) => Math.abs(q.t / 10 - Math.round(q.t / 10)) < 1e-6;
   const mine = predict(sim, ac, horizon, 10, mutate, 2.5).filter(on10);
-  const prev = (sim as any)._predCache as { t: number; m: Map<Aircraft, ReturnType<typeof predict>> } | undefined;
-  const cache = prev && prev.t === sim.t ? prev.m : new Map<Aircraft, ReturnType<typeof predict>>();
-  (sim as any)._predCache = { t: sim.t, m: cache };
+  const prev = (sim as any)._predCache as { t: number; h: number; m: Map<Aircraft, ReturnType<typeof predict>> } | undefined;
+  const cache = prev && prev.t === sim.t && prev.h === horizon ? prev.m : new Map<Aircraft, ReturnType<typeof predict>>();
+  (sim as any)._predCache = { t: sim.t, h: horizon, m: cache };
   let best: { with: Aircraft; t: number } | undefined;
   for (const o of sim.aircraft) {
     if (o === ac || o.remove || o.landed || o.rules === 'VFR' || o.state === 'unconcerned' || dist(o.p, ac.p) > 40) continue;

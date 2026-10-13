@@ -104,6 +104,7 @@ export function describeItem(it: Item): string {
     case 'spdres': return 'normal speed';
     case 'app': return `${it.app === 'VIS' ? 'visual' : it.app} approach ${it.rwy}`;
     case 'hold': return `hold at ${it.fix}`;
+    case 'eat': return 'a revised expected approach time';
     case 'trans': return `${it.name} transition`;
     case 'ron': return 'own navigation';
     case 'xfr': return it.unit === 'TWR' ? 'handoff to Tower' : 'handoff to the next sector';

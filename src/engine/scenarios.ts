@@ -74,13 +74,13 @@ const LIBRARY: Scenario[] = [
   },
   {
     id: 'runway-change', tier: 2, title: 'Runway change', seed: 202, durationMin: 45, startUtc: '04:00', metar: 'EBLG 120400Z 24010KT 9999 FEW030 09/05 Q1012 NOSIG', runway: '22L', readbackErr: 0.03,
-    desc: 'The wind backs to the north-east. At 04:11 the supervisor switches to runway 04R. Re-sequence everyone onto the 04 side without a bust.',
+    desc: 'The wind backs to the north-east. At 04:01 the supervisor gives ten minutes of notice: runway 04R from 04:11. Re-sequence everyone onto the 04 side without a bust.',
     objective: 'Land at least six; no go-arounds for tailwind or unstable approaches.',
     spawns: [
       A(5, 'FDX5203', 'MD11', 'KOK7X'), A(150, 'QTR8125', 'B77L', 'CIV7X'), A(300, 'TAY4EK', 'B763', 'LNO6X', { spawnDist: 30 }), A(450, 'CHG201', 'B744', 'NIK7X'),
       A(720, 'AZG7321', 'B748', 'KOK7D'), A(900, 'ETH3721', 'B77L', 'CIV7D'), A(1080, 'BCS5AB', 'A306', 'LNO6D'), A(1260, 'THY6411', 'A332', 'NIK7D'),
     ],
-    events: [{ t: 560, kind: 'wind', dir: 40, kt: 12 }, { t: 660, kind: 'runway', rwy: '04R' }],
+    events: [{ t: 60, kind: 'runway', rwy: '04R', notice: 600 }, { t: 560, kind: 'wind', dir: 40, kt: 12 }],
     pass: { minLanded: 6, minRatings: { TRAF: 3 } },
   },
   {

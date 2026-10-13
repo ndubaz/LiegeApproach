@@ -65,3 +65,19 @@ const RECAT_NM: Record<string, number> = {
 export function wakeMinNm(leader: Recat, follower: Recat, radarMin = 3): number {
   return Math.max(RECAT_NM[leader + follower] ?? 0, radarMin);
 }
+
+/**
+ * RECAT-EU departure wake time minima, seconds (leader then follower, same runway or a parallel within 760 m).
+ * Pairs not listed: the radar / runway minimum, taken as 60 s between successive departures.
+ * EUROCONTROL RECAT-EU Ed. 1.1, departure separation table.
+ */
+export const DEP_S: Record<string, number> = {
+  AB: 100, AC: 120, AD: 140, AE: 160, AF: 180,
+  BD: 100, BE: 120, BF: 140,
+  CD: 80, CE: 100, CF: 120,
+  DF: 120, EF: 100, FF: 80,
+};
+/** Seconds needed between two departures: the RECAT-EU time minimum, never less than 60 s. */
+export function depMinS(leader: Recat, follower: Recat): number {
+  return Math.max(DEP_S[leader + follower] ?? 0, 60);
+}

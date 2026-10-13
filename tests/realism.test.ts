@@ -205,7 +205,7 @@ describe('phraseology (ICAO Doc 4444 ch. 12, Doc 9432)', () => {
   });
   it('approach clearance, hold, transfer', () => {
     expect(say([{ k: 'hdg', hdg: 250, dir: 'R' }, { k: 'app', app: 'ILS', rwy: '22L' }], { posNm: 11 })).toBe('World Express seven, one one miles from touchdown, turn right heading two five zero, cleared I L S approach runway two two left');
-    expect(say([{ k: 'hold', fix: 'ALHUV' }], { efc: '0214' })).toBe('World Express seven, hold at ALHUV as published, expect approach clearance at zero two one four');
+    expect(say([{ k: 'hold', fix: 'ALHUV' }], { efc: '0214' })).toBe('World Express seven, hold at ALHUV as published, expected approach time zero two one four');
     expect(say([{ k: 'xfr', unit: 'TWR' }])).toBe('World Express seven, contact Liège Tower one one eight decimal one three zero');
     expect(unitName('TWR').text).toBe('Liège Tower 118.130');
     expect(freqSpeech('119.280')).toBe('one one niner decimal two eight zero');

@@ -340,6 +340,9 @@ export const EVENT_DECK: { card: DeckCard; w: number; once?: boolean; phases?: P
   { card: 'runway', w: 1, once: true, phases: ['bank', 'crossover'] },
 ];
 
+/** TSA 29A is activated by NOTAM for weekday daytime flying only: 0600 to 2000 UTC in the sim. */
+export const tsaDaytime = (start: string, t: number) => { const hr = Number(utcPlus(start, t).slice(0, 2)); return hr >= 6 && hr < 20; };
+
 interface DeckCtx { rng: Rng; cs: CallsignPool; spawns: SpawnSpec[]; events: ScEvent[]; objectives: NonNullable<Scenario['objectives']>; rwy: string; notes: string[]; start: string }
 
 function playCard(card: DeckCard, t: number, c: DeckCtx) {
@@ -347,8 +350,7 @@ function playCard(card: DeckCard, t: number, c: DeckCtx) {
   switch (card) {
     case 'tsa': {
       // TSA 29A is a weekday daytime area (by NOTAM): at night the card becomes a military crossing instead
-      const hr = Number(utcPlus(c.start, t).slice(0, 2));
-      if (hr >= 20 || hr < 6) { playCard('military', t, c); break; }
+      if (!tsaDaytime(c.start, t)) { playCard('military', t, c); break; }
       c.events.push({ t, kind: 'tsa', name: 'TSA29A', on: true });
       c.events.push({ t: t + rng.int(15, 25) * 60, kind: 'tsa', name: 'TSA29A', on: false });
       c.notes.push(`TSA 29A active from ${utcPlus(c.start, t)}.`);
@@ -497,7 +499,7 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
   let storms: Storm[] | undefined;
   if (o.weather === 'storms') storms = [{ p: { x: -14, y: -10 }, r: 4, vx: 8, vy: 10 }, { p: { x: -22, y: 6 }, r: 3.5, vx: 9, vy: 6 }, { p: { x: 8, y: -20 }, r: 5, vx: 4, vy: 9 }];
   if (shift) drawDeck({ rng, cs, spawns, events, objectives, rwy, notes, start: tpl.start }, W);
-  else if (o.military >= 2) {
+  else if (o.military >= 2 && tsaDaytime(tpl.start, Math.round(W * 0.4)) && tsaDaytime(tpl.start, Math.round(W * 0.9))) {
     const on = Math.round(W * 0.4);
     events.push({ t: on, kind: 'tsa', name: 'TSA29A', on: true }, { t: Math.round(W * 0.9), kind: 'tsa', name: 'TSA29A', on: false });
     notes.push(`TSA 29A active from ${utcPlus(tpl.start, on)}.`);

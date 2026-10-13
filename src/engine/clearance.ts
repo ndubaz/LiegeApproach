@@ -25,11 +25,12 @@ export type Item =
   | { k: 'roger' }                                  // "CS, Liège Approach, identified" (first call) or "CS, roger": answers a call, no readback
   | { k: 'standby' }                                // "CS, standby": answers a call for now; the pilot calls again if nothing follows
   | { k: 'star'; name: string }                     // "cleared KOK7D arrival" (after a runway change: "runway change, now runway 04R, expect ILS 04R, ...")
-  | { k: 'sayagain' };                              // "CS, say again": the pilot repeats their last call
+  | { k: 'sayagain' }                               // "CS, say again": the pilot repeats their last call
+  | { k: 'eat' };                                   // "CS, revised expected approach time 0215" (to an aircraft already holding)
 
 export interface Clearance { cs: string; items: Item[] }
 
-export const ITEM_ORDER: Item['k'][] = ['sayagain', 'roger', 'standby', 'rel', 'relhold', 'atis', 'brk', 'hdg', 'dct', 'star', 'trans', 'ron', 'hold', 'lvl', 'spd', 'spdmin', 'spdres', 'app', 'sqk', 'appr', 'deny', 'xfr'];
+export const ITEM_ORDER: Item['k'][] = ['sayagain', 'roger', 'standby', 'rel', 'relhold', 'atis', 'brk', 'hdg', 'dct', 'star', 'trans', 'ron', 'hold', 'eat', 'lvl', 'spd', 'spdmin', 'spdres', 'app', 'sqk', 'appr', 'deny', 'xfr'];
 export const sortItems = (items: Item[]) => [...items].sort((a, b) => ITEM_ORDER.indexOf(a.k) - ITEM_ORDER.indexOf(b.k));
 
 /** Merge a new item into a list: one item per kind (approve/deny exclusive, spd variants exclusive). */
@@ -84,16 +85,23 @@ export function freqSpeech(f: string): string {
   const said = dec.endsWith('00') ? dec.slice(0, 1) : dec;
   return `${digits(a)} decimal ${digits(said)}`;
 }
-const U = (name: string, freq: string) => ({ text: `${name} ${freq}`, speech: `${name} ${freqSpeech(freq)}` });
-// Liège Tower 118.130 (8.33 kHz channel): EBLG AD 2.18, AIRAC effective 01 OCT 2026.
-const UNIT_NAME: Record<Unit, { text: string; speech: string }> = {
-  TWR: U('Liège Tower', '118.130'),
-  BRU: U('Brussels Control', '131.100'),
-  MUAC: U('Maastricht', '132.755'),
-  BEEK: U('Beek Approach', '123.980'),
-  // Military unit name and frequency are a sim construct (approximate).
-  MIL: U('Military', '129.100'),
+/** A unit the approach controller hands traffic to: RT callsign, frequency, short key label, and how sure the data is. */
+export interface UnitInfo { callsign: string; freq: string; key: string; source: string; verified: boolean }
+/**
+ * Every unit the sim transfers to, in one table the UI can read for keys, labels and frequencies.
+ * Liège Tower 118.130 (8.33 kHz channel): EBLG AD 2.18, AIRAC effective 01 OCT 2026. Beek Approach 123.980: EHBK AD 2.18.
+ * Brussels Control and Maastricht Radar are plausible values, not verified; the military unit is a sim construct.
+ */
+export const UNITS: Record<Unit, UnitInfo> = {
+  TWR: { callsign: 'Liège Tower', freq: '118.130', key: 'TWR', source: 'EBLG AD 2.18', verified: true },
+  BRU: { callsign: 'Brussels Control', freq: '131.100', key: 'BRU', source: 'not verified', verified: false },
+  MUAC: { callsign: 'Maastricht Radar', freq: '132.755', key: 'MUAC', source: 'callsign as in the pack upstream list; not verified', verified: false },
+  BEEK: { callsign: 'Beek Approach', freq: '123.980', key: 'BEEK', source: 'EHBK AD 2.18 (LVNL eAIP)', verified: true },
+  // Belgian military en-route control (Steenokkerzeel ATCC); callsign and frequency are a sim construct.
+  MIL: { callsign: 'Military', freq: '129.100', key: 'MIL', source: 'sim construct', verified: false },
 };
+const U = (u: UnitInfo) => ({ text: `${u.callsign} ${u.freq}`, speech: `${u.callsign} ${freqSpeech(u.freq)}` });
+const UNIT_NAME = Object.fromEntries((Object.keys(UNITS) as Unit[]).map((k) => [k, U(UNITS[k])])) as Record<Unit, { text: string; speech: string }>;
 export const unitName = (u: Unit) => UNIT_NAME[u];
 
 export interface Ctx {
@@ -192,7 +200,12 @@ export function phraseology(cl: Clearance, ctx: Ctx): { text: string; speech: st
       case 'hold':
         t.push(`hold at ${it.fix} as published`); s.push(`hold at ${it.fix} as published`);
         if (ctx.efc === null) { t.push('no delay expected'); s.push('no delay expected'); }
-        else if (ctx.efc) { t.push(`expect approach clearance at ${ctx.efc}`); s.push(`expect approach clearance at ${digits(ctx.efc)}`); }
+        else if (ctx.efc) { t.push(`expected approach time ${ctx.efc}`); s.push(`expected approach time ${digits(ctx.efc)}`); }
+        break;
+      case 'eat':
+        // a revised time to an aircraft already holding
+        if (ctx.efc) { t.push(`revised expected approach time ${ctx.efc}`); s.push(`revised expected approach time ${digits(ctx.efc)}`); }
+        else { t.push('no delay expected'); s.push('no delay expected'); }
         break;
       case 'roger':
         if (ctx.firstCall) { t.push('Liège Approach, identified'); s.push('Liège Approach, identified'); } else { t.push('roger'); s.push('roger'); }
@@ -317,6 +330,7 @@ export function itemChip(it: Item): string {
     case 'standby': return 'STBY';
     case 'star': return it.name;
     case 'sayagain': return 'SAY AGAIN';
+    case 'eat': return 'EAT';
   }
 }
 

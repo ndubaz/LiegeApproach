@@ -46,7 +46,7 @@ Doc 9432 (Manual of Radiotelephony) was not available online; its examples follo
 - **Frequencies** (AD 2.18): Liège Approach 119.280, Liège Tower 118.130 (secondary 130.625), Liège Ground 121.915, ATIS 126.255. All 8.33 kHz channels.
 - **Terminal fixes**: every AD 2.22 coordinate, and every coded leg of the 10 STARs, 8 transitions, 7 SIDs and the 4 RNP finals: true course and distance reproduced within 0.2 NM and 0.6° (56 legs in the test).
 - **Final approach**: FAF to threshold 5.8 (22L), 5.9 (22R), 7.3 (04L), 7.2 (04R) NM; the FAF altitudes (2,500 ft for 22, 3,000 ft for 04) sit on a 3° path from threshold elevation plus TCH within 0.15 NM. IF to FAF is on the final course.
-- **Restrictions**: STARs end at ALHUV 3,000 ft or above, 250 kt or less; transitions 3,000 ft+/250 kt, with LIBVA/LAVTO at 2,500 ft+/200 kt; ALHUV1W and ALHUV1Y are ATC discretion only. SIDs: FL060 initial climb, LG003 6,500 ft+ and LG013 6,000 ft+, 220 kt on the turning legs.
+- **Restrictions**: the STARs from LNO (LNO6X, GESLO6X) and all the D-series STARs end at ALHUV at 3,000 ft or above; CIV7X, KOK7X and NIK7X end at ALHUV at FL060 or above. All at 250 kt or less. Transitions 3,000 ft+/250 kt, with LIBVA/LAVTO at 2,500 ft+/200 kt; ALHUV1W and ALHUV1Y are ATC discretion only. SIDs: FL060 initial climb, LG003 6,500 ft+ and LG013 6,000 ft+, 220 kt on the turning legs.
 - **Holds** (AD 2.22): ALHUV 043°M left, 3,000 ft to FL050, 230 kt; GIREL 314°M left, FL060 to FL140, ATC discretion; GSY 093°M right, FL070 to FL100, ATC discretion. 1 minute legs.
 - **CTR**: class D, surface to 2,500 ft, H24, lateral limits as published.
 - **VFR points** ROMEO, INDIA, OSCAR, FOXHE (standard) and ECHO, WISKY, NOVEM, SIERA (ATC discretion).
@@ -101,7 +101,7 @@ The Liège TMA tops at FL055. Above it is the Brussels CTA (FL055 to FL095 in th
 The sim treats an active TSA as closed to your traffic over its full published volume. ENR 5.2 says TSA 26 and 29 users "must stay clear of controlled airspace", so in reality the part that overlaps the Liège TMA and the Brussels CTA stays usable for GAT unless the military get it delegated. With the published TSA29A outline, the Hot TSA challenge and the free-play TSA card now cover the whole D-series loop (GIREL and RUDIX). That is stricter than reality.
 
 ### 5.4 Other
-- Upstream callsigns and frequencies (Brussels Control 131.100, Maastricht 132.755, Beek Approach 123.980) and the "Military" unit: not verified.
+- Upstream callsigns and frequencies: Beek Approach 123.980 is verified (EHBK AD 2.18, LVNL eAIP). Brussels Control 131.100 and Maastricht Radar 132.755 are not verified. The "Military" unit (129.100) is a sim construct; Belgian military en-route control is Steenokkerzeel ATCC. All of them now sit in one table, `UNITS` in `clearance.ts`.
 - Border segments of TMA Three/Five and TSA28 are straight lines between the published border points.
 - The 04R ILS initial from ALHUV via ABLAZ (2,500 ft), PIZVE (2,200 ft), KAQZI (IF 2,100 ft) is published but not modelled as a procedure (noted on the runway).
 - Video map (river, roads, borders, towns) is drawn by hand.
@@ -124,11 +124,11 @@ Severity: **High** = a rated controller would call it wrong in normal play. **Me
 | 10 | VFR crossing squawks 70xx | 6330-6343 (ENR 1.6) | Low | **Fixed** |
 | 11 | Glide path reference 50 ft for every runway | TCH 56/58/54/50 ft | Low | **Fixed** (`rwy.tch`) |
 | 12 | Missed approach speed not applied | 215 kt to ALHUV at 3,000 ft | Low | **Fixed** (`missedSpd`, `missedAlt`) |
-| 13 | Readback error rate 2-4 % | About 1 % (Cardosi 1996); higher after 0300 with fatigue | Low | Open: training emphasis; fatigue now raises it after 0300 |
+| 13 | Readback error rate 2-4 % | About 1 % (Cardosi 1996); higher at the body-clock low | Low | Open: training emphasis; fatigue raises it from 0030 to 0730 local time, worst 0200 to 0600 local |
 | 14 | Runway occupancy 50 s for every type | Wide-body freighters about 55-70 s | Low | **Fixed**: 60 s for heavies, 50 s otherwise, 120 s in LVP |
 | 15 | Almost no narrow-body freighters | B737F (ASL), A321P2F, ATR 72F also operate | Low | **Partly fixed**: ASL B738 added; ATR 72F not modelled |
-| 16 | TSA card could activate TSA29A at night | Weekday daytime area by NOTAM | Low | **Fixed**: at night the card becomes a military crossing |
-| 17 | Maastricht transfer callsign | Probably "Maastricht Radar" | Low | Open: not verified |
+| 16 | TSA29A could go active at night | Weekday daytime area by NOTAM | Low | **Fixed**: at night the event-deck card becomes a military crossing (1.0), and the free-play briefing path (military level 2) no longer activates it at night (after the independent validation) |
+| 17 | Maastricht transfer callsign | Probably "Maastricht Radar" | Low | **Changed** to "Maastricht Radar", matching the pack's upstream list; still not verified |
 
 Still approximate after 1.0: the minimum vectoring altitudes (the ATCSMAC chart could not be downloaded; areas follow the TMA floors and terrain), the delegation of the Brussels CTA above FL055 to Liège, upstream unit frequencies and callsigns, and the hand-drawn video map.
 
@@ -143,8 +143,8 @@ All from headless runs (`Sim.step()` at 1 s, calm wind, QNH 1013). Not edited he
 | Descent FL080 to 3,000 ft, 250 kt | about 1,250 fpm average, 2,000-2,200 peak, all types | Idle at 250 kt: 1,200-2,000 fpm; more with speedbrake | Realistic, a little uniform across types |
 | Descent while slowing 250 to 210 kt | 1,060-1,140 fpm; slowing takes 110-142 s | A heavy cannot slow and descend steeply at once | Realistic |
 | Turn rate | Bank limited to 25°, capped at 3°/s: 1.9°/s at 250 kt, 2.3°/s at 210 kt, 3°/s at 160 kt | Autopilot heading mode 25-30° bank | Realistic |
-| LOC capture | 30° intercept: captures on the centreline, overshoot about 0.3 NM; 45° about 0.5 NM | Small overshoot at 45°, near zero at 30° | Acceptable |
-| ILS speeds | 180 kt to 12 NM, 160 kt to about 4.5 NM, Vapp inside; stable gate 1,000 ft | Common European pattern (160 kt to 4 NM) | Realistic |
+| LOC capture | The validator measured no overshoot at any angle, even 90°. Since the fix: none at 30°, 0.4 NM at 60°, 1.0 NM at 90° (B744, 180 kt) | Small overshoot at 45°, near zero at 30° | Fixed (section 9) |
+| ILS speeds | 180 kt to 12 NM, 160 kt to about 4.5 NM, Vapp inside; stable gate 1,000 ft. A crew already slower never speeds up on the localizer without an instruction | Common European pattern (160 kt to 4 NM) | Realistic |
 | Hold at ALHUV, 230 kt | Lap 292 s: 74 s turn, 60 s outbound, about 76 s turn, 82 s inbound | 1 min legs at 25° bank: about 290 s | Realistic timing; Doc 8168 entries since 1.0 |
 | Go-arounds, autopilot on all challenges | 2 in 113 landings (17.7 per 1,000) | 1-4 per 1,000 approaches in normal operations | Driven by the autopilot player, not the pilot model |
 | Wake and radar minima | 3 NM everywhere (2.5 NM only with unit approval), RECAT-EU table corrected | See rows 1-3 | Fixed in 1.0 |
@@ -183,3 +183,44 @@ Exact changes, in priority order.
 12. **`src/ui/game.ts:563`**: label `'Liège Tower 118.130'`.
 13. **`src/engine/traffic.ts`**: optional "Realistic night" template: arrivals 5/h at 23:00, 8/h at 00:00, 3/h 01:00-03:00; departures peaking 7/h at 04:00 (skeyes 2025 report, average night). Add B738/B734 (TAY, ASL Belgium) and AT76 freighters to CARGO_OPS.
 14. **Scope** (`src/ui/scope.ts`): draw `pack.tmaParts` (TMA Two to Five dashed and fainter; Three to Five only 2200-0500 UTC).
+
+## 9. Independent validation (1.0)
+
+A rated approach controller validated the 1.0 build independently, with headless measurement scripts and two played sessions (desktop free play, phone runway-change challenge). Their spot checks of the published data, 12 data groups (aerodrome, runways, ILS, frequencies, terminal fixes, STAR, transition and SID coding, final approach, restrictions, holds, airspace, transition level table), all matched the AIP. The engine items they marked wrong were fixed as below. `tests/realism1.test.ts` covers each fix.
+
+| # | Found | Fix | Where |
+|---|---|---|---|
+| 1 | High. Departures launched 60 s apart whatever their wake category (B744 then A320: 60 s) | RECAT-EU departure time minima `DEP_S` (AB 100, AC 120, AD 140, AE 160, AF 180, BD 100, BE 120, BF 140, CD 80, CE 100, CF 120, DF 120, EF 100, FF 80 s; 60 s otherwise). Tower waits them out after a release; `departureGap()` and the release advice account for it ("Tower then waits 40 s for wake behind DH1") | `perf.ts` `DEP_S`, `depMinS`; `sim.ts` `depSpacingS`, `depWakeWait`; `suggest.ts` `releaseAdvice` |
+| 2 | High. The transition chip said "#1 to land, nobody ahead" with an aircraft already on a transition ahead, and the chips then led to a loss of separation | Root cause: an arrival told to hold and then cleared for a transition or approach kept its hold instruction internally, so the sequence ignored it. A transition, an approach clearance, vectors or a direct now cancel the hold instruction, and the sequence counts every arrival cleared for the approach or on a transition first. Also: the transition chip looks 10 minutes ahead for conflicts (was 5); nobody is sent down a transition while another aircraft holds at the bottom of the ALHUV stack; the release advice holds a departure while an arrival is about to cross the field low | `sim.ts` `apply`; `sequence.ts` `sequenceMembers`, `TRANSITION_HORIZON_S`; `suggest.ts` |
+| 3 | Medium. Wake separation only checked with both aircraft on the localizer | Also when the follower is directly behind: within 0.5 NM of the leader's track, tracks within 30°, same level or less than 1,000 ft below (Doc 4444 8.7.3, RECAT-EU). Event `wake` | `sim.ts` `monitor` |
+| 4 | Medium. On the localizer without a speed instruction, an A320 at 160 kt accelerated to 180 kt at 10 NM | The crew never speeds up on the localizer unprompted: 180 kt by 12 NM and 160 kt by 7 NM are upper limits | `pilot.ts` `speedTarget`; `sequence.ts` `etaS` |
+| 5 | Medium. Speed chips flipped between 170 and 180 kt every 15 s | No speed chip within 10 kt of the present speed or assignment, and none for 90 s after a speed instruction unless the gap is still closing well below the minimum | `suggest.ts` |
+| 6 | Medium. Hold chips at FL060 and above for ALHUV (published top FL050); a hold offered again to an aircraft already told to hold | Hold chips stay inside the published band ("Hold ALHUV · 5000"). When ALHUV is full the chip offers GIREL or GSY at a level inside their bands (never into an active or announced TSA), or minimum clean speed. No second hold instruction: an aircraft cleared to hold above the top is offered "Descend" into the stack | `suggest.ts` `stackLevels`, `remoteHold`, `stackDescend` |
+| 7 | Medium. "expect approach clearance at", holds re-issued to update the time, pilot "EFC time" | ICAO wording "expected approach time 0214". A revised time is its own instruction, item `eat`: "revised expected approach time 0225", offered only when the time moves by 5 minutes or more. When the time runs out the crew says "approach time expired, request onward clearance". For an aircraft already holding, the time counts only those below it in the stack | `clearance.ts`; `sim.ts` `efcFor`; `suggest.ts` |
+| 8 | Medium. Brussels asked for early transfers at FL100 to FL120, above the sector ceiling (FL095) | Early transfers come at FL090 at most: "he's maintaining FL090, can you take him?" | `sim.ts` `earlyLevel` |
+| 9 | Medium. 250 kt below FL100 penalised in class C | ENR 1.4: no IFR speed limit in class C. The event and the warning now apply only in class D (the CTR), outside controlled airspace, or to VFR flights. STAR speed constraints are unchanged | `sim.ts` `airspaceClassAt`, `speedLimitAt` |
+| 10 | Medium. A typed answer to a Brussels request did nothing before the aircraft existed | The engine validates and accepts approve / unable for a pending coordination request, a release or a MIL crossing with no aircraft yet (`sim.isIntercomAnswer`). The typed path in the UI needs the matching change | `sim.ts` |
+| 11 | Low/medium. No localizer overshoot even at 90°; no warning for an intercept inside the FAF | The capture overshoot grows with the angle beyond 35° and with speed (none at 30°, 0.4 NM at 60°, 1.0 NM at 90° at 180 kt). New warning "Intercept inside the FAF" when the heading meets the final course inside the final approach fix | `pilot.ts` `locOvershootNm`; `sim.ts` `validate` |
+| 12 | Low. TSA29A at night in free-play briefings | The daytime-only rule (0600 to 2000 UTC) also applies to the free-play military level 2 activation | `traffic.ts` `tsaDaytime` |
+| 13 | Low. Fatigue followed UTC | Local time (UTC+1 by default, `sc.utcOffsetH` for summer time): full from 0200 to 0600 local | `sim.ts` `fatigue` |
+| 14 | Low. The runway-change challenge switched without notice | Ten minutes of notice: announced at 04:01, made at 04:11 | `scenarios.ts` |
+| 15 | Low. Unit names and frequencies inconsistent | One table, `UNITS`; Beek 123.980 from the EHBK AIP; "Maastricht Radar"; the military transfer chip is labelled "Military" | `clearance.ts`, `suggest.ts` |
+| 16 | Low. Departure check-in "passing two thousand climbing" | "passing two thousand three hundred feet climbing flight level six zero" | `sim.ts` |
+
+### Chip-only player, before and after
+
+`tests/chiprun.test.ts` with `SURVEY=1` (`SEEDS_N` and `ADVICE_ONLY` for longer runs): a player who only taps the primary suggestion chip, one-hour night shifts. Counts are distinct aircraft pairs.
+
+| Run | Before (1.0) | After |
+|---|---|---|
+| 10 shifts, blind releases | 43 losses of separation, 1 wake, 105 landed | 36 losses, 6 wake, 99 landed |
+| 10 shifts, release advice | 34 losses, 1 wake, 107 landed | 28 losses, 5 wake, 100 landed |
+| 30 shifts, release advice | 112 losses, 8 wake, 332 landed | 97 losses, 17 wake, 291 landed |
+
+The wake count rose because wake behind another aircraft off the localizer is now detected at all (item 3). Fewer landings: holds stay inside their published band, Tower waits for departure wake, and departures wait while arrivals cross the field low.
+
+### Still open after the validation
+
+- The chips still lead a tap-only player into some losses of separation. The main remaining causes: a go-around flying the missed approach to ALHUV at 3,000 ft into traffic starting a transition there; the turn of about 155° at ALHUV onto ALHUV1B (traffic from LNO), which brings the aircraft within about 3 NM and 900 ft of traffic at 4 to 6 NM on final; merges at LIBVA between a transition and an aircraft vectored onto the localizer; Brussels handing over two arrivals at the same level on STARs that join at GILOM.
+- The early-transfer level and the FL095 sector ceiling rest on the assumed delegation of the Brussels CTA (5.2).
+- Brussels Control and Maastricht Radar frequencies, and the military unit, are not verified.

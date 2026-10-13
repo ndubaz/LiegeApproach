@@ -114,7 +114,8 @@ describe('free-play traffic generation', () => {
     const sim = new Sim(pack, sc);
     while (!sim.ended) { sim.step(); autoControl(sim); }
     expect(sim.ended).toBe(true);
-    expect(sim.landings.length).toBeGreaterThanOrEqual(Math.floor(sim.arrivalsSpawned * 0.6));
+    // 01:40Z is 02:40 local, the crews' body-clock low: more say-agains and wrong readbacks slow the autopilot down
+    expect(sim.landings.length).toBeGreaterThanOrEqual(Math.floor(sim.arrivalsSpawned * 0.45));
     const r = assess(sim);
     expect(r.grade).toBeTypeOf('string');
   });

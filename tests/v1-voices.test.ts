@@ -73,17 +73,18 @@ describe('Brussels coordination', () => {
     let sim = mk();
     stepUntil(sim, () => sim.coordReqs.length > 0, 400);
     const r = sim.coordReqs[0];
-    expect(r).toMatchObject({ cs: 'KZR912', state: 'pending', level: { fl: 110 } });
-    expect(icom(sim, 'BRU').slice(-1)[0]).toBe("Liège, Brussels, request early transfer of KZR912, he's level FL110, can you take him at FL110?");
+    expect(r).toMatchObject({ cs: 'KZR912', state: 'pending', level: { fl: 90 } });
+    expect(icom(sim, 'BRU').slice(-1)[0]).toBe("Liège, Brussels, request early transfer of KZR912, he's maintaining FL090, can you take him?");
     expect(coordAdvice(sim, 'KZR912')?.ok).toBe(true);
     sim.step(); sim.step();
     expect(sim.issue({ cs: 'KZR912', items: [{ k: 'appr' }] }).ok).toBe(true);
-    expect(icom(sim, 'ATC').slice(-1)[0]).toBe('Approved, KZR912 at FL110');
+    expect(icom(sim, 'ATC').slice(-1)[0]).toBe('Approved, KZR912 at FL090');
     const a = sim.find('KZR912')!;
     expect(a).toBeDefined();
     expect(sim.t).toBeLessThan(300);
-    expect(a.cleared).toEqual({ fl: 110 });
-    expect(Math.abs(a.alt - sim.ftOf({ fl: 110 }))).toBeLessThan(50);
+    expect(a.cleared).toEqual({ fl: 90 });
+    expect(Math.abs(a.alt - sim.ftOf({ fl: 90 }))).toBeLessThan(50);
+    expect(a.alt).toBeLessThan(sim.ftOf(pack.sectorCeiling));
     expect(Math.hypot(a.p.x, a.p.y)).toBeLessThanOrEqual(pack.meta.sectorRadiusNm + 16.5);
     expect(sim.events.some((e) => e.kind === 'coord_answered')).toBe(true);
     stepUntil(sim, () => sim.t > 420, 500);
@@ -225,17 +226,22 @@ describe('runway change', () => {
     expect(sim.find('ETH3721')!.expectRwy).toBe('04R');
   });
 
-  it('a scheduled change with notice is announced first; one without notice happens at once (the old challenge)', () => {
+  it('a scheduled change with notice is announced first; one without notice happens at once', () => {
     const sim = new Sim(pack, sc([ARR('LATE1', { t: 3000 })], { events: [{ t: 30, kind: 'runway', rwy: '04R', notice: 300 }] }));
     stepUntil(sim, () => sim.t >= 31, 40);
     expect(sim.rwyChange?.at).toBe(330);
     expect(icom(sim, 'SUP').slice(-1)[0]).toMatch(/^Runway change to 04R at 0205\./);
     stepUntil(sim, () => sim.runway === '04R', 400);
     expect(sim.t).toBe(330);
-    const old = new Sim(pack, CHALLENGES.find((c) => c.id === 'runway-change')!);
-    stepUntil(old, () => old.runway === '04R', 700);
-    expect(old.t).toBe(660);
-    expect(old.log.some((x) => x.from === 'SUP' && /^Runway change to/.test(x.text))).toBe(false);
+    const now = new Sim(pack, sc([ARR('LATE1', { t: 3000 })], { events: [{ t: 30, kind: 'runway', rwy: '04R' }] }));
+    stepUntil(now, () => now.runway === '04R', 100);
+    expect(now.t).toBe(30);
+    expect(now.log.some((x) => x.from === 'SUP' && /^Runway change to/.test(x.text))).toBe(false);
+    // the runway-change challenge gives ten minutes of notice: announced at 04:01, made at 04:11
+    const ch = new Sim(pack, CHALLENGES.find((c) => c.id === 'runway-change')!);
+    stepUntil(ch, () => ch.runway === '04R', 700);
+    expect(ch.t).toBe(660);
+    expect(ch.log.some((x) => x.from === 'SUP' && /^Runway change to 04R at 0411\./.test(x.text))).toBe(true);
   });
 
   it('is in the night shift event deck and in the new challenge, which the autopilot flies through', () => {
@@ -304,13 +310,15 @@ describe('traffic by hour', () => {
 
 // ---------------------------------------------------------------- 5. Fatigue
 describe('crew fatigue', () => {
-  it('is 0 before 0300 and full in the early morning', () => {
-    const f = (utc: string) => new Sim(pack, sc([], { startUtc: utc })).fatigue();
-    expect(f('02:00')).toBe(0);
-    expect(f('03:45')).toBeCloseTo(0.5, 5);
-    expect(f('05:00')).toBe(1);
+  it('follows local time: 0 before 0030 local, full 0200 to 0600 local (UTC+1 by default, UTC+2 in summer)', () => {
+    const f = (utc: string, off?: number) => new Sim(pack, sc([], { startUtc: utc, utcOffsetH: off })).fatigue();
+    expect(f('23:00')).toBe(0);
+    expect(f('00:15')).toBeCloseTo(0.5, 5);
+    expect(f('01:00')).toBe(1);
+    expect(f('04:59')).toBe(1);
     expect(f('09:00')).toBe(0);
-    expect(new Sim(pack, sc([], { startUtc: '02:30' })).fatigue(3600)).toBeCloseTo(1 / 3, 5);
+    expect(f('04:30', 2)).toBeCloseTo(2 / 3, 5); // 0630 local, summer
+    expect(new Sim(pack, sc([], { startUtc: '23:30' })).fatigue(3600)).toBeCloseTo(2 / 3, 5);
   });
 
   it('raises the wrong-readback and say-again rates and slows readbacks', () => {
@@ -333,7 +341,7 @@ describe('crew fatigue', () => {
       }
       return { wrong, sayAgain, delay: delay / n };
     };
-    const fresh = trial('01:00'), tired = trial('05:00');
+    const fresh = trial('22:00'), tired = trial('03:00');
     expect(tired.wrong).toBeGreaterThan(fresh.wrong * 1.4);
     expect(tired.sayAgain + tired.wrong).toBeGreaterThan((fresh.sayAgain + fresh.wrong) * 1.4);
     expect(tired.delay).toBeGreaterThan(fresh.delay * 1.15);

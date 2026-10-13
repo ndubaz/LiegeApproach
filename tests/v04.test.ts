@@ -177,7 +177,7 @@ describe('validation and phraseology', () => {
     a.request = undefined;
     sim.issue({ cs: 'TST1', items: [{ k: 'hold', fix: 'ALHUV' }, { k: 'lvl', lvl: { ft: 4000 } }] });
     settle(sim, 'TST1');
-    expect(sim.previewPhrase({ cs: 'TST2', items: [{ k: 'hold', fix: 'ALHUV' }, { k: 'lvl', lvl: { ft: 5000 } }] })!.text).toMatch(/expect approach clearance at \d{4}/);
+    expect(sim.previewPhrase({ cs: 'TST2', items: [{ k: 'hold', fix: 'ALHUV' }, { k: 'lvl', lvl: { ft: 5000 } }] })!.text).toMatch(/expected approach time \d{4}/);
   });
 
   it('the emergency description is the same in the MAYDAY call and on the aircraft', () => {

@@ -255,7 +255,7 @@ describe('holding discipline', () => {
     sim.step(); sim.step();
     const w = sim.issue({ cs: 'BBB2', items: [{ k: 'hold', fix: 'ALHUV' }, { k: 'lvl', lvl: { fl: 60 } }] });
     expect(w.warnings.some((x) => x.includes('holding maximum'))).toBe(true);
-    expect(texts(sim, 'ATC').pop()).toMatch(/^BBB2, hold at ALHUV as published, expect approach clearance at \d{4}, descend FL060$/);
+    expect(texts(sim, 'ATC').pop()).toMatch(/^BBB2, hold at ALHUV as published, expected approach time \d{4}, descend FL060$/);
     const efc = sim.find('BBB2')!.efc!;
     expect(efc - sim.t).toBeGreaterThanOrEqual(150);
     stepUntil(sim, () => texts(sim, 'PILOT').some((t) => t.includes('maximum holding altitude')), 400);
@@ -264,8 +264,8 @@ describe('holding discipline', () => {
     sim.issue({ cs: 'BBB2', items: [{ k: 'lvl', lvl: { ft: 4000 } }] });
     stepUntil(sim, () => sim.events.some((e) => e.kind === 'stack'), 400);
     expect(sim.events.filter((e) => e.kind === 'stack').length).toBe(1);
-    stepUntil(sim, () => texts(sim, 'PILOT').some((t) => t.includes('EFC time')), 600);
-    expect(texts(sim, 'PILOT').some((t) => /EFC time, request onward clearance/.test(t))).toBe(true);
+    stepUntil(sim, () => texts(sim, 'PILOT').some((t) => t.includes('approach time expired')), 600);
+    expect(texts(sim, 'PILOT').some((t) => /approach time expired, request onward clearance/.test(t))).toBe(true);
   });
 });
 
@@ -282,7 +282,7 @@ describe('phraseology', () => {
   it('frequencies in six digits unless the last two are zero', () => {
     expect(freqSpeech('118.130')).toBe('one one eight decimal one three zero');
     expect(freqSpeech('131.100')).toBe('one three one decimal one');
-    expect(unitName('MUAC').speech).toBe('Maastricht one three two decimal seven five five');
+    expect(unitName('MUAC').speech).toBe('Maastricht Radar one three two decimal seven five five');
   });
   it('vectoring for the ILS, position on approach clearance, request answers', () => {
     expect(say([{ k: 'hdg', hdg: 250, dir: 'L' }], { vectorFor: { app: 'ILS', rwy: '22L' } })).toBe('QTR8125, turn left heading 250, vectoring for ILS approach runway 22L');

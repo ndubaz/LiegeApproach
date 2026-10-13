@@ -3,7 +3,7 @@ import type { Aircraft } from './types';
 import type { Item } from './clearance';
 import type { Level } from '../pack/load';
 import { alongTrack, angDiff, crossTrack, dist, norm360 } from '../geo';
-import { asCleared, bestTransition, predictedConflict, sequenceMembers, shortfall, slotFor, type Slot } from './sequence';
+import { asCleared, bestTransition, predictedConflict, sequenceMembers, shortfall, slotFor, trackNm, TRANSITION_HORIZON_S, type Slot } from './sequence';
 
 // Next-call suggestions: the one or two clearances an approach controller would
 // most likely give this aircraft now, worked out from its phase and geometry.
@@ -56,6 +56,20 @@ function spdFor(sim: Sim, ac: Aircraft, want: number): number {
   return Math.ceil(Math.max(want, floor) / 10) * 10;
 }
 
+/** Sim time of the last speed instruction to this aircraft (-Infinity when none). */
+function lastSpeedT(sim: Sim, ac: Aircraft): number {
+  for (let i = sim.cmdLog.length - 1; i >= 0; i--) {
+    const c = sim.cmdLog[i];
+    if (c.cl.cs === ac.cs && c.cl.items.some((x) => x.k === 'spd' || x.k === 'spdmin' || x.k === 'spdres')) return c.t;
+  }
+  return -Infinity;
+}
+/** Speed suggestions stay quiet for 90 s after a speed instruction, so the chips do not flip between two speeds. */
+const SPEED_QUIET_S = 90;
+const speedQuiet = (sim: Sim, ac: Aircraft) => sim.t - lastSpeedT(sim, ac) < SPEED_QUIET_S;
+/** A new speed at least 10 kt below whatever it is already flying to (assigned, or its present speed). */
+const worthSlowing = (ac: Aircraft, v: number) => v <= (ac.spdAssigned ?? Infinity) - 10 && v < ac.ias - 5;
+
 /** Linear closest approach of two aircraft over the next `horizon` seconds. */
 function cpa(a: Aircraft, b: Aircraft, horizon = 240): number {
   const v = (x: Aircraft) => ({ x: (Math.sin((x.trk * Math.PI) / 180) * x.gs) / 3600, y: (Math.cos((x.trk * Math.PI) / 180) * x.gs) / 3600 });
@@ -102,18 +116,16 @@ function stackOf(sim: Sim, fix: string, except?: Aircraft): Aircraft[] {
 }
 const isHolder = (sim: Sim, o: Aircraft, fix: string) => (o.mode === 'HOLD' && o.hold?.fix === fix) || holdAtOf(sim, o) === fix;
 
-/** Highest level the suggestions stack an ALHUV hold to when the published levels are full (the crew will ask for lower). */
-const STACK_TOP_FT = 9000;
 /**
- * A free level in the hold at `fix` (1,000 ft clear of everyone else there, from 4,000 ft up, never a climb), or undefined when the stack is full.
- * Above the published maximum only when every published level is taken: a higher, warned hold beats two aircraft at one level.
+ * Free levels in the hold at `fix`: 1,000 ft clear of everyone else there, from 4,000 ft (and the published minimum)
+ * up to the published maximum, never a climb. Empty when the stack is full.
  */
 function stackLevels(sim: Sim, ac: Aircraft, fix: string): Level[] {
   const out: Level[] = [];
   const h = sim.pack.holds.find((x) => x.fix === fix);
   if (!h) return out;
   const others = stackOf(sim, fix, ac).map((o) => lvlFt(sim, o));
-  const top = Math.min(Math.max(sim.ftOf(h.max), STACK_TOP_FT), sim.ftOf(ac.cleared) + 50);
+  const top = Math.min(sim.ftOf(h.max), sim.ftOf(ac.cleared) + 50);
   const near = dist(ac.p, sim.fixP(fix)) < 15;
   for (let ft = Math.max(4000, Math.ceil(sim.ftOf(h.min) / 1000) * 1000); ft <= top + 1; ft += 1000) {
     if (others.some((x) => Math.abs(x - ft) < 900)) continue;
@@ -124,18 +136,28 @@ function stackLevels(sim: Sim, ac: Aircraft, fix: string): Level[] {
   return out;
 }
 
-/** A hold at the STAR fix before ALHUV, at a level 1,000 ft clear of anyone else holding or heading there, for when ALHUV is full. */
+/**
+ * When ALHUV is full: the nearest other published hold (GIREL, GSY) with a free level inside its published band,
+ * clear of anyone holding or passing there, outside any active or announced TSA, and clear of traffic on the way.
+ */
 function remoteHold(sim: Sim, ac: Aircraft): { fix: string; lvl: Level } | undefined {
-  const fix = ac.route.length >= 2 ? ac.route[ac.route.length - 2].fix : undefined;
-  if (!fix || !sim.pack.fixes.has(fix) || dist(ac.p, sim.fixP(fix)) < 4) return undefined;
-  const there = sim.aircraft.filter((o) => o !== ac && !o.remove && ((o.mode === 'HOLD' && o.hold?.fix === fix) || holdAtOf(sim, o) === fix
-    || (o.mode === 'NAV' && o.route.some((l) => l.fix === fix) && dist(o.p, sim.fixP(fix)) < 15))).map((o) => lvlFt(sim, o));
-  const cl = sim.ftOf(ac.cleared);
-  for (let ft = Math.round(cl / 1000) * 1000; ft >= 6000; ft -= 1000) {
-    if (there.some((x) => Math.abs(x - ft) < 900)) continue;
-    const lvl = ft >= cl - 300 ? ac.cleared : sim.levelFor(ft);
-    if (predictedConflict(sim, ac, (c) => { c.tgtAlt = sim.ftOf(lvl); c.route = c.route.slice(0, c.route.findIndex((l) => l.fix === fix) + 1); (c as any)._holdAt = fix; })) continue;
-    return { fix, lvl };
+  const cands = sim.pack.holds.filter((h) => h.fix !== 'ALHUV' && sim.pack.fixes.has(h.fix) && dist(ac.p, sim.fixP(h.fix)) < 50)
+    .sort((a, b) => dist(ac.p, sim.fixP(a.fix)) - dist(ac.p, sim.fixP(b.fix)));
+  for (const h of cands) {
+    const fix = h.fix, fp = sim.fixP(fix);
+    const there = sim.aircraft.filter((o) => o !== ac && !o.remove && !o.landed && o.rules !== 'VFR' && ((o.mode === 'HOLD' && o.hold?.fix === fix) || holdAtOf(sim, o) === fix
+      || dist(o.p, fp) < 12 || (o.mode === 'NAV' && o.route.some((l) => l.fix === fix) && dist(o.p, fp) < 30))).map((o) => lvlFt(sim, o));
+    const nom = (l: Level) => (l.fl !== undefined ? l.fl * 100 : l.ft!);
+    const lo = nom(h.min), hi = Math.min(nom(h.max), nom(ac.cleared) + 50);
+    // stay as high as possible: the fewest level changes, and out of the way of the traffic below
+    for (let n = Math.floor(hi / 1000) * 1000; n >= lo; n -= 1000) {
+      const lvl = Math.abs(n - nom(ac.cleared)) < 300 ? ac.cleared : sim.levelFor(n);
+      const ft = sim.ftOf(lvl);
+      if (there.some((x) => Math.abs(x - ft) < 900)) continue;
+      if (sim.tsaOnPath(ac, [{ k: 'dct', fix }, { k: 'lvl', lvl }])) break;
+      if (predictedConflict(sim, ac, (c) => { c.tgtAlt = sim.ftOf(lvl); c.route = [{ fix, p: fp }]; c.mode = 'NAV'; (c as any)._holdAt = fix; }, TRANSITION_HORIZON_S)) continue;
+      return { fix, lvl };
+    }
   }
   return undefined;
 }
@@ -203,7 +225,7 @@ export function suggest(sim: Sim, ac: Aircraft): Suggestion[] {
       add({ label: 'Climb FL090', items: [{ k: 'lvl', lvl: { fl: 90 } }], why: blk ? `Wait: ${blk.cs} is in the way.` : 'Top of your airspace. Nothing is in the way.', primary: ac.alt > 3000 && !blk });
     }
     const r0 = dist(ac.p, { x: 0, y: 0 });
-    if (r0 > 18 || ac.alt > 7000) add({ label: 'Brussels', items: [{ k: 'xfr', unit: ac.kind === 'mil' ? 'MIL' : 'BRU' }], why: 'Hand it on before it leaves the 40 NM ring.', primary: r0 > 25 });
+    if (r0 > 18 || ac.alt > 7000) add({ label: ac.kind === 'mil' ? 'Military' : 'Brussels', items: [{ k: 'xfr', unit: ac.kind === 'mil' ? 'MIL' : 'BRU' }], why: 'Hand it on before it leaves the 40 NM ring.', primary: r0 > 25 });
   }
   // a call with nothing else to say yet: acknowledge it
   if (ac.awaitingSince !== undefined) {
@@ -230,7 +252,7 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
       // cleared for the old runway's approach: the new transition if it fits, otherwise off the approach and into the hold
       const tr = bestTransition(sim, ac);
       const slot = tr ? slotFor(sim, ac, tr) : undefined;
-      const blk = tr && slot?.ok ? predictedConflict(sim, ac, asCleared(sim, tr.name, undefined, rw.id))?.with : undefined;
+      const blk = tr && slot?.ok ? predictedConflict(sim, ac, asCleared(sim, tr.name, undefined, rw.id), TRANSITION_HORIZON_S)?.with : undefined;
       const go = !!tr && !!slot?.ok && !blk;
       if (tr) add({ label: `${tr.name} · ${appName}`, items: [{ k: 'trans', name: tr.name }, ils], why: go ? `Runway changed to ${sim.runway}: new transition and approach. ${slotWhy(slot!)}.` : blk ? `Wait: ${blk.cs} is in the way.` : `No gap yet: ${slot?.clash?.cs ?? 'the sequence'} is too close.`, primary: go });
       add({ label: 'Break off · Hold ALHUV', items: [{ k: 'brk' }, { k: 'hold', fix: 'ALHUV' }], why: `Runway changed to ${sim.runway}. Take it off the old approach and hold it until there is a slot.`, primary: !go });
@@ -252,7 +274,7 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
   if (ac.app?.locCap) {
     if (ac.app.tooHigh) return;
     add({ label: 'Tower', items: [{ k: 'xfr', unit: 'TWR' }], why: 'Established on the localizer. Hand it to Tower.', primary: d < 14 });
-    if (ac.ias > 175 && d > 5) add({ label: '160 to 4 · Tower', items: [{ k: 'spd', spd: 160, until: 4 }, { k: 'xfr', unit: 'TWR' }], why: 'Slow it for a stable approach and hand it over in one call.' });
+    if (ac.ias > 175 && d > 5 && worthSlowing(ac, 160) && !speedQuiet(sim, ac)) add({ label: '160 to 4 · Tower', items: [{ k: 'spd', spd: 160, until: 4 }, { k: 'xfr', unit: 'TWR' }], why: 'Slow it for a stable approach and hand it over in one call.' });
     return;
   }
 
@@ -275,20 +297,17 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
     // lowest first in its own stack, and the ALHUV stack before anyone holding further out
     const lower = sim.aircraft.filter((o) => o !== ac && !o.remove && o.kind === 'arr' && !o.app && (isHolder(sim, o, fix) ? lvlFt(sim, o) < clearedFt - 50 : fix !== 'ALHUV' && isHolder(sim, o, 'ALHUV')));
     const blk0 = pathBlocker(sim, ac, sim.ftOf(transLvl), new Set(sequenceMembers(sim)));
-    const blk = blk0 ?? (slot.ok && !lower.length ? predictedConflict(sim, ac, asCleared(sim, tr?.name, sim.ftOf(transLvl), rw.id))?.with : undefined);
+    const blk = blk0 ?? (slot.ok && !lower.length ? predictedConflict(sim, ac, asCleared(sim, tr?.name, sim.ftOf(transLvl), rw.id), TRANSITION_HORIZON_S)?.with : undefined);
     const ok = slot.ok && !lower.length && !blk && !late(slot.etaS);
     const why = late(slot.etaS) ? lateWhy : lower.length ? `Release the lowest first: ${lower[0].cs} is below it.` : blk ? `Wait: ${blk.cs} is in the way down.` : slot.ok ? `${slotWhy(slot)}.` : `No gap yet: ${slot.clash?.cs ?? 'the sequence'} is too close. About ${Math.max(1, Math.round(slot.waitS / 60))} min.`;
     add({ label: `Leave hold · ${tr?.name ?? ''}${lvlTag(transLvl)} · ${appName}`, items: [...(tr ? [{ k: 'trans', name: tr.name } as Item] : []), ...lvlTo(transLvl), ils], why, primary: ok });
-    const hold = sim.pack.holds.find((h) => h.fix === fix);
-    if (hold && clearedFt > sim.ftOf(hold.max) + 50) {
-      // down into the stack, without passing through anyone holding below
-      const others = stackOf(sim, fix, ac).map((o) => lvlFt(sim, o));
-      let target: Level | undefined;
-      for (let ft = Math.floor((clearedFt - 200) / 1000) * 1000; ft >= Math.max(4000, sim.ftOf(hold.min)); ft -= 1000) {
-        if (others.some((x) => Math.abs(x - ft) < 900)) break;
-        target = sim.levelFor(ft);
-      }
-      if (target) add({ label: `Descend ${lvlLabel(target)}`, items: [{ k: 'lvl', lvl: target }], why: `Into the stack, clear of the others holding at ${fix}.`, primary: !ok });
+    stackDescend(sim, ac, fix, clearedFt, add, !ok);
+    // a revised expected approach time, only when it moves by 5 minutes or more
+    if (!ok) {
+      const e = sim.efcFor(ac, fix);
+      const hh = (t: number) => sim.utc(t).slice(0, 5).replace(':', '');
+      const moved = ac.efc !== undefined ? Math.abs(e.t - ac.efc) >= 300 : e.say !== null && e.t - sim.t >= 300;
+      if (moved && e.say) add({ label: `EAT ${e.say}`, items: [{ k: 'eat' }], why: ac.efc !== undefined ? `Its expected approach time ${hh(ac.efc)} is out of date. Give the revised time.` : 'The delay has grown. Give it an expected approach time.', primary: ac.efc !== undefined && sim.t >= ac.efc - 30 });
     }
     return;
   }
@@ -299,7 +318,7 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
       add({ label: `Intercept ${turnDir(curMag, h)}${p3(h)}`, items: [hdgItem(sim, ac, h)], why: '30° to the final course so the localizer captures cleanly.', primary: Math.abs(xt) < 3 });
     }
     speedForSpacing(sim, ac, add);
-    if (ac.ias > 200 && d < 18) { const s = spdFor(sim, ac, 180); if (s < ac.ias - 5) add({ label: `Speed ${s}`, items: [{ k: 'spd', spd: s }], why: 'Slow it before the localizer.' }); }
+    if (ac.ias > 200 && d < 18 && !speedQuiet(sim, ac)) { const s = spdFor(sim, ac, 180); if (worthSlowing(ac, s)) add({ label: `Speed ${s}`, items: [{ k: 'spd', spd: s }], why: 'Slow it before the localizer.' }); }
     return;
   }
 
@@ -326,17 +345,23 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
   // on a STAR: the low-workload transition when there is a slot, otherwise the hold or a slower speed
   if (ac.mode === 'NAV' && !ac.app) {
     const tr = bestTransition(sim, ac);
-    // the stack goes first, lowest first: anyone holding below this aircraft's level
-    const holders = sim.aircraft.filter((o) => o !== ac && !o.remove && o.kind === 'arr' && !o.app && (o.mode === 'HOLD' || !!holdAtOf(sim, o)) && lvlFt(sim, o) < clearedFt - 50);
+    const myHold = holdAtOf(sim, ac);
+    const transFt = sim.ftOf(transLvl);
+    // the stack goes first, lowest first: anyone holding below this aircraft's level. The transitions start at ALHUV
+    // at 3,000 ft, so nobody is sent down one while another aircraft holds at the bottom of the ALHUV stack.
+    const holders = sim.aircraft.filter((o) => o !== ac && !o.remove && o.kind === 'arr' && !o.app && (o.mode === 'HOLD' || !!holdAtOf(sim, o))
+      && (lvlFt(sim, o) < clearedFt - 50 || (isHolder(sim, o, 'ALHUV') && lvlFt(sim, o) < transFt + 950)));
     const slot = slotFor(sim, ac, tr);
     const blk0 = pathBlocker(sim, ac, sim.ftOf(transLvl), new Set(sequenceMembers(sim)));
-    const blk = blk0 ?? (slot.ok && !holders.length && tr ? predictedConflict(sim, ac, asCleared(sim, tr.name, sim.ftOf(transLvl), rw.id))?.with : undefined);
+    const blk = blk0 ?? (slot.ok && !holders.length && tr ? predictedConflict(sim, ac, asCleared(sim, tr.name, sim.ftOf(transLvl), rw.id), TRANSITION_HORIZON_S)?.with : undefined);
     const ok = slot.ok && !holders.length && !blk && !late(slot.etaS);
     if (tr) {
       const why = late(slot.etaS) ? lateWhy : holders.length ? `${holders.length} already holding at ALHUV: they go first.` : blk ? `Wait: ${blk.cs} is in the way down.` : slot.ok ? `${slotWhy(slot)}. Transition, 3,000 ft and the approach: it flies to final by itself.` : `No gap: ${slot.clash?.cs ?? 'the sequence'} would be too close. About ${Math.max(1, Math.round(slot.waitS / 60))} min to wait.`;
       add({ label: `${tr.name}${lvlTag(transLvl)} · ${appName}`, items: [{ k: 'trans', name: tr.name }, ...lvlTo(transLvl), ils], why, primary: ok });
     }
-    if (!ok && ac.route[ac.route.length - 1]?.fix === 'ALHUV') {
+    // already told to hold: no second hold instruction, only the way down into the stack
+    if (!ok && myHold) stackDescend(sim, ac, myHold, clearedFt, add, true);
+    if (!ok && !myHold && ac.route[ac.route.length - 1]?.fix === 'ALHUV') {
       // the lowest free level in the stack that it can reach without meeting anyone on the way
       const cands = stackLevels(sim, ac, 'ALHUV');
       const members = new Set(sequenceMembers(sim));
@@ -352,11 +377,14 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
         add({ label: `Hold ALHUV${lvlTag(sl)}`, items: [{ k: 'hold', fix: 'ALHUV' }, ...lvlTo(sl)], why: blkS ? `Wait: ${blkS.cs} is in the way down.` : why, primary: !blkS });
       }
       if (!sl || blkS) {
-        // ALHUV is full: hold it further out, at the STAR fix before ALHUV, at a level nobody else holds there
+        // ALHUV is full: another published hold (GIREL, GSY) at a level inside its band
         const remote = remoteHold(sim, ac);
-        if (remote) add({ label: `Hold ${remote.fix}${lvlTag(remote.lvl)}`, items: [{ k: 'hold', fix: remote.fix }, ...lvlTo(remote.lvl)], why: `The ALHUV stack is full. Hold it at ${remote.fix} for now.`, primary: true });
-        else if (!ac.spdMin && ac.spdAssigned === undefined) add({ label: 'Min clean speed', items: [{ k: 'spdmin' }], why: 'The ALHUV stack is full. Slow it down to buy time.', primary: true });
-        else if (!sl) add({ label: 'Hold ALHUV', items: [{ k: 'hold', fix: 'ALHUV' }], why: 'The stack is full: it will hold at its present level.' });
+        // slowing down must not bring the one behind onto it
+        const myNm = trackNm(sim, ac);
+        const slowHit = !remote && !ac.spdMin && ac.spdAssigned === undefined ? predictedConflict(sim, ac, (c) => { c.spdMin = true; })?.with : undefined;
+        const slowBlk = slowHit && slowHit.kind === 'arr' && trackNm(sim, slowHit) > myNm ? slowHit : undefined;
+        if (remote) add({ label: `Hold ${remote.fix} · ${lvlLabel(remote.lvl)}`, items: [{ k: 'hold', fix: remote.fix }, ...lvlTo(remote.lvl)], why: `The ALHUV stack is full. Hold it at ${remote.fix}, ${lvlWords(remote.lvl)}, for now.`, primary: true });
+        else if (!ac.spdMin && ac.spdAssigned === undefined) add({ label: 'Min clean speed', items: [{ k: 'spdmin' }], why: slowBlk ? `The ALHUV stack is full, but ${slowBlk.cs} is close behind: slowing it would close the gap.` : 'The ALHUV stack is full. Slow it down to buy time.', primary: !slowBlk });
       }
     }
     const step = levelList(sim).find((l) => sim.ftOf(l) <= clearedFt - 1900 && sim.ftOf(l) >= sim.mvaAt(ac.p) + 500);
@@ -367,7 +395,21 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
     const lv = levelList(sim).find((l) => sim.ftOf(l) <= ac.tgtAlt - 900 && sim.ftOf(l) >= Math.max(mva, rw.ifAlt));
     if (lv) add({ label: `Descend ${lvlLabel(lv)}`, items: [{ k: 'lvl', lvl: lv }], why: `Minimum vectoring altitude here is ${mva} ft.` });
   }
-  if (ac.ias > 230 && d < 25 && !ac.spdAssigned) { const s = spdFor(sim, ac, 210); if (s < ac.ias - 5) add({ label: `Speed ${s}`, items: [{ k: 'spd', spd: s }], why: 'Slow it to make the sequence work.' }); }
+  if (ac.ias > 230 && d < 25 && !ac.spdAssigned && !speedQuiet(sim, ac)) { const s = spdFor(sim, ac, 210); if (worthSlowing(ac, s)) add({ label: `Speed ${s}`, items: [{ k: 'spd', spd: s }], why: 'Slow it to make the sequence work.' }); }
+}
+
+/** Cleared to hold at `fix` above its published top: down into the stack, without passing anyone holding below. */
+function stackDescend(sim: Sim, ac: Aircraft, fix: string, clearedFt: number, add: (s: Suggestion) => void, primary: boolean) {
+  const hold = sim.pack.holds.find((h) => h.fix === fix);
+  if (!hold || clearedFt <= sim.ftOf(hold.max) + 50) return;
+  const others = stackOf(sim, fix, ac).map((o) => lvlFt(sim, o));
+  let target: Level | undefined;
+  for (let ft = Math.min(Math.floor((clearedFt - 200) / 1000) * 1000, Math.floor((sim.ftOf(hold.max) + 50) / 1000) * 1000); ft >= Math.max(4000, sim.ftOf(hold.min) - 50); ft -= 1000) {
+    if (others.some((x) => Math.abs(x - ft) < 900)) break;
+    target = sim.levelFor(ft);
+    break;
+  }
+  if (target) add({ label: `Descend ${lvlLabel(target)}`, items: [{ k: 'lvl', lvl: target }], why: `Into the ${fix} stack, at or below its top (${lvlWords(hold.max)}), clear of the others holding there.`, primary });
 }
 
 /** In the sequence and closing on the one ahead: a slower speed, as the primary call. */
@@ -375,7 +417,9 @@ function speedForSpacing(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void) {
   const sf = shortfall(sim, ac);
   if (!(sf.shortS > 0) || !sf.leader) return;
   const want = spdFor(sim, ac, Math.min(ac.ias, sf.leader.ias) - 20);
-  if (want >= ac.ias - 5 || (ac.spdAssigned !== undefined && ac.spdAssigned <= want)) return;
+  if (!worthSlowing(ac, want)) return;
+  // just slowed: give it time to work, unless the gap is still closing well below the minimum
+  if (speedQuiet(sim, ac) && sf.shortS < 20) return;
   add({ label: `Speed ${want}`, items: [{ k: 'spd', spd: want }], why: `${sf.gapNm!.toFixed(1)} NM behind ${sf.leader.cs}, needs ${sf.needNm} NM. Slow it down.`, primary: true });
 }
 
@@ -392,7 +436,10 @@ function finish(sim: Sim, ac: Aircraft, out: Suggestion[]) {
  * traffic holding or descending over the field, or hold it on the ground. The UI can light up the matching button.
  */
 export function releaseAdvice(sim: Sim, cs: string): { ok: boolean; items: Item[]; why: string; gap?: string } {
-  const r = releaseAdvice0(sim);
+  let r = releaseAdvice0(sim);
+  // RECAT-EU departure wake minimum behind the last departure: Tower waits it out after the release
+  const wk = sim.depWakeWait(cs);
+  if (r.ok && wk.s > 0) r = { ...r, why: `${r.why} Tower then waits ${wk.s} s for wake behind ${wk.behind ?? 'the last departure'}.` };
   try { return { ...r, gap: sim.departureGap(cs).text }; } catch { return r; }
 }
 function releaseAdvice0(sim: Sim): { ok: boolean; items: Item[]; why: string } {
@@ -403,6 +450,11 @@ function releaseAdvice0(sim: Sim): { ok: boolean; items: Item[]; why: string } {
   if (short) return { ok: false, items: [{ k: 'relhold', mins: 2 }], why: `${short.cs} is on short final. Hold it for now.` };
   const over = sim.aircraft.filter((a) => !a.remove && !a.landed && a.kind !== 'dep' && a.rules !== 'VFR' && !a.app?.locCap
     && Math.hypot(a.p.x, a.p.y) < 10 && Math.min(a.alt, a.tgtAlt) < 7500 && Math.max(a.alt, a.tgtAlt) > 2000);
+  // arrivals about to cross the field low on their way through ALHUV, where the SIDs climb out
+  const alh = sim.pack.fixes.get('ALHUV')?.p;
+  const coming = alh ? sim.aircraft.find((a) => !a.remove && !a.landed && a.kind === 'arr' && !a.app?.locCap && !over.includes(a)
+    && (a.route.some((l) => l.fix === 'ALHUV') || (a as any)._holdAt === 'ALHUV') && dist(a.p, alh) < 12 && Math.min(a.alt, a.tgtAlt) < 5000) : undefined;
+  if (coming && !over.length) return { ok: false, items: [{ k: 'relhold', mins: 2 }], why: `${coming.cs} is about to cross the field at ${Math.round(Math.min(coming.alt, coming.tgtAlt) / 100) * 100} ft, where the departure climbs. Hold it for now.` };
   if (!over.length) return { ok: true, items: [{ k: 'rel' }], why: 'Nothing over the field. Release it.' };
   const low = Math.min(...over.map((a) => Math.min(a.alt, a.tgtAlt)));
   if (low >= 3900) {

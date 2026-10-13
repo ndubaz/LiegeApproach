@@ -257,6 +257,8 @@ export interface Scenario {
   coordination?: boolean;
   /** Probability that Brussels asks for an early transfer of an arrival (default 0.1). */
   earlyTransferRate?: number;
+  /** Local time offset from UTC in hours (Belgium: 1 in winter, 2 in summer). Default 1. Drives crew fatigue. */
+  utcOffsetH?: number;
 }
 
 /** Brussels' estimate for an arrival, sent on the intercom 2 to 4 minutes before the transfer. */

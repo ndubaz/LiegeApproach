@@ -60,7 +60,12 @@ export function decelNm(ac: Aircraft, from: number): number {
   return (dv / finalDecel(ac)) * ((from + ac.perf.vapp) / 2) / 3600 + 0.4;
 }
 /** Final approach fix distance for a runway (FAF position is not in the Runway record: use the 3° path from the FAF altitude). */
-const finalFixNm = (r: Runway) => Math.max(0, (r.fafAlt - r.elevation - 50) / GS_FT_PER_NM);
+export const finalFixNm = (r: Runway) => Math.max(0, (r.fafAlt - r.elevation - (r.tch ?? 50)) / GS_FT_PER_NM);
+/**
+ * Extra distance an autopilot carries through the localizer before it is back on it, for an intercept angle (deg) and
+ * true airspeed (kt): none up to about 35°, then growing with the angle and the speed (about 1 NM at 90° and 180 kt).
+ */
+export const locOvershootNm = (angDeg: number, tasKt: number) => (angDeg > 35 ? ((Math.min(angDeg, 135) - 35) / 55) * (tasKt / 180) : 0);
 
 export function speedTarget(ac: Aircraft, world: PilotWorld): number {
   const pf = ac.perf;
@@ -79,9 +84,10 @@ export function speedTarget(ac: Aircraft, world: PilotWorld): number {
       if (d > release) return ac.spdAssigned;
       return pf.vapp;
     }
-    if (d <= 7) return Math.max(pf.vapp, 160);
-    if (d <= 12) return Math.max(pf.vapp, 180);
-    return Math.max(pf.vminFlap, Math.min(ac.ias, 210));
+    // without a speed instruction the crew never speeds up on the localizer: 180 kt by 12 NM, 160 kt by 7 NM, or slower if already slower
+    if (d <= 7) return Math.max(pf.vapp, Math.min(ac.ias, 160));
+    if (d <= 12) return Math.max(pf.vapp, Math.min(ac.ias, 180));
+    return Math.max(pf.vapp, Math.min(ac.ias, Math.max(pf.vminFlap, 210)));
   }
   if (ac.spdMin) return pf.vminClean;
   if (ac.spdAssigned) return ac.spdAssigned;
@@ -136,7 +142,8 @@ export function stepAircraft(ac: Aircraft, world: PilotWorld, dt: number) {
     const xte = crossTrack(ac.p, r.thr, r.crs);
     const a = angDiff(r.crs, ac.trk);
     if (d > 0.8 && d < 30 && Math.abs(a) < 135 && Math.abs(xte) < Math.max(1, d * Math.tan(35 * DEG))) {
-      const lead = turnRadius(ac) * (1 - Math.cos(Math.abs(a) * DEG)) + 0.12;
+      // the capture turn starts late at steep intercepts: the aircraft goes through the centreline before it settles
+      const lead = Math.max(0.15, turnRadius(ac) * (1 - Math.cos(Math.abs(a) * DEG)) + 0.12 - locOvershootNm(Math.abs(a), tas(ac.ias, ac.alt)));
       const converging = xte * a <= 0 || Math.abs(xte) < 0.15;
       // Nearly parallel (within 10°) and inside the localizer's full-scale deflection: the autopilot arms and
       // captures, converging on the centreline, even from an offset or a slightly diverging heading.
