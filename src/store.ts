@@ -15,11 +15,12 @@ export interface Settings {
   speedVectorMin: 1 | 2 | 3;
   showMva: boolean;
   showProcedures: boolean;
+  hints: boolean;          // supervisor hints during free play and challenges
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   voice: true, speakAtc: false, speechRate: 1.08, radarRefresh: 4, quickMode: false, trainingWheels: false,
-  leftHanded: false, labelSize: 'M', brightness: 'night', unlockAll: false, speedVectorMin: 1, showMva: false, showProcedures: true,
+  leftHanded: false, labelSize: 'M', brightness: 'night', unlockAll: false, speedVectorMin: 1, showMva: false, showProcedures: true, hints: true,
 };
 
 const get = <T>(k: string, d: T): T => {

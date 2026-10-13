@@ -90,7 +90,7 @@ function play(sc: Scenario, replay?: { cmds: { t: number; cl: Clearance }[]; unt
   document.body.classList.add('in-game');
   /** Called by Game as soon as its Sim exists (before a replay fast-forwards), if Game supports it. */
   const onSim = (sim: Sim) => { track(sim); startTrace(sim); };
-  const opts: GameOpts & { onSim?: (sim: Sim) => void } = {
+  const opts: GameOpts = {
     replay,
     coach,
     onSim,
@@ -117,7 +117,6 @@ function play(sc: Scenario, replay?: { cmds: { t: number; cl: Clearance }[]; unt
     },
   };
   game = new Game(pack, sc, settings, app, radio, opts);
-  onSim(game.sim);
 }
 
 app.addEventListener('click', (e) => {

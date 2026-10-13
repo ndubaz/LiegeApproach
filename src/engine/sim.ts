@@ -708,6 +708,13 @@ export class Sim implements PilotWorld {
   }
 
   /** Context for the controller's phraseology: QNH, speed verbs, vectoring, position, EFC, request answers. */
+  /** What the controller would say for this clearance, without sending it (for the composer preview). */
+  previewPhrase(cl: Clearance): { text: string; speech: string } | undefined {
+    const rel = cl.items.find((i) => i.k === 'rel' || i.k === 'relhold');
+    if (rel) return releasePhrase(cl.cs, rel as Extract<Item, { k: 'rel' | 'relhold' }>);
+    const ac = this.find(cl.cs);
+    return ac && cl.items.length ? phraseology(cl, this.phraseCtx(ac, cl)) : undefined;
+  }
   private phraseCtx(ac: Aircraft, cl: Clearance): Ctx {
     const has = (k: Item['k']) => cl.items.some((i) => i.k === k);
     const rwyUse = this.pack.runways.get(ac.expectRwy ?? this.runway) ?? this.rwy;

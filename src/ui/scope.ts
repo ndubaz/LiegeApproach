@@ -178,7 +178,7 @@ export class Scope {
     this.canvas.height = Math.round(this.h * this.dpr);
   }
   fit(animate = false) {
-    const half = 26;
+    const half = this.w < 600 ? 31 : 26;
     const s1 = Math.min(this.w, this.h) / (2 * half), c1 = { x: 2, y: -1 };
     if (animate) this.animateTo(s1, c1); else { this.scale = s1; this.center = c1; }
   }
