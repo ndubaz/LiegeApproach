@@ -18,6 +18,8 @@ export interface Request {
   hdg?: number; // magnetic
   route?: string[];
   t: number;
+  /** MIL crossing: the level block the formation wants to cross in (lowest, highest). */
+  band?: [Level, Level];
 }
 
 export interface HoldState { fix: string; p: XY; inbound: number; turn: 'L' | 'R'; phase: 'entry' | 'turnOut' | 'outbound' | 'turnIn' | 'inbound'; tPhase: number }
@@ -115,6 +117,12 @@ export interface Aircraft {
   turnQuery?: { hdg: number; dir: 'L' | 'R'; t: number };
   /** The controller said "standby" at this time; the pilot calls again about 45 s later if nothing follows. */
   standbyT?: number;
+  /** Brussels' estimate for this arrival: transfer fix, sim time at the fix, agreed transfer level (XFL). */
+  estimate?: { fix: string; t: number; xfl: Level };
+  /** Agreed level for the transfer to the next unit (departures: FL090 per the letter of agreement). */
+  xfl?: Level;
+  /** The pilot's last call on the frequency (what "say again" makes them repeat). */
+  lastCall?: { text: string; speech: string; t: number };
 }
 
 /** Departure release request from Tower (coordinated on intercom). */
@@ -203,7 +211,8 @@ export type SpawnSpec = {
 export type ScEvent =
   | { t: number; kind: 'tsa'; name: string; on: boolean }
   | { t: number; kind: 'wind'; dir: number; kt: number; gust?: number }
-  | { t: number; kind: 'runway'; rwy: string }
+  /** Runway change. With `notice` (seconds) the supervisor announces it first and it happens that much later. */
+  | { t: number; kind: 'runway'; rwy: string; notice?: number }
   | { t: number; kind: 'ils'; rwy: string; ok: boolean }
   | { t: number; kind: 'lvp'; on: boolean; rvr?: number; vis?: number; ceiling?: number }
   | { t: number; kind: 'flow'; exitFix: string; mit: number; text: string }
@@ -244,4 +253,50 @@ export interface Scenario {
   atisDrift?: boolean;
   briefing?: string;   // one-paragraph shift briefing shown before the session
   objectives?: { cs: string; text: string; byT: number }[]; // timed objectives (emergencies), byT in sim seconds
+  /** Brussels estimates and coordination requests on the intercom. Default: on, except in tutorial scenarios. */
+  coordination?: boolean;
+  /** Probability that Brussels asks for an early transfer of an arrival (default 0.1). */
+  earlyTransferRate?: number;
 }
+
+/** Brussels' estimate for an arrival, sent on the intercom 2 to 4 minutes before the transfer. */
+export interface Estimate {
+  cs: string;
+  type: string;
+  star: string;
+  /** first STAR fix ahead of the aircraft at the transfer */
+  fix: string;
+  /** sim time over the fix */
+  t: number;
+  /** agreed transfer level */
+  xfl: Level;
+  /** sim time the estimate was passed */
+  sentT: number;
+  /** 'expected' until the aircraft is handed over */
+  state: 'expected' | 'handed';
+  /** Brussels could not make the agreed level: the level it will come at instead */
+  revised?: boolean;
+}
+
+/** A coordination request from another unit, answered on the intercom with Approve / Unable (`appr` / `deny`). */
+export interface CoordReq {
+  id: number;
+  from: 'BRU';
+  kind: 'early';
+  cs: string;
+  /** the level Brussels asks you to take the aircraft at */
+  level: Level;
+  t: number;
+  state: 'pending' | 'approved' | 'denied' | 'expired';
+  /** the request lapses (treated as unable) at this sim time */
+  expireT: number;
+  text: string;
+  chased?: boolean;
+}
+
+/** One entry in the safety-nets list. `id` is stable for as long as the alert lasts; `since` is when it started. */
+export type SafetyNet =
+  | { id: string; kind: 'STCA' | 'LOS'; a: string; b: string; nm: number; vertFt: number; tCpa: number; cpaNm: number; since: number }
+  | { id: string; kind: 'SFL'; cs: string; sfl: Level; cfl: Level; since: number }
+  | { id: string; kind: 'MSAW'; cs: string; alt: number; mva: number; since: number }
+  | { id: string; kind: 'CLAM'; cs: string; alt: number; cfl: Level; since: number };

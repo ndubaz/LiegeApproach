@@ -23,16 +23,18 @@ export type Item =
   | { k: 'rel'; after?: string; hdg?: number; lvl?: Level }   // departure release (intercom to Tower); hdg magnetic
   | { k: 'relhold'; mins?: number }                 // hold a departure, expect release in n minutes
   | { k: 'roger' }                                  // "CS, Liège Approach, identified" (first call) or "CS, roger": answers a call, no readback
-  | { k: 'standby' };                               // "CS, standby": answers a call for now; the pilot calls again if nothing follows
+  | { k: 'standby' }                                // "CS, standby": answers a call for now; the pilot calls again if nothing follows
+  | { k: 'star'; name: string }                     // "cleared KOK7D arrival" (after a runway change: "runway change, now runway 04R, expect ILS 04R, ...")
+  | { k: 'sayagain' };                              // "CS, say again": the pilot repeats their last call
 
 export interface Clearance { cs: string; items: Item[] }
 
-export const ITEM_ORDER: Item['k'][] = ['roger', 'standby', 'rel', 'relhold', 'atis', 'brk', 'hdg', 'dct', 'trans', 'ron', 'hold', 'lvl', 'spd', 'spdmin', 'spdres', 'app', 'sqk', 'appr', 'deny', 'xfr'];
+export const ITEM_ORDER: Item['k'][] = ['sayagain', 'roger', 'standby', 'rel', 'relhold', 'atis', 'brk', 'hdg', 'dct', 'star', 'trans', 'ron', 'hold', 'lvl', 'spd', 'spdmin', 'spdres', 'app', 'sqk', 'appr', 'deny', 'xfr'];
 export const sortItems = (items: Item[]) => [...items].sort((a, b) => ITEM_ORDER.indexOf(a.k) - ITEM_ORDER.indexOf(b.k));
 
 /** Merge a new item into a list: one item per kind (approve/deny exclusive, spd variants exclusive). */
 export function mergeItem(items: Item[], it: Item): Item[] {
-  const group = (k: Item['k']) => (k === 'spd' || k === 'spdmin' || k === 'spdres' ? 'spd' : k === 'appr' || k === 'deny' ? 'ans' : k === 'rel' || k === 'relhold' ? 'rel' : k === 'roger' || k === 'standby' ? 'ack' : k === 'hdg' || k === 'dct' || k === 'trans' || k === 'ron' || k === 'hold' ? 'lat' : k);
+  const group = (k: Item['k']) => (k === 'spd' || k === 'spdmin' || k === 'spdres' ? 'spd' : k === 'appr' || k === 'deny' ? 'ans' : k === 'rel' || k === 'relhold' ? 'rel' : k === 'roger' || k === 'standby' || k === 'sayagain' ? 'ack' : k === 'hdg' || k === 'dct' || k === 'trans' || k === 'ron' || k === 'hold' || k === 'star' ? 'lat' : k);
   return sortItems([...items.filter((x) => group(x.k) !== group(it.k)), it]);
 }
 
@@ -119,6 +121,8 @@ export interface Ctx {
   cleared?: Level;
   /** the aircraft has not been spoken to yet: "roger" becomes "Liège Approach, identified" */
   firstCall?: boolean;
+  /** 'star' item after a runway change: the new runway and approach, said before the STAR */
+  starChange?: { rwy: string; app: ApproachType };
 }
 
 export const rwySpeech = (rwy: string) => rwy.replace(/(\d+)([LRC]?)/, (_m, n, l) => `${digits(n)}${l ? ' ' + (l === 'L' ? 'left' : l === 'R' ? 'right' : 'center') : ''}`);
@@ -166,6 +170,18 @@ export function phraseology(cl: Clearance, ctx: Ctx): { text: string; speech: st
         if (ctx.firstCall) { t.push('Liège Approach, identified'); s.push('Liège Approach, identified'); } else { t.push('roger'); s.push('roger'); }
         break;
       case 'standby': t.push('standby'); s.push('standby'); break;
+      case 'sayagain': t.push('say again'); s.push('say again'); break;
+      case 'star': {
+        const sc = ctx.starChange;
+        if (sc) {
+          const a = appName(sc.app);
+          t.push(`runway change, now runway ${sc.rwy}, expect ${a.t} ${sc.rwy}`);
+          s.push(`runway change, now runway ${rwySpeech(sc.rwy)}, expect ${a.s} runway ${rwySpeech(sc.rwy)}`);
+        }
+        t.push(`cleared ${it.name} arrival`);
+        s.push(`cleared ${it.name.replace(/^([A-Z]+)(\d)([A-Z])$/, (_m, b, d, l) => `${b} ${digits(d)} ${digits(l)}`)} arrival`);
+        break;
+      }
       case 'lvl': {
         const same = !!ctx.cleared && sameLevel(ctx.cleared, it.lvl) && Math.abs(levelFt(it.lvl, ctx.qnh) - ctx.alt) < 400;
         const verb = ctx.lvlVerb ?? (same ? 'maintain' : levelVerb(it.lvl, ctx.alt, ctx.qnh));
@@ -244,7 +260,7 @@ export function readback(cs: string, items: Item[], ctx: Ctx, wrong?: { idx: num
   const c2: Ctx = orig?.k === 'lvl' ? { ...ctx, lvlVerb: levelVerb(orig.lvl, ctx.alt, ctx.qnh) } : ctx;
   const p = phraseology({ cs, items: its }, { ...c2, posNm: undefined, firstCall: false });
   // Pilots read back with the callsign at the end and drop "proceed"/"fly" filler.
-  const body = (x: string, csx: string) => x.slice(csx.length + 2).replace(/^fly /, '').replace(/, fly /g, ', ').replace(/proceed direct/g, 'direct').replace(/contact /, '');
+  const body = (x: string, csx: string) => x.slice(csx.length + 2).replace(/^fly /, '').replace(/, fly /g, ', ').replace(/proceed direct/g, 'direct').replace(/contact /, '').replace(/runway change, now runway/, 'runway');
   return { text: `${body(p.text, cs)}, ${cs}`, speech: `${body(p.speech, telephony(cs))}, ${telephony(cs)}` };
 }
 
@@ -270,6 +286,8 @@ export function itemChip(it: Item): string {
     case 'relhold': return `REL HOLD${it.mins ? ' ' + it.mins + ' MIN' : ''}`;
     case 'roger': return 'ROGER';
     case 'standby': return 'STBY';
+    case 'star': return it.name;
+    case 'sayagain': return 'SAY AGAIN';
   }
 }
 

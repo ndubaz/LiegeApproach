@@ -47,6 +47,22 @@ export function autoControl(sim: Sim) {
     }
   }
 
+  // Brussels early-transfer requests: keep the agreed level (the demo does not take traffic early)
+  for (const r of sim.coordReqs) if (r.state === 'pending' && sim.t - r.t >= 8) sim.issue({ cs: r.cs, items: [{ k: 'deny' }] });
+  // after a runway change: arrivals still on the old runway's STAR get the matching one for the new runway
+  if (sim.lastRwyChange) {
+    for (const ac of sim.needReclear()) {
+      if (ac.state !== 'assumed' || ac.radioFail || sim.readbackPending(ac.cs) || sim.freqBusy()) continue;
+      const st = ac.proc ? sim.mapStar(ac.proc, sim.runway) : undefined;
+      const onStar = !!st && ac.mode === 'NAV' && ac.route.some((l) => l.fix === 'ALHUV');
+      if (onStar) { sim.issue({ cs: ac.cs, items: [{ k: 'star', name: st!.name }] }); S.released = S.released.filter((x) => x !== ac.cs); break; }
+      if (ac.app && !ac.app.locCap) {
+        // already released: the new runway's transition from ALHUV at its present level, in the same order
+        const tr = sim.transitionsFor(sim.runway).find((t) => !t.atcDiscretion);
+        if (tr) { sim.issue({ cs: ac.cs, items: [{ k: 'trans', name: tr.name }, { k: 'app', app: 'ILS', rwy: sim.runway }] }); break; }
+      }
+    }
+  }
   for (const ac of sim.aircraft) {
     if (ac.request?.kind === 'milxing' && ac.state === 'inbound') { sim.issue({ cs: ac.cs, items: [{ k: 'appr' }] }); continue; } // engine: approve MIL crossings
     if (ac.state !== 'assumed' || ac.radioFail) continue;
@@ -124,7 +140,7 @@ export function autoControl(sim: Sim) {
     if (ac.kind === 'dep') {
       const conflict = sim.aircraft.some((o) => o !== ac && o.kind === 'arr' && !o.remove && dist(o.p, ac.p) < 12 && o.alt > ac.alt - 1000 && o.alt < 10000);
       if (ac.cleared.fl !== 90 && (ac.alt > 5000 || ac.awaitingSince !== undefined) && !conflict) send([{ k: 'lvl', lvl: { fl: 90 } }]);
-      else if (Math.hypot(ac.p.x, ac.p.y) > 20) send([{ k: 'xfr', unit: 'BRU' }]);
+      else if (Math.hypot(ac.p.x, ac.p.y) > 20 && (ac.cleared.fl === 90 || Math.hypot(ac.p.x, ac.p.y) > 30)) send([{ k: 'xfr', unit: 'BRU' }]);
       else if (ac.awaitingSince !== undefined) send([{ k: 'lvl', lvl: ac.cleared }]);
     }
     if ((ac.kind === 'ovf' || ac.kind === 'mil' || ac.kind === 'vfr' || ac.kind === 'heli' || ac.kind === 'cal') && ac.awaitingSince !== undefined) send([{ k: 'appr' }]);

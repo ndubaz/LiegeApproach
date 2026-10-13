@@ -112,6 +112,8 @@ export function describeItem(it: Item): string {
     case 'sqk': return `squawk ${it.code}`;
     case 'roger': return 'roger';
     case 'standby': return 'standby';
+    case 'star': return `${it.name} arrival`;
+    case 'sayagain': return 'say again';
     default: return (it as any).k === 'rel' ? 'release for take-off' : String((it as any).k);
   }
 }
@@ -224,6 +226,10 @@ export function explain(sim: Sim, e: SimEvent): string {
     case 'speed_limit': return `${cs} flew faster than 250 kt below FL100. ${lastInstr}`;
     case 'warning_sent': return `You sent an instruction to ${cs} even though the system warned you about it. ${lastInstr}`;
     case 'airspace': return `${cs} climbed above your airspace before you handed it on. ${lastInstr}`;
+    case 'xfr_level': return `${cs} went to Brussels still cleared below the agreed level of FL090. ${lastInstr} Climb departures to the agreed level before the handoff, or coordinate a different one.`;
+    case 'xfr_conflict': return `${cs} went to the next sector with a conflict still predicted. ${lastInstr} Solve the conflict first, or tell the next unit about it.`;
+    case 'coord_unanswered': return `Brussels asked whether you could take ${cs} early and got no answer before its transfer. Answer every intercom request, even with Unable.`;
+    case 'tsa_routed': return `${cs} was routed into a military area after MIL had announced it. ${lastInstr} Once a TSA is announced, route traffic around it or below its floor.`;
     default: return lastInstr;
   }
 }
@@ -346,7 +352,7 @@ export function assess(sim: Sim): Result {
     }, 0);
   const occ = (sim.atcAirtime + sim.pilotAirtime) / Math.max(sim.t, 1);
   const respMed = median(sim.responseTimes);
-  const handled = new Set(sim.cmdLog.map((c) => c.cl.cs)).size || 1;
+  const handled = new Set(sim.cmdLog.filter((c) => !(c as any).op && c.cl.cs).map((c) => c.cl.cs)).size || 1;
   const txPer = sim.clearancesSent / handled;
   const allLow = [...sim.aircraft].reduce((s, a) => s + a.lowSec, 0) + ((sim as any)._lowLanded ?? 0);
   const demandPerHr = sim.arrivalsSpawned / hours;
@@ -425,15 +431,26 @@ export function assess(sim: Sim): Result {
   {
     const xfrs = sim.cmdLog.filter((c) => c.cl.items.some((i) => i.k === 'xfr')).length;
     const cordEv = ev.filter((e) => e.comp === 'CORD' && e.cost > 0).length;
+    const answered = count('coord_answered');
     let r = 5;
     r -= count('late_xfr') * 0.5;
     r -= count('exit_unxfr');
     r -= count('tsa');
     r -= count('flow');
     r -= count('airspace') * 0.5;
+    r -= count('coord_unanswered');
+    r -= count('xfr_level') * 0.5;
+    r -= count('xfr_conflict');
+    r -= count('tsa_routed') * 0.5;
     r -= ev.filter((e) => e.kind === 'goaround' && e.comp === 'CORD').length;
-    ratings.CORD = xfrs + cordEv > 0 ? clamp5(r) : null;
-    evidence.CORD = `${xfrs} handoffs, ${count('late_xfr')} late, ${count('exit_unxfr')} missed, ${count('tsa')} military area, ${count('flow')} flow`;
+    ratings.CORD = xfrs + cordEv + answered > 0 ? clamp5(r) : null;
+    const extra = [
+      answered + count('coord_unanswered') ? `${answered} Brussels requests answered, ${count('coord_unanswered')} not` : '',
+      count('xfr_level') ? `${count('xfr_level')} below the agreed level` : '',
+      count('xfr_conflict') ? `${count('xfr_conflict')} in conflict` : '',
+      count('tsa_routed') ? `${count('tsa_routed')} routed into an announced TSA` : '',
+    ].filter(Boolean);
+    evidence.CORD = `${xfrs} handoffs, ${count('late_xfr')} late, ${count('exit_unxfr')} missed, ${count('tsa')} military area, ${count('flow')} flow${extra.length ? ', ' + extra.join(', ') : ''}`;
   }
   {
     if (respMed === null) ratings.WORK = unanswered > 0 ? 1 : null;

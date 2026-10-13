@@ -82,6 +82,11 @@ export interface FreePlayOpts {
   emergencies: boolean;
   difficulty: 1 | 2 | 3 | 4 | 5;
   seed?: number;
+  /**
+   * Start time, UTC hours (e.g. 1.5 for 01:30). When set, the traffic follows Liège's real day
+   * (shiftCurveForHour) from that time instead of the template's flat rates or compressed night.
+   */
+  startHour?: number;
 }
 
 export const TEMPLATES = {
@@ -148,6 +153,36 @@ export function poissonTimes(rng: Rng, windowS: number, ratePerHr: (t: number) =
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Liège over 24 hours (UTC). A cargo hub with one long runway: long-haul departures in the evening,
+// the night inbound bank (integrator feeders and long-haul freighters), a short lull while the hub sorts,
+// the outbound bank, a quiet early morning, then a steady daytime mix with a few passenger flights.
+// Rates are movements per hour, linear between points; the peaks add up to about 25 movements an hour.
+export type HourPhase = 'evening' | 'bank' | 'sort' | 'outbound' | 'morning' | 'day';
+export const HOUR_CURVE: { arr: [number, number][]; dep: [number, number][] } = {
+  arr: [[0, 16], [0.75, 22], [1.25, 24], [2.4, 23], [2.7, 6], [3.25, 4], [5.25, 3], [6, 3], [7, 6], [8, 8], [17, 8], [18, 6], [21.5, 6], [22.5, 9], [23.5, 13], [24, 16]],
+  dep: [[0, 3], [2.75, 2], [3.25, 4], [3.5, 18], [3.75, 22], [4.75, 20], [5.25, 6], [6, 3], [7, 5], [8, 7], [17, 7], [18, 9], [19.5, 11], [21.5, 8], [22.5, 4], [24, 3]],
+};
+const HOUR_PHASES: { from: number; to: number; phase: HourPhase; label: string; paxShare: number }[] = [
+  { from: 0, to: 2.75, phase: 'bank', label: 'night inbound bank', paxShare: 0 },
+  { from: 2.75, to: 3.25, phase: 'sort', label: 'the sort', paxShare: 0 },
+  { from: 3.25, to: 5.25, phase: 'outbound', label: 'outbound bank', paxShare: 0 },
+  { from: 5.25, to: 8, phase: 'morning', label: 'quiet morning', paxShare: 0.15 },
+  { from: 8, to: 18, phase: 'day', label: 'daytime mix', paxShare: 0.25 },
+  { from: 18, to: 23.5, phase: 'evening', label: 'evening departures', paxShare: 0.1 },
+  { from: 23.5, to: 24, phase: 'bank', label: 'night inbound bank', paxShare: 0 },
+];
+/** Highest hourly rates on HOUR_CURVE (for the thinning sampler). */
+export const HOUR_MAX = { arr: 24, dep: 22 };
+/** Traffic mix at a UTC hour (fractional hours, any value; wraps at 24). */
+export function shiftCurveForHour(hourUtc: number): { arr: number; dep: number; phase: HourPhase; label: string; paxShare: number } {
+  const h = ((hourUtc % 24) + 24) % 24;
+  const ph = HOUR_PHASES.find((p) => h >= p.from && h < p.to) ?? HOUR_PHASES[0];
+  return { arr: curveAt(HOUR_CURVE.arr, h), dep: curveAt(HOUR_CURVE.dep, h), phase: ph.phase, label: ph.label, paxShare: ph.paxShare };
+}
+const cap = (x: string) => x.charAt(0).toUpperCase() + x.slice(1);
+const hhmmOfHour = (h: number) => { const m = Math.round((((h % 24) + 24) % 24) * 60); return `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
 
 // ---------------------------------------------------------------------------
 // Brussels handover rules.
@@ -291,7 +326,7 @@ export function emergencyObjectives(spawns: SpawnSpec[]): NonNullable<Scenario['
 
 // ---------------------------------------------------------------------------
 // Event deck for the shift template.
-export type DeckCard = 'tsa' | 'goaround' | 'wind' | 'hems' | 'medical' | 'unfamiliar' | 'military';
+export type DeckCard = 'tsa' | 'goaround' | 'wind' | 'hems' | 'medical' | 'unfamiliar' | 'military' | 'runway';
 export const EVENT_DECK: { card: DeckCard; w: number; once?: boolean; phases?: Phase[] }[] = [
   { card: 'tsa', w: 2, once: true, phases: ['warmup', 'bank', 'crossover'] },
   { card: 'goaround', w: 3, phases: ['bank', 'crossover'] },
@@ -300,6 +335,8 @@ export const EVENT_DECK: { card: DeckCard; w: number; once?: boolean; phases?: P
   { card: 'medical', w: 1, once: true, phases: ['bank', 'crossover', 'tail'] },
   { card: 'unfamiliar', w: 2 },
   { card: 'military', w: 2, once: true },
+  // the wind swings round: tailwind on the runway in use, the supervisor announces a change 10 minutes later
+  { card: 'runway', w: 1, once: true, phases: ['bank', 'crossover'] },
 ];
 
 interface DeckCtx { rng: Rng; cs: CallsignPool; spawns: SpawnSpec[]; events: ScEvent[]; objectives: NonNullable<Scenario['objectives']>; rwy: string; notes: string[]; start: string }
@@ -347,6 +384,14 @@ function playCard(card: DeckCard, t: number, c: DeckCtx) {
       c.spawns.push({ t, kind: 'arr', cs: c.cs.make(op.op), type: rng.pick(op.types), unfamiliar: true, spawnDist: rng.range(30, 38) });
       break;
     }
+    case 'runway': {
+      const into = c.rwy.startsWith('22') ? 40 : 220;
+      const dir = Math.round((into + rng.int(-20, 20) + 360) % 360 / 10) * 10 || 360;
+      const kt = rng.int(9, 14);
+      c.events.push({ t, kind: 'wind', dir, kt });
+      c.notes.push(`Wind expected to swing round to ${String(dir).padStart(3, '0')}° later in the shift: be ready for a runway change.`);
+      break;
+    }
     case 'military': {
       if (rng.chance(0.5)) c.spawns.push({ t, kind: 'mil', cs: 'BAF' + rng.int(51, 79), type: 'F35', formation: 2, route: ['GILOM', 'ALHUV', 'VERVIERS'], from: { brg: 282, dist: 18 }, level: { fl: 70 }, spd: 300, request: { kind: 'climb', level: { fl: 150 } } });
       else c.spawns.push({ t, kind: 'mil', cs: 'BAF7' + rng.int(10, 99), type: 'A400', route: ['ROMEO', 'ALHUV', 'SPA'], from: { brg: 300, dist: 10 }, level: { fl: 60 }, request: { kind: 'climb', level: { fl: 90 } } });
@@ -385,7 +430,10 @@ export function drawDeck(c: DeckCtx, windowS: number): { card: DeckCard; t: numb
 export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
   const seed = o.seed ?? Math.floor(Math.random() * 1e9);
   const rng = new Rng(seed);
-  const tpl = TEMPLATES[o.template];
+  const tpl0 = TEMPLATES[o.template];
+  const byHour = o.startHour !== undefined;
+  const tpl = byHour ? { ...tpl0, start: hhmmOfHour(o.startHour!) } : tpl0;
+  const hourAt = (t: number) => (o.startHour ?? 0) + t / 3600;
   const metar = o.weather === 'live' && o.liveMetar ? o.liveMetar : WEATHER_PRESETS[o.weather === 'live' ? 'good' : o.weather];
   const rwy = selectRunway(pack, parseMetar(metar));
   const cs = new CallsignPool(rng);
@@ -393,23 +441,24 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
   const W = Math.max(10, o.durationMin - 15) * 60; // traffic window
   const shift = o.template === 'shift';
   const arrCurve = shiftArrCurve(W);
+  const compressed = shift && !byHour;
 
-  const arrRate = (t: number) => (shift ? curveAt(arrCurve, t / W) : tpl.arrPerHr);
-  const depRate = (t: number) => (shift ? curveAt(SHIFT_CURVE.dep, t / W) : tpl.depPerHr);
-  const arrT = poissonTimes(rng, W, arrRate, shift ? 24 : tpl.arrPerHr);
-  const depT = poissonTimes(rng, W, depRate, shift ? 20 : tpl.depPerHr).filter((t) => t >= 60);
+  const arrRate = (t: number) => (byHour ? shiftCurveForHour(hourAt(t)).arr : compressed ? curveAt(arrCurve, t / W) : tpl.arrPerHr);
+  const depRate = (t: number) => (byHour ? shiftCurveForHour(hourAt(t)).dep : compressed ? curveAt(SHIFT_CURVE.dep, t / W) : tpl.depPerHr);
+  const arrT = poissonTimes(rng, W, arrRate, byHour ? HOUR_MAX.arr : compressed ? 24 : tpl.arrPerHr);
+  const depT = poissonTimes(rng, W, depRate, byHour ? HOUR_MAX.dep : compressed ? 20 : tpl.depPerHr).filter((t) => t >= 60);
   if (!arrT.length || arrT[0] > 2) arrT.unshift(2);
   else arrT[0] = 2;
   const bankEnd = 0.5 * W, bankStart = shiftPhases(W)[1].from * W;
   for (const t of arrT) {
-    const inBank = shift && t >= bankStart && t < bankEnd;
-    const pax = !inBank && rng.chance(tpl.paxShare);
+    const inBank = byHour ? shiftCurveForHour(hourAt(t)).phase === 'bank' : shift && t >= bankStart && t < bankEnd;
+    const pax = !inBank && rng.chance(byHour ? shiftCurveForHour(hourAt(t)).paxShare : tpl.paxShare);
     const op = rng.weighted((pax ? PAX_OPS : inBank ? BANK_OPS : CARGO_OPS).map((x) => ({ w: x.w, v: x })));
     const base = rng.weighted((inBank ? BANK_STAR_BASES : ARR_STAR_BASES).map((b) => ({ w: b.w, v: b.base })));
     spawns.push({ t, kind: 'arr', cs: cs.make(op.op), type: rng.pick(op.types), star: starFor(base, rwy), spawnDist: rng.range(36, 46) });
   }
   for (const t of depT) {
-    const op = rng.weighted(CARGO_OPS.map((x) => ({ w: x.w, v: x })));
+    const op = rng.weighted((byHour && rng.chance(shiftCurveForHour(hourAt(t)).paxShare) ? PAX_OPS : CARGO_OPS).map((x) => ({ w: x.w, v: x })));
     spawns.push({ t, kind: 'dep', cs: cs.make(op.op), type: rng.pick(op.types), sid: sidFor(rng, rwy) });
   }
   // Military and transient traffic
@@ -469,8 +518,9 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
 
   const nArr = spawns.filter((s) => s.kind === 'arr').length;
   const nDep = spawns.filter((s) => s.kind === 'dep').length;
-  const parts = [`${tpl.title}.`, `${nArr} inbound, ${nDep} out.`, `Runway ${rwy}.`];
-  if (shift) parts.push(`Wave peaks around ${utcPlus(tpl.start, Math.round(0.33 * W))}, departures push from ${utcPlus(tpl.start, Math.round(0.6 * W))}.`);
+  const parts = [`${byHour ? cap(shiftCurveForHour(o.startHour!).label) : tpl.title}.`, `${nArr} inbound, ${nDep} out.`, `Runway ${rwy}.`];
+  if (byHour) parts.push(hourBrief(o.startHour!, W));
+  else if (shift) parts.push(`Wave peaks around ${utcPlus(tpl.start, Math.round(0.33 * W))}, departures push from ${utcPlus(tpl.start, Math.round(0.6 * W))}.`);
   else parts.push(o.template === 'quiet' ? 'A gentle flow.' : 'Steady flow all session.');
   parts.push(...notes);
   if (o.weather === 'lvp') parts.push('Fog: low visibility procedures, CAT III only.');
@@ -479,10 +529,23 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
   if (o.military >= 2 && !shift) parts.push('Military traffic crossing the area.');
 
   return {
-    id: 'free', title: `Free play · ${tpl.title}`, desc: 'Generated session', seed, durationMin: o.durationMin, startUtc: tpl.start, metar,
+    id: 'free', title: `Free play · ${byHour ? `${cap(shiftCurveForHour(o.startHour!).label)} from ${tpl.start}Z` : tpl.title}`, desc: 'Generated session', seed, durationMin: o.durationMin, startUtc: tpl.start, metar,
     runway: rwy, spawns, events, storms, readbackErr: [0, 0.02, 0.04, 0.06, 0.08, 0.1][o.difficulty], confusion: o.difficulty >= 4, freePlay: true,
     briefing: parts.join(' '), objectives: objectives.length ? objectives : undefined,
   };
+}
+
+/** One line on what the clock brings: the phase the session starts in and the phase changes during it. */
+export function hourBrief(startHour: number, windowS: number): string {
+  const first = shiftCurveForHour(startHour);
+  const out = [`Starts in the ${first.label}`];
+  let cur = first.label;
+  for (let s = 60; s < windowS; s += 60) {
+    const h = Math.round(startHour * 60 + s / 60) / 60;
+    const m = shiftCurveForHour(h);
+    if (m.label !== cur) { out.push(`${m.label} from ${hhmmOfHour(h).replace(':', '')}Z`); cur = m.label; }
+  }
+  return out.join(', ') + '.';
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

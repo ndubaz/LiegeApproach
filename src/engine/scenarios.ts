@@ -1,7 +1,7 @@
 import type { Scenario, SpawnSpec } from './types';
 import { durationFor, emergencyObjectives, hotStart } from './traffic';
 
-// The challenge library: 21 scripted scenarios in four tiers.
+// The challenge library: 22 scripted scenarios in four tiers.
 // Times are seconds from the start. Callsigns are realistic in format; flights are fictional.
 
 const A = (t: number, cs: string, type: string, star: string, x: Partial<SpawnSpec> = {}): SpawnSpec => ({ t, kind: 'arr', cs, type, star, spawnDist: 40, ...x });
@@ -198,6 +198,19 @@ const LIBRARY: Scenario[] = [
       D(400, 'FDX5240', 'MD11', 'LNO9S'), D(1300, 'CHG7302', 'B748', 'BUB9S'), D(2000, 'ETH3730', 'B77L', 'CIV5S'),
     ],
     events: [], pass: { minLanded: 12, maxHoldMinPerArrival: 3, minRatings: { SEPC: 3 } },
+  },
+  {
+    id: 'runway-change-night', tier: 3, title: 'Runway change at night', seed: 308, durationMin: 50, startUtc: '01:55', metar: 'EBLG 120155Z 19006KT 9999 SCT035 08/04 Q1011 NOSIG', runway: '22L', readbackErr: 0.03,
+    desc: 'Night bank on 22L while the wind swings round to the north-east. Once the tailwind passes 5 kt the supervisor gives ten minutes of notice and the runway changes to 04R. Aircraft established on the 22L localizer land there; re-clear everyone else via the D arrivals, and keep the first 04R departures clear of the last 22L arrivals.',
+    objective: 'Land at least seven, with no loss of separation through the change.',
+    briefing: 'Night bank. 9 inbound, 3 out. Runway 22L, wind 190/06 and backing. Expect a change to 04R in the bank: Brussels sends new arrivals via the D arrivals once it is made.',
+    spawns: [
+      A(5, 'QTR8125', 'B77L', 'KOK7X'), A(130, 'CHG201', 'B748', 'CIV7X'), A(260, 'TAY4EK', 'B763', 'LNO6X', { spawnDist: 30 }), A(400, 'ETH3721', 'B77L', 'NIK7X'),
+      A(540, 'FDX5203', 'MD11', 'GESLO6X'), A(700, 'AZG7321', 'B748', 'KOK7X'), A(860, 'BCS5AB', 'A306', 'CIV7X'), A(1050, 'CKS231', 'B744', 'NIK7X'), A(1250, 'THY6411', 'A332', 'KOK7X'),
+      D(350, 'FDX5240', 'MD11', 'LNO9S'), D(820, 'CHG7302', 'B748', 'BUB9S'), D(1150, 'TAY71K', 'B744', 'CIV5S'),
+    ],
+    events: [{ t: 300, kind: 'wind', dir: 30, kt: 12 }],
+    pass: { minLanded: 7, minRatings: { SEPC: 4, CORD: 3 } },
   },
   // ---------------- Tier 4: emergency ----------------
   {

@@ -106,6 +106,29 @@ export function sequenceMembers(sim: Sim, except?: Aircraft): Aircraft[] {
   });
 }
 
+/** The player's landing order, restricted to arrivals still flying: callsign to position (0 = first). */
+export function seqIndex(sim: Sim): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const cs of sim.sequence ?? []) { const a = sim.find(cs); if (a && !a.landed && a.kind === 'arr' && !m.has(cs)) m.set(cs, m.size); }
+  return m;
+}
+
+/**
+ * Every arrival with its time to touchdown, in landing order: by ETA, except that aircraft in the player's
+ * sequence keep the player's order (they take the places the ETA order gives to sequenced aircraft).
+ */
+export function landingOrder(sim: Sim): { ac: Aircraft; etaS: number; pos: number; sequenced: boolean }[] {
+  const arr = sim.aircraft.filter((a) => !a.remove && !a.landed && a.kind === 'arr' && a.state !== 'unconcerned')
+    .map((ac) => ({ ac, etaS: etaS(ac, trackNm(sim, ac)) }))
+    .sort((a, b) => a.etaS - b.etaS);
+  const si = seqIndex(sim);
+  const slots = arr.map((x, i) => (si.has(x.ac.cs) ? i : -1)).filter((i) => i >= 0);
+  const seqd = arr.filter((x) => si.has(x.ac.cs)).sort((a, b) => si.get(a.ac.cs)! - si.get(b.ac.cs)!);
+  const out = [...arr];
+  slots.forEach((slot, k) => { out[slot] = seqd[k]; });
+  return out.map((x, i) => ({ ...x, pos: i + 1, sequenced: si.has(x.ac.cs) }));
+}
+
 export interface Slot {
   /** the newcomer fits now with wake spacing to spare */
   ok: boolean;
@@ -131,27 +154,42 @@ export function slotFor(sim: Sim, ac: Aircraft, via?: Procedure): Slot {
   const t = etaS(ac, d);
   const buf = bufferS(t);
   const others = sequenceMembers(sim, ac).map((o) => ({ o, t: etaS(o, trackNm(sim, o)) })).sort((a, b) => a.t - b.t);
-  const fits = (tc: number) => others.every(({ o, t: to }) => (to <= tc ? tc - to >= sepS(o, ac) + buf : to - tc >= sepS(ac, o) + buf));
+  // the player's sequence fixes who goes first between two sequenced aircraft; otherwise the ETA decides
+  const si = seqIndex(sim);
+  const mine = si.get(ac.cs);
+  const isAhead = (o: Aircraft, to: number, tc: number) => { const oi = si.get(o.cs); return mine !== undefined && oi !== undefined ? oi < mine : to <= tc; };
+  const fits = (tc: number) => others.every(({ o, t: to }) => {
+    if (isAhead(o, to, tc)) return tc - to >= sepS(o, ac) + buf;
+    // sequenced behind it but still able to give way (not yet on the localizer): its spacing is a later problem
+    if (mine !== undefined && si.has(o.cs) && !o.app?.locCap) return true;
+    return to - tc >= sepS(ac, o) + buf;
+  });
   const ok = fits(t);
   let waitS = 0;
   if (!ok) {
     const cands = others.map(({ o, t: to }) => to + sepS(o, ac) + buf - t).filter((x) => x > 0).sort((a, b) => a - b);
     waitS = cands.find((w) => fits(t + w)) ?? (cands.length ? cands[cands.length - 1] : 0);
   }
-  const ahead = others.filter((x) => x.t <= t);
-  const lead = ahead[ahead.length - 1];
+  const ahead = others.filter((x) => isAhead(x.o, x.t, t)).sort((a, b) => a.t - b.t);
+  const lead = mine !== undefined ? ahead.filter((x) => si.has(x.o.cs)).sort((a, b) => si.get(a.o.cs)! - si.get(b.o.cs)!).pop() ?? ahead[ahead.length - 1] : ahead[ahead.length - 1];
   let clash: Aircraft | undefined;
-  if (!ok) clash = others.find(({ o, t: to }) => (to <= t ? t - to < sepS(o, ac) + buf : to - t < sepS(ac, o) + buf))?.o;
-  return { ok, pos: ahead.length + 1, leader: lead?.o, gapNm: lead ? nmIn(ac, t - lead.t) : undefined, clash, waitS, etaS: t };
+  if (!ok) clash = others.find(({ o, t: to }) => (isAhead(o, to, t) ? t - to < sepS(o, ac) + buf : !(mine !== undefined && si.has(o.cs) && !o.app?.locCap) && to - t < sepS(ac, o) + buf))?.o;
+  const pos = mine !== undefined ? (landingOrder(sim).find((x) => x.ac === ac)?.pos ?? ahead.length + 1) : ahead.length + 1;
+  return { ok, pos, leader: lead?.o, gapNm: lead ? nmIn(ac, Math.max(0, t - lead.t)) : undefined, clash, waitS, etaS: t };
 }
 
 /** For an aircraft already in the sequence: the one ahead of it and how many seconds short of the spacing it is (negative = spare). */
 export function shortfall(sim: Sim, ac: Aircraft): { leader?: Aircraft; shortS: number; gapNm?: number; needNm?: number } {
   const t = etaS(ac, trackNm(sim, ac));
-  const ahead = sequenceMembers(sim, ac).map((o) => ({ o, t: etaS(o, trackNm(sim, o)) })).filter((x) => x.t <= t).sort((a, b) => b.t - a.t)[0];
+  const si = seqIndex(sim);
+  const mine = si.get(ac.cs);
+  const members = sequenceMembers(sim, ac).map((o) => ({ o, t: etaS(o, trackNm(sim, o)) }));
+  // in the player's sequence the leader is the sequenced aircraft just before it
+  const seqLead = mine !== undefined ? members.filter((x) => (si.get(x.o.cs) ?? Infinity) < mine).sort((a, b) => si.get(b.o.cs)! - si.get(a.o.cs)!)[0] : undefined;
+  const ahead = seqLead ?? members.filter((x) => x.t <= t).sort((a, b) => b.t - a.t)[0];
   if (!ahead) return { shortS: -Infinity };
   const need = sepS(ahead.o, ac) + 15;
-  return { leader: ahead.o, shortS: need - (t - ahead.t), gapNm: nmIn(ac, t - ahead.t), needNm: wakeMinNm(ahead.o.perf.recat, ac.perf.recat, 3) };
+  return { leader: ahead.o, shortS: need - (t - ahead.t), gapNm: nmIn(ac, Math.max(0, t - ahead.t)), needNm: wakeMinNm(ahead.o.perf.recat, ac.perf.recat, 3) };
 }
 
 /** Try a transition, level and approach clearance on a prediction clone (what Sim.apply would do). */
