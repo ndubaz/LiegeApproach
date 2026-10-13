@@ -57,6 +57,7 @@ class StubWorld implements PilotWorld {
   runwayBusy() { return false; }
   goAround() { this.stopped = true; }
   onTouchdown() { this.stopped = true; }
+  onTooHigh() { /* the pilot only asks for vectors; nothing to predict */ }
   /** Mirrors Sim.onRouteEnd without any radio calls. */
   onRouteEnd(ac: Aircraft, last: Leg) {
     if (last.fix === '__LOSTCOMM__') { ac.mode = 'HDG'; ac.hdgAssigned = ac.hdg; return; }
