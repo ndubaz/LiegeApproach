@@ -1,5 +1,10 @@
 import type { Grade, Result } from './engine/assess';
 import { CHALLENGES } from './engine/scenarios';
+import {
+  CHECKRIDES, RANKS, SHIFT_MIN_MINUTES, careerStatus, emptyCareer, isShiftScenario, type CareerData, type CareerStatus, type CheckrideLog,
+} from './engine/career';
+import type { DrillId, DrillVerdict } from './engine/drills';
+export { RANKS };
 
 export interface Settings {
   voice: boolean;          // speak pilot transmissions
@@ -65,6 +70,7 @@ export interface SessionExtra {
 export const loadRecords = (): RecordSummary[] => getArr<RecordSummary>('lgg.records');
 
 export function saveRecord(r: Result, x?: SessionExtra) {
+  loadCareer(); // migrate older saves before this record joins the history, so it is not logged twice
   const recs = loadRecords();
   recs.push({
     id: r.id, scenarioId: r.scenarioId, title: r.title, date: r.date, durationMin: r.durationMin, ratings: r.ratings, landed: r.landed, arrivals: r.arrivals,
@@ -72,7 +78,6 @@ export function saveRecord(r: Result, x?: SessionExtra) {
   });
   put('lgg.records', recs.slice(-200));
   if (x && !x.counts) return;
-  const before = rankOf(loadLogbook(), loadBest());
   // best grade per scenario (challenges and daily shifts)
   if (r.pass || r.scenarioId.startsWith('daily-')) {
     const best = loadBest();
@@ -80,7 +85,15 @@ export function saveRecord(r: Result, x?: SessionExtra) {
     put('lgg.best', best);
   }
   if (r.scenarioId.startsWith('daily-')) recordDaily(r);
-  addToLogbook(r, x, before.index);
+  addToLogbook(r, x);
+  // a free-play or daily session of 15 minutes or more is a logged shift for the career
+  const seconds = x?.seconds ?? r.durationMin * 60;
+  if (isShiftScenario(r.scenarioId) && seconds >= SHIFT_MIN_MINUTES * 60) {
+    const c = loadCareer();
+    c.shifts.push({ date: r.date, id: r.scenarioId, title: r.title, grade: r.grade, min: Math.round(seconds / 60) });
+    c.shifts = c.shifts.slice(-400);
+    saveCareer(c);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +185,7 @@ export function loadLogbook(): Logbook {
   return out;
 }
 
-function addToLogbook(r: Result, x: SessionExtra | undefined, beforeIdx: number) {
+function addToLogbook(r: Result, x: SessionExtra | undefined) {
   const l = loadLogbook();
   const date = r.date;
   l.sessions++;
@@ -191,35 +204,186 @@ function addToLogbook(r: Result, x: SessionExtra | undefined, beforeIdx: number)
   }
   l.events = l.events.slice(-60);
   put('lgg.log', l);
-  const after = rankOf(l, loadBest());
-  if (after.index > beforeIdx) { l.events.push({ date, kind: 'rank', text: `Promoted to ${after.name}` }); put('lgg.log', l); }
 }
 
 // ---------------------------------------------------------------------------
-// Career rank, derived from the logbook and best grades. No gameplay gates.
+// Career: rank comes from checkrides; each checkride needs logged shifts, challenges and hours first.
 
-export const RANKS = ['Student', 'Trainee', 'Validated', 'Senior', 'Supervisor'] as const;
 export interface RankReq { text: string; ok: boolean }
 export interface Rank { index: number; name: string; next?: string; reqs: RankReq[] }
 
 const tierIds: Record<number, string[]> = {};
 for (const c of CHALLENGES) (tierIds[c.tier ?? 1] ??= []).push(c.id);
 
-export function rankOf(l: Logbook, best: Record<string, Grade>): Rank {
+/** The v0.4 rank rule (logbook only). Used once, to credit existing players with the checkrides they would have had. */
+export function legacyRankIndex(l: Logbook, best: Record<string, Grade>): number {
   const hours = l.seconds / 3600;
   const passedTier = (t: number) => (tierIds[t] ?? []).filter((id) => best[id] && best[id] !== 'fail').length;
   const allTier = (t: number) => (tierIds[t]?.length ?? 0) > 0 && passedTier(t) === tierIds[t].length;
   const grades = Object.values(best);
   const good = grades.filter((g) => gradeRank(g) >= 2).length;
   const rated = grades.filter((g) => g === 'rated').length;
-  const n = (t: number) => tierIds[t]?.length ?? 0;
-  const steps: RankReq[][] = [
-    [{ text: 'Pass any challenge', ok: passedTier(1) + passedTier(2) + passedTier(3) + passedTier(4) > 0 }, { text: 'Finish 3 sessions', ok: l.sessions >= 3 }],
-    [{ text: `Pass every Tier 1 challenge (${passedTier(1)}/${n(1)})`, ok: allTier(1) }, { text: `2 hours on position (${hours.toFixed(1)})`, ok: hours >= 2 }, { text: `100 movements (${l.moves})`, ok: l.moves >= 100 }],
-    [{ text: `Pass every Tier 2 challenge (${passedTier(2)}/${n(2)})`, ok: allTier(2) }, { text: `Good or better on 3 challenges (${good})`, ok: good >= 3 }, { text: `400 movements (${l.moves})`, ok: l.moves >= 400 }],
-    [{ text: `Pass every Tier 3 and Tier 4 challenge (${passedTier(3) + passedTier(4)}/${n(3) + n(4)})`, ok: allTier(3) && allTier(4) }, { text: `Rated on 5 challenges (${rated})`, ok: rated >= 5 }, { text: `20 hours on position (${hours.toFixed(1)})`, ok: hours >= 20 }],
+  const steps: boolean[][] = [
+    [passedTier(1) + passedTier(2) + passedTier(3) + passedTier(4) > 0, l.sessions >= 3],
+    [allTier(1), hours >= 2, l.moves >= 100],
+    [allTier(2), good >= 3, l.moves >= 400],
+    [allTier(3) && allTier(4), rated >= 5, hours >= 20],
   ];
-  let index = 0;
-  while (index < steps.length && steps[index].every((r) => r.ok)) index++;
-  return { index, name: RANKS[index], next: RANKS[index + 1], reqs: steps[index] ?? [] };
+  let i = 0;
+  while (i < steps.length && steps[i].every(Boolean)) i++;
+  return i;
+}
+
+/** Tutorial exams passed (read straight from the tutorial's own key). */
+export function lessonsPassed(): number {
+  try {
+    const raw = JSON.parse(localStorage.getItem('lgg.tutorial') ?? '{}');
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 0;
+    return Object.values(raw).filter((r: any) => r && r.pass).length;
+  } catch { return 0; }
+}
+
+export function loadCareer(): CareerData {
+  const c = getRaw<CareerData>('lgg.career');
+  if (c && Array.isArray(c.shifts) && Array.isArray(c.checkrides)) return c;
+  // first run with careers: logged shifts from the session history, and checkrides credited for the rank already held
+  const out = emptyCareer();
+  for (const r of loadRecords()) {
+    if (!isShiftScenario(r.scenarioId) || r.durationMin < SHIFT_MIN_MINUTES) continue;
+    out.shifts.push({ date: r.date, id: r.scenarioId, title: r.title, grade: r.grade ?? (r.gatePass ? 'pass' : 'fail'), min: r.durationMin });
+  }
+  const held = getRaw<Logbook>('lgg.log') ? legacyRankIndex(loadLogbook(), loadBest()) : 0;
+  const now = new Date().toISOString();
+  for (let i = 0; i < held; i++) out.checkrides.push({ id: CHECKRIDES[i].id, date: now, pass: true, credited: true });
+  put('lgg.career', out);
+  return out;
+}
+export const saveCareer = (c: CareerData) => put('lgg.career', c);
+
+export function careerNow(l = loadLogbook(), best = loadBest()): CareerStatus {
+  return careerStatus({ log: l, best, career: loadCareer(), lessonsPassed: lessonsPassed() });
+}
+
+/** Rank and what the next promotion needs (the checkride is the last line). */
+export function rankOf(l: Logbook, best: Record<string, Grade>): Rank {
+  const st = careerNow(l, best);
+  const p = st.promotion;
+  const reqs: RankReq[] = p ? p.reqs.map((r) => ({ text: r.progress && !r.ok ? `${r.text} (${r.progress})` : r.text, ok: r.ok })) : [];
+  if (p) reqs.push({ text: p.retakeIn ? `Checkride retake after ${p.retakeIn} more logged shift${p.retakeIn > 1 ? 's' : ''}` : `Pass the checkride${p.ready ? ' (ready to book)' : ''}`, ok: false });
+  return { index: st.index, name: st.name, next: st.next, reqs };
+}
+
+/** Log a checkride attempt. A pass is a promotion, noted in the logbook. */
+export function recordCheckride(id: string, pass: boolean, score: number, date = new Date().toISOString()): CheckrideLog {
+  const c = loadCareer();
+  const e: CheckrideLog = { id, date, pass, score };
+  c.checkrides.push(e);
+  c.checkrides = c.checkrides.slice(-100);
+  saveCareer(c);
+  const def = CHECKRIDES.find((d) => d.id === id);
+  const l = loadLogbook();
+  l.events.push({ date, kind: 'rank', text: pass ? `Promoted to ${RANKS[def?.to ?? 0]} after the checkride` : `Checkride for ${RANKS[def?.to ?? 0]} not passed` });
+  l.events = l.events.slice(-60);
+  put('lgg.log', l);
+  return e;
+}
+
+// ---------------------------------------------------------------------------
+// Drills: best score, best time on a pass, and the next variation to fly.
+
+export interface DrillRecord { plays: number; passes: number; bestScore: number; bestTime?: number; lastVariant: number; last?: { pass: boolean; score: number; timeS: number } }
+export const loadDrills = (): Partial<Record<DrillId, DrillRecord>> => get<Partial<Record<DrillId, DrillRecord>>>('lgg.drills', {});
+export const nextDrillVariant = (id: DrillId) => (loadDrills()[id]?.lastVariant ?? 0) + 1;
+/** Save a drill attempt; says whether it beat the best score or the best time. */
+export function saveDrillResult(id: DrillId, variant: number, v: DrillVerdict): { record: DrillRecord; newScore: boolean; newTime: boolean; prev?: DrillRecord } {
+  const all = loadDrills();
+  const prev = all[id] ? { ...all[id]! } : undefined;
+  const r: DrillRecord = { ...(all[id] ?? { plays: 0, passes: 0, bestScore: 0, lastVariant: 0 }) };
+  r.plays++;
+  r.lastVariant = Math.max(r.lastVariant, variant);
+  const newScore = v.pass && v.score > r.bestScore;
+  const newTime = v.pass && (r.bestTime === undefined || v.timeS < r.bestTime);
+  if (v.pass) { r.passes++; r.bestScore = Math.max(r.bestScore, v.score); if (newTime) r.bestTime = Math.round(v.timeS); }
+  r.last = { pass: v.pass, score: v.score, timeS: Math.round(v.timeS) };
+  all[id] = r;
+  put('lgg.drills', all);
+  return { record: r, newScore, newTime, prev };
+}
+
+// ---------------------------------------------------------------------------
+// Save file: every lgg.* key, versioned, with a checksum. Import replaces everything.
+
+export const SAVE_APP = 'liege-approach';
+export const SAVE_VERSION = 1;
+export interface SaveFile { app: string; kind: 'save'; version: number; exported: string; keys: Record<string, string>; checksum: string }
+export interface SaveSummary { sessions: number; rank: string; exported?: string; keys: number }
+
+/** FNV-1a over the sorted key=value lines. */
+export function saveChecksum(keys: Record<string, string>): string {
+  let h = 2166136261;
+  const s = Object.keys(keys).sort().map((k) => `${k}=${keys[k]}\n`).join('');
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return 'fnv1a:' + (h >>> 0).toString(16).padStart(8, '0');
+}
+
+/** Can we write to local storage at all (private windows and blocked site data say no)? */
+export function storageAvailable(): boolean {
+  try { const k = 'lgg.__probe'; localStorage.setItem(k, '1'); localStorage.removeItem(k); return true; } catch { return false; }
+}
+
+const SAVE_KEY_RE = /^lgg\.[A-Za-z0-9._-]{1,40}$/;
+function lggKeys(): string[] {
+  const out: string[] = [];
+  try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && SAVE_KEY_RE.test(k) && k !== 'lgg.__probe') out.push(k); } } catch { /* storage unavailable */ }
+  return out.sort();
+}
+
+export function exportSave(now = new Date()): SaveFile {
+  const keys: Record<string, string> = {};
+  for (const k of lggKeys()) { try { const v = localStorage.getItem(k); if (v !== null) keys[k] = v; } catch { /* skip */ } }
+  return { app: SAVE_APP, kind: 'save', version: SAVE_VERSION, exported: now.toISOString(), keys, checksum: saveChecksum(keys) };
+}
+export const saveFileName = (now = new Date()) => `liege-approach-save-${ymdOf(now)}.json`;
+
+function summaryOf(keys: Record<string, string>, exported?: string): SaveSummary {
+  const parse = (k: string) => { try { return keys[k] ? JSON.parse(keys[k]) : undefined; } catch { return undefined; } };
+  const log = parse('lgg.log') as Logbook | undefined;
+  const recs = parse('lgg.records') as unknown[] | undefined;
+  const car = parse('lgg.career') as CareerData | undefined;
+  let rank = 0;
+  while (rank < CHECKRIDES.length && car?.checkrides?.some((c) => c.id === CHECKRIDES[rank].id && c.pass)) rank++;
+  return { sessions: log?.sessions ?? recs?.length ?? 0, rank: RANKS[rank], exported, keys: Object.keys(keys).length };
+}
+export const currentSummary = (): SaveSummary => { const f = exportSave(); return summaryOf(f.keys); };
+
+/** Check a save file before importing it. Nothing is written. */
+export function validateSave(text: string): { ok: true; save: SaveFile; summary: SaveSummary } | { ok: false; error: string } {
+  if (text.length > 8_000_000) return { ok: false, error: 'This file is too large to be a save file.' };
+  let j: any;
+  try { j = JSON.parse(text); } catch { return { ok: false, error: 'This file is not a Liège Approach save (it is not readable JSON).' }; }
+  if (!j || typeof j !== 'object' || j.app !== SAVE_APP || j.kind !== 'save') return { ok: false, error: 'This file is not a Liège Approach save.' };
+  if (typeof j.version !== 'number' || j.version < 1) return { ok: false, error: 'This save file has no version number.' };
+  if (j.version > SAVE_VERSION) return { ok: false, error: 'This save comes from a newer version of the game. Update the game first.' };
+  if (!j.keys || typeof j.keys !== 'object' || Array.isArray(j.keys)) return { ok: false, error: 'This save file has no progress in it.' };
+  for (const [k, v] of Object.entries(j.keys)) {
+    if (!SAVE_KEY_RE.test(k)) return { ok: false, error: `Unexpected entry "${k.slice(0, 40)}" in the save file.` };
+    if (typeof v !== 'string') return { ok: false, error: `The entry ${k} is damaged.` };
+    try { JSON.parse(v); } catch { return { ok: false, error: `The entry ${k} is damaged.` }; }
+  }
+  if (j.checksum !== saveChecksum(j.keys)) return { ok: false, error: 'The file has been changed or damaged since it was saved (checksum mismatch).' };
+  return { ok: true, save: j as SaveFile, summary: summaryOf(j.keys, typeof j.exported === 'string' ? j.exported : undefined) };
+}
+
+/** Replace every lgg.* key with the save's. Rolls back if storage fails half-way. */
+export function applySave(save: SaveFile): { ok: true } | { ok: false; error: string } {
+  if (!storageAvailable()) return { ok: false, error: 'This browser is not letting the game store anything (private window or blocked site data), so the save cannot be loaded here.' };
+  const backup = exportSave();
+  try {
+    for (const k of lggKeys()) localStorage.removeItem(k);
+    for (const [k, v] of Object.entries(save.keys)) localStorage.setItem(k, v);
+    return { ok: true };
+  } catch {
+    try { for (const k of lggKeys()) localStorage.removeItem(k); for (const [k, v] of Object.entries(backup.keys)) localStorage.setItem(k, v); } catch { /* nothing more we can do */ }
+    return { ok: false, error: 'The browser ran out of storage while loading the save. Your previous progress was put back.' };
+  }
 }
