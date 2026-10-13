@@ -9,7 +9,7 @@ import { remainNm } from '../engine/autopilot';
 import { alongTrack, crossTrack, dist, norm360 } from '../geo';
 import { GLOSSARY } from './glossary';
 
-// Learning path: ten lessons, each a scripted scenario in the real sim with a
+// Learning path: eleven lessons, each a scripted scenario in the real sim with a
 // coach that points at the control to use and waits until you have used it,
 // then an exam: a short session with no coaching, judged from the sim, PASS or
 // RETRY with one line of why and up to three stars.
@@ -627,7 +627,7 @@ const L6: Lesson = {
   },
 };
 
-// ---- 7. Transitions, the hold and EFC
+// ---- 7. Transitions, the hold and the expected approach time
 const L7: Lesson = {
   id: 'transitions', title: 'Transitions and the hold', minutes: 8,
   summary: 'The one-call transition, holding at ALHUV, 5,000 ft not FL050, releasing from the hold.',
@@ -646,7 +646,7 @@ const L7: Lesson = {
     { id: 'second', title: 'QTR8152 will call', run: 1, body: 'It is too close to follow AZG7321 straight in.', mark: { cs: 'QTR8152' }, done: (g) => calling(g, 'QTR8152') },
     {
       id: 'hold', title: 'MORE → Hold ALHUV → TRANSMIT',
-      body: `Hold it at ALHUV as published: left turns, 3,000 ft to FL050. Tap ${K('MORE')}, then ${K('Hold ALHUV')}, then ${K('TRANSMIT')}. The amber line warns that FL070 is above the top of the hold: you fix that next, so tap ${K('TRANSMIT')} a second time to send anyway. The phrase includes an ${G('EFC')}, the time it can expect to leave.`,
+      body: `Hold it at ALHUV as published: left turns, 3,000 ft to FL050. Tap ${K('MORE')}, then ${K('Hold ALHUV')}, then ${K('TRANSMIT')}. The amber line warns that FL070 is above the top of the hold: you fix that next, so tap ${K('TRANSMIT')} a second time to send anyway. The phrase includes an expected approach time (${G('EFC')}), the time it can expect to leave.`,
       cs: 'QTR8152', el: flow(MORE('hold', 'HOLD ALHUV')), done: (g, x) => sentTo(g, x, 'QTR8152', (it) => it.k === 'hold'),
     },
     {
@@ -989,7 +989,7 @@ const L11: Lesson = {
     },
     {
       id: 'corr', title: 'Say it, then take it back: CORRECTION',
-      body: `Clear CLX7HK to ${K('Speed 160')} with ${K('SPD')} and ${K('TRANSMIT')}, then tap the amber ${K('CORRECTION')} button within three seconds. The pilot hears “correction, disregard” and the old clearance stands. After the readback has started it is too late: give the right clearance instead.`,
+      body: `Clear CLX7HK to ${K('Speed 220')} with ${K('SPD')} and ${K('TRANSMIT')}, then tap the amber ${K('CORRECTION')} button within three seconds. The pilot hears “correction, disregard” and the old clearance stands. After the readback has started it is too late: give the right clearance instead.`,
       cs: 'CLX7HK',
       done: (g, x) => g.sim.cmdLog.slice(x.cmdStart).some((c) => c.op === 'correct'),
     },

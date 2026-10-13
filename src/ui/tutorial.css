@@ -82,3 +82,7 @@
 @media (min-width: 600px) {
   .scope-wrap.coached .emer-card { left: auto; right: 64px; }
 }
+/* phone: with the drawer open, the coach keeps to the radar above it so the strips stay usable */
+@media (max-width: 899px) {
+  .drawer-open .coach { max-height: calc(42% - 44px); top: 8px; }
+}

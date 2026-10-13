@@ -1,7 +1,7 @@
 import type { Pack, Level } from '../pack/load';
 import { Sim, type CmdEntry } from '../engine/sim';
 import type { Aircraft, ReleaseReq, Scenario, Tx } from '../engine/types';
-import { itemChip, levelText, mergeItem, sortItems, type Clearance, type Item } from '../engine/clearance';
+import { UNITS, itemChip, levelText, mergeItem, sortItems, type Clearance, type Item } from '../engine/clearance';
 import { parseShorthand, parseVoiceAlternatives } from '../engine/parser';
 import { landingOrder } from '../engine/sequence';
 import { createPtt, type PttController } from './ptt';
@@ -63,6 +63,7 @@ export class Game {
   private drawerTab: 'info' | 'aman' | 'strips' | 'comms' | 'coord' = 'strips';
   private commsStick = true;
   private voiceText = '';
+  private armedSig = '';
   private typed?: { cs?: string; items: Item[]; errors: string[]; armed: boolean };
   private seenLandings = 0;
   private seenRel = new Set<string>();
@@ -144,7 +145,7 @@ export class Game {
     this.els.ticker.innerHTML = '';
     this.closePicker();
     this.select(undefined);
-    this.renderPanels(); this.renderLive(); this.renderIcom();
+    this.renderIcom(); this.renderPanels(); this.renderLive();
   }
 
   destroy() {
@@ -263,6 +264,7 @@ export class Game {
     if (t.dataset.rel !== undefined) { this.answerIcom(t.dataset.rel, t.dataset.v ?? ''); return; }
     if (t.dataset.gloss) { this.explain(t.dataset.gloss); return; }
     if (t.classList.contains('strip') || t.classList.contains('net')) { this.select(t.dataset.cs, true); if (t.dataset.cs) this.keepVisible(t.dataset.cs); return; }
+    if (t.dataset.relsel) { const inp = this.els.cmd as HTMLInputElement; inp.value = `${t.dataset.relsel} `; this.root.classList.add('kbd'); inp.focus(); this.previewCmd(); this.toast(`${t.dataset.relsel}: type REL, REL AFTER callsign, RH3 or a release heading, then Enter.`, 3200); return; }
     if (t.dataset.ikey) { const u = t.dataset.ikey; const m = [...this.sim.log].reverse().find((x) => x.channel === 'icom' && (x.from === u || (u === 'TWR' && x.from === 'ATC' && /released|hold/i.test(x.text)))); this.toast(m ? `${u}: ${m.text}` : `${u}: nothing pending.`, 4500); return; }
     const a = t.dataset.a, p = t.dataset.p, s = t.dataset.s, z = t.dataset.z, tab = t.dataset.t;
     if (s !== undefined) { this.setSpeed(Number(s)); return; }
@@ -366,7 +368,7 @@ export class Game {
     this.keepVisible(nxt.cs);
   }
   private waiting() { return this.sim.callers().filter((a) => a.state === 'assumed' && this.sim.t >= (a.awaitingSince ?? 0)); }
-  private send() {
+  private send(confirmed = false) {
     if (!this.cs || !this.items.length) return;
     const cl: Clearance = { cs: this.cs, items: sortItems(this.items) };
     const veto = this.onBeforeSend?.(cl); // tutorial hook
@@ -374,13 +376,13 @@ export class Game {
     const warns = this.sim.validate(cl);
     if (this.settings.trainingWheels && warns.length) { this.toast(`Blocked: ${warns.join('; ')}`); return; }
     const sig = JSON.stringify(cl);
-    if (warns.length && this.sendArmed !== sig) { this.sendArmed = sig; this.toast(`${warns[0]}. Transmit again to send anyway.`, 2600); this.sends().forEach((b) => b.classList.add('armed')); return; }
+    if (warns.length && !confirmed && this.sendArmed !== sig) { this.sendArmed = sig; this.toast(`${warns[0]}. Transmit again to send anyway.`, 2600); this.sends().forEach((b) => b.classList.add('armed')); return; }
     this.sendArmed = ''; this.sends().forEach((b) => b.classList.remove('armed'));
     const r = this.sim.issue(cl);
     if (r.ok) {
       this.lastSentCs = cl.cs; this.els.corr.hidden = false; clearTimeout(this.corrTimer); this.corrTimer = window.setTimeout(() => (this.els.corr.hidden = true), 3000);
       this.items = []; this.typed = undefined; this.suggestSig = '';
-      this.renderBar(); this.renderPanels(); this.renderIcom();
+      this.renderBar(); this.renderIcom(); this.renderPanels();
       for (const f of this.onSent) f(cl);
     } else if (r.warnings.length) this.toast(r.warnings.join('; '));
   }
@@ -402,7 +404,7 @@ export class Game {
   // ---------------- typed commands with live preview ----------------
   private parseCtx() {
     return {
-      callsigns: [...this.sim.aircraft.map((a) => a.cs), ...this.sim.releases.map((r) => r.cs)], selected: this.cs, runway: this.sim.runway, tl: this.sim.tl,
+      callsigns: [...this.sim.aircraft.map((a) => a.cs), ...this.sim.releases.map((r) => r.cs), ...this.sim.coordReqs.filter((r) => r.state === 'pending').map((r) => r.cs)], selected: this.cs, runway: this.sim.runway, tl: this.sim.tl,
       fixes: new Set([...this.sim.pack.fixes.keys()]), transitions: new Set(this.sim.pack.transitions.map((t) => t.name)),
       stars: new Set(this.sim.pack.stars.map((t) => t.name)),
     };
@@ -426,9 +428,11 @@ export class Game {
     if (res.correction) { const ok = this.sim.correct(cs); this.toast(ok ? `${cs}: correction, disregard.` : 'Too late to correct: give the right clearance instead.'); inp.value = ''; this.typed = undefined; this.renderBar(); return; }
     res.items.push(...((res.ext ?? []) as Item[]));
     if (!res.items.length) { this.select(cs, true); inp.value = ''; this.typed = undefined; this.keepVisible(cs); return; }
-    const isRel = res.items.some((i) => i.k === 'rel' || i.k === 'relhold');
+    const isRel = !!this.sim.isIntercomAnswer({ cs, items: res.items }) || res.items.some((i) => i.k === 'rel' || i.k === 'relhold');
     const warns = isRel ? [] : this.sim.validate({ cs, items: res.items });
-    if (warns.length && !this.typed?.armed) {
+    const sig = JSON.stringify([cs, res.items]);
+    if (warns.length && this.armedSig !== sig) {
+      this.armedSig = sig;
       this.typed = { cs, items: res.items, errors: [], armed: true };
       this.renderBar();
       this.toast(`${warns[0]}. Press Enter again to send anyway.`, 2500);
@@ -436,11 +440,21 @@ export class Game {
     }
     inp.value = '';
     this.typed = undefined;
-    if (isRel) { const r = this.sim.issue({ cs, items: res.items }); if (!r.ok) this.toast(r.warnings.join('; ')); this.renderIcom(); this.renderBar(); return; }
+    this.armedSig = '';
+    if (isRel) {
+      const rq = this.sim.releases.find((r) => r.cs === cs && r.state !== 'airborne');
+      const plain = res.items.length === 1 && res.items[0].k === 'rel' && !(res.items[0] as any).after && (res.items[0] as any).hdg === undefined && !(res.items[0] as any).lvl;
+      if (rq?.state === 'released' && plain) { this.toast(`${cs} is already released${rq.after ? ` after ${rq.after}` : ''}. Tower launches when the runway is free.`); return; }
+      const veto = this.onBeforeSend?.({ cs, items: res.items });
+      if (veto) { this.toast(veto); return; }
+      const r = this.sim.issue({ cs, items: res.items });
+      if (!r.ok) this.toast(r.warnings.join('; ')); else for (const f of this.onSent) f({ cs, items: res.items });
+      this.icomSig = ''; this.coordSig = ''; this.renderIcom(); this.renderBar(); return;
+    }
     if (cs !== this.cs) this.select(cs, true);
     this.items = [];
     for (const it of res.items) this.items = mergeItem(this.items, it);
-    this.send();
+    this.send(true);
   }
   // ---------------- push-to-talk voice ----------------
   private voiceDown() {
@@ -458,7 +472,7 @@ export class Game {
   private voiceUp() { this.els.mic.classList.remove('live'); this.els.rxled.classList.remove('tx'); if (this.mic.available) this.mic.end(); else this.toast('Speech recognition is not available in this browser. Type or tap instead.'); }
   private voiceCancel() { this.els.mic.classList.remove('live'); this.els.rxled.classList.remove('tx'); this.mic.abort(); this.voiceText = ''; this.renderBar(); }
   private voiceFinal(text: string, alts: string[]) {
-    if (!text) { this.voiceText = ''; this.renderBar(); return; }
+    if (!text) { this.voiceText = ''; this.renderBar(); this.toast('Nothing heard. Hold the key, speak, then release.', 2200); return; }
     const tels: Record<string, string> = {};
     for (const a of this.sim.aircraft) tels[a.cs] = a.tel;
     const v = parseVoiceAlternatives(alts.length ? alts : [text], { ...this.parseCtx(), tels });
@@ -758,7 +772,7 @@ export class Game {
     this.panelTimer += dt;
     if (this.panelTimer > 0.5) {
       this.panelTimer = 0;
-      this.renderPanels(); this.renderBarLive(); this.checkAlerts(); this.renderLive(); this.renderIcom(); this.checkLandings();
+      this.renderIcom(); this.renderPanels(); this.renderBarLive(); this.checkAlerts(); this.renderLive(); this.checkLandings();
       this.hintTimer += 1;
       if (this.hintTimer >= 4) { this.hintTimer = 0; this.updateHint(); }
     }
@@ -901,18 +915,18 @@ export class Game {
     const rel = sim.releases.filter((r) => r.state === 'pending' || r.state === 'held' || (r.state === 'released' && sim.t - (r.tReleased ?? sim.t) < 90));
     const mil = sim.aircraft.filter((a) => a.request?.kind === 'milxing' && a.state === 'inbound');
     for (const r of rel) if (r.state === 'pending' && !this.seenRel.has(r.cs)) { this.seenRel.add(r.cs); }
-    const sig = rel.map((r) => `${r.cs}:${r.state}:${r.after ?? ''}:${Math.floor(sim.t - r.t)}`).join('|') + '#' + mil.map((m) => m.cs).join('|') + '#' + this.icomArrival();
-    if (sig === this.icomSig) return;
+    const sig = rel.map((r) => `${r.cs}:${r.state}:${r.after ?? ''}:${sim.departureGap(r.cs).after ?? ''}:${r.expectAt ?? ''}`).join('|') + '#' + mil.map((m) => m.cs).join('|') + '#' + this.icomArrival();
+    if (sig === this.icomSig) { this.tickTimers(); return; }
     this.icomSig = sig;
     const card = (r: ReleaseReq) => {
       const wait = sim.t - r.t;
       const gap = sim.departureGap(r.cs);
       const after = gap.after ?? this.icomArrival();
-      const head = `<div class="ic-h"><span class="ic-from">TWR ⇄</span><b class="mono">${esc(r.cs)}</b><span class="mono dim">${esc(r.type)} · ${esc(r.sid)} · ${esc(r.rwy)}</span><span class="ic-t mono ${wait > 120 ? 'warn' : ''}">${mmss(wait)}</span></div>`;
+      const head = `<div class="ic-h"><span class="ic-from">TWR ⇄</span><b class="mono">${esc(r.cs)}</b><span class="mono dim">${esc(r.type)} · ${esc(r.sid)} · ${esc(r.rwy)}</span><span class="ic-t mono ${wait > 120 ? 'warn' : ''}" data-t0="${r.t}">${mmss(wait)}</span></div>`;
       if (r.state === 'released') return `<div class="ic-card done">${head}<div class="ic-s">Released${r.after ? ` after ${esc(r.after)}` : ''}. Tower will launch when the runway is free.</div></div>`;
       if (r.state === 'held') return `<div class="ic-card held">${head}<div class="ic-s">Holding on the ground${r.expectAt ? `, expect ${sim.utc(r.expectAt).slice(0, 5)}Z` : ''}.</div><div class="ic-b"><button data-rel="${esc(r.cs)}" data-v="rel" class="ok">Release</button>${after ? `<button data-rel="${esc(r.cs)}" data-v="after:${esc(after)}">After ${esc(after)}</button>` : ''}</div></div>`;
       const adv = releaseAdvice(sim, r.cs);
-      return `<div class="ic-card">${head}<div class="ic-s">Request release. <span class="${adv.ok ? 'ok' : 'warn'}">${esc(adv.why)}</span></div><div class="ic-b"><button data-rel="${esc(r.cs)}" data-v="rel" class="ok">Release</button>${after ? `<button data-rel="${esc(r.cs)}" data-v="after:${esc(after)}">After ${esc(after)}</button>` : ''}<button data-rel="${esc(r.cs)}" data-v="hold">Hold 3 min</button></div></div>`;
+      return `<div class="ic-card">${head}<div class="ic-s">Request release. <span class="${adv.ok ? 'ok' : 'warn'}" data-adv="${esc(r.cs)}">${esc(adv.why)}</span></div><div class="ic-b"><button data-rel="${esc(r.cs)}" data-v="rel" class="ok">Release</button>${after ? `<button data-rel="${esc(r.cs)}" data-v="after:${esc(after)}">After ${esc(after)}</button>` : ''}<button data-rel="${esc(r.cs)}" data-v="hold">Hold 3 min</button></div></div>`;
     };
     const milCard = (a: Aircraft) => `<div class="ic-card mil"><div class="ic-h"><span class="ic-from">MIL ⇄</span><b class="mono">${esc(a.cs)}${a.formation > 1 ? ` ×${a.formation}` : ''}</b><span class="mono dim">${esc(a.type)}</span></div><div class="ic-s">${esc(a.request!.text)}</div><div class="ic-b"><button data-rel="${esc(a.cs)}" data-v="milok" class="ok">Approve</button><button data-rel="${esc(a.cs)}" data-v="milno">Unable</button></div></div>`;
     this.icomHtml = rel.map(card).join('') + mil.map(milCard).join('');
@@ -935,8 +949,8 @@ export class Game {
     const r = this.sim.issue({ cs, items });
     if (!r.ok) this.toast(r.warnings.join('; '));
     else for (const f of this.onSent) f({ cs, items });
-    this.icomSig = '';
-    this.renderIcom();
+    this.icomSig = ''; this.coordSig = '';
+    this.renderIcom(); this.renderPanels();
   }
 
   // ---------------- live stats, emergencies, objectives ----------------
@@ -1093,7 +1107,7 @@ export class Game {
     const span = 30;
     const items: string[] = [];
     for (let m = 0; m <= span; m += 5) items.push(`<div class="tick" style="top:${(m / span) * 100}%"><span>${sim.utc(sim.t + m * 60).slice(0, 5)}</span></div>`);
-    const hpx = Math.max(200, this.els.aman.clientHeight || 400);
+    const hpx = Math.max(80, this.els.aman.clientHeight || 400);
     let prevEta = -1e9, prev: Aircraft | undefined, lastTop = -100;
     for (const x of order) {
       let eta = x.etaS / 60;
@@ -1130,7 +1144,7 @@ export class Game {
     const waiting = a.awaitingSince !== undefined && sim.t >= a.awaitingSince;
     const cfl = levelText(a.cflSys ?? a.cleared).replace(' ft', '').replace(',', '');
     const sflOff = a.cflSys && Math.abs(sim.ftOf(a.cleared) - sim.ftOf(a.cflSys)) > 60;
-    const efc = a.mode === 'HOLD' && a.efc !== undefined ? ` · EFC ${sim.utc(a.efc).slice(0, 5).replace(':', '')}` : '';
+    const efc = a.mode === 'HOLD' && a.efc !== undefined ? ` · EAT ${sim.utc(a.efc).slice(0, 5).replace(':', '')}` : '';
     return `<button class="strip ${a.kind} ${a.cs === this.cs ? 'sel' : ''} ${a.state} ${a.emergency ? 'emer' : ''} ${waiting ? 'calling' : ''}" data-cs="${a.cs}" ${extra}>
         <span class="bay mono">${a.recat ?? a.perf.recat}</span>
         <span class="f id"><b class="mono">${a.cs}${a.formation > 1 ? `×${a.formation}` : ''}</b><i class="mono">${a.type}</i></span>
@@ -1164,7 +1178,7 @@ export class Game {
         est.map((e) => `<div class="strip-pend est mono"><span class="bay">E</span><b>${esc(e.cs)}</b><i>${esc(e.type)} ${esc(e.star)} · ${esc(e.fix)} ${sim.utc(e.t).slice(3, 5)}</i><em>${esc(levelText(e.xfl).replace(' ft', ''))}${e.revised ? ' rev' : ''}</em></div>`).join('') + offered.map((a) => this.stripHtml(a)).join(''), 'offered') +
       bay('Landing sequence <small>drag to reorder</small>', seq.length, `<div class="seq" data-e2="seq">${seq.map((a) => this.stripHtml(a, 'data-seq="1"')).join('')}</div>`, 'seqh') +
       bay(`Hold ${hold[0]?.hold?.fix ?? 'ALHUV'}`, hold.length, hold.sort((a, b) => a.tgtAlt - b.tgtAlt).map((a) => this.stripHtml(a)).join(''), 'holdh') +
-      bay('Departures', deps.length + pend.length, pend.map((r) => `<div class="strip-pend mono"><span class="bay">⏸</span><b>${esc(r.cs)}</b><i>${esc(r.type)} ${esc(r.sid)}</i><em>${r.state === 'held' ? 'held' : 'release?'}</em></div>`).join('') + deps.map((a) => this.stripHtml(a)).join(''), 'deph') +
+      bay('Departures', deps.length + pend.length, pend.map((r) => `<button class="strip-pend mono" data-relsel="${esc(r.cs)}"><span class="bay">⏸</span><b>${esc(r.cs)}</b><i>${esc(r.type)} ${esc(r.sid)}</i><em>${r.state === 'held' ? 'held' : 'release?'}</em></button>`).join('') + deps.map((a) => this.stripHtml(a)).join(''), 'deph') +
       bay('Other traffic', other.length, other.map((a) => this.stripHtml(a)).join('')) +
       bay('Transferred', xfr.length, xfr.map((a) => this.stripHtml(a)).join(''), 'xfrh') ||
       '<div class="empty">No traffic yet</div>';
@@ -1215,11 +1229,13 @@ export class Game {
       MIL: sim.aircraft.some((a) => a.request?.kind === 'milxing' && a.state === 'inbound') || sim.tsaPending.size > 0 || lastBy('MIL') < 20,
       SUP: lastBy('SUP') < 30,
     } as Record<string, boolean>;
-    const sig = JSON.stringify([this.icomHtml.length, this.icomSig, reqs.map((r) => r.id), nets.map((n) => n.id), lit, Math.floor(sim.t / 2)]);
-    if (sig === this.coordSig) return;
-    this.coordSig = sig;
+    const sig = JSON.stringify([this.icomSig, reqs.map((r) => r.id), lit]);
+    const netSig = JSON.stringify([nets.map((n) => n.id), [...sim.tsaPending.keys()], Math.floor(sim.t / 2)]);
+    if (sig === this.coordSig && netSig === this.netSig) { this.tickTimers(); return; }
+    const topOnly = sig !== this.coordSig;
+    this.coordSig = sig; this.netSig = netSig;
     const key = (u: string, sub: string) => `<button class="ikey ${lit[u] ? 'lit' : ''}" data-ikey="${u}"><b>${u}</b><small>${sub}</small></button>`;
-    const brus = reqs.map((r) => `<div class="ic-card bru"><div class="ic-h"><span class="ic-from">BRU ⇄</span><b class="mono">${esc(r.cs)}</b><span class="ic-t mono">${mmss(r.expireT - sim.t)}</span></div><div class="ic-s">Early transfer at ${esc(levelText(r.level))}?</div><div class="ic-b"><button data-rel="${esc(r.cs)}" data-v="bruok" class="ok">Approve</button><button data-rel="${esc(r.cs)}" data-v="bruno">As coordinated</button></div></div>`).join('');
+    const brus = reqs.map((r) => `<div class="ic-card bru"><div class="ic-h"><span class="ic-from">BRU ⇄</span><b class="mono">${esc(r.cs)}</b><span class="ic-t mono" data-tx="${r.expireT}">${mmss(r.expireT - sim.t)}</span></div><div class="ic-s">Early transfer at ${esc(levelText(r.level))}?</div><div class="ic-b"><button data-rel="${esc(r.cs)}" data-v="bruok" class="ok">Approve</button><button data-rel="${esc(r.cs)}" data-v="bruno">As coordinated</button></div></div>`).join('');
     const tsas = [...sim.tsaPending].map(([n, t]) => `<div class="net mil"><span>TSA</span><b>${esc(n)}</b><em>live ${sim.utc(t).slice(0, 5)}Z</em></div>`).join('');
     const netRows = nets.map((n) => {
       if (n.kind === 'STCA' || n.kind === 'LOS') return `<button class="net red" data-cs="${n.a}"><span>${n.kind}</span><b>${n.a} / ${n.b}</b><em>${n.nm.toFixed(1)} NM ${Math.round(n.vertFt / 100) * 100} ft${n.kind === 'STCA' ? ` · ${mmss(n.tCpa)}` : ''}</em></button>`;
@@ -1228,10 +1244,23 @@ export class Game {
       if (n.kind !== 'CLAM') return '';
       return `<button class="net amb" data-cs="${n.cs}"><span>CLAM</span><b>${n.cs}</b><em>${Math.round(n.alt / 100) * 100} ft vs ${esc(levelText(n.cfl))}</em></button>`;
     }).join('');
+    const netsHtml = `<div class="nets-h">Safety nets <b class="mono ${nets.length ? 'bad' : ''}">${nets.length || 'clear'}</b></div>${netRows}${tsas}`;
+    const netsEl = this.els.coord.querySelector<HTMLElement>('.nets');
+    if (!topOnly && netsEl) { netsEl.innerHTML = netsHtml; return; }
     this.els.coord.innerHTML = `
-      <div class="ikeys">${key('TWR', '118.130')}${key('BRU', 'ACC')}${key('MIL', 'Semmerzake')}${key('BEEK', '123.975')}${key('MUAC', '> FL245')}${key('SUP', 'supervisor')}</div>
+      <div class="ikeys">${key('TWR', UNITS.TWR.freq)}${key('BRU', 'ACC')}${key('MIL', 'Steenokkerzeel')}${key('BEEK', UNITS.BEEK.freq)}${key('MUAC', '> FL245')}${key('SUP', 'supervisor')}</div>
       ${this.icomHtml || brus ? `<div class="coord-cards">${this.icomHtml}${brus}</div>` : '<div class="empty">No coordination waiting.</div>'}
-      <div class="nets"><div class="nets-h">Safety nets <b class="mono ${nets.length ? 'bad' : ''}">${nets.length || 'clear'}</b></div>${netRows}${tsas}</div>`;
+      <div class="nets">${netsHtml}</div>`;
+  }
+  private netSig = '';
+  /** Update countdowns and release advice in place, so buttons are not rebuilt under the player's finger. */
+  private tickTimers() {
+    const sim = this.sim;
+    for (const root of [this.els.icom, this.els.coord]) {
+      root.querySelectorAll<HTMLElement>('[data-t0]').forEach((e) => { const w = sim.t - Number(e.dataset.t0); e.textContent = mmss(w); e.classList.toggle('warn', w > 120); });
+      root.querySelectorAll<HTMLElement>('[data-tx]').forEach((e) => { e.textContent = mmss(Math.max(0, Number(e.dataset.tx) - sim.t)); });
+      root.querySelectorAll<HTMLElement>('[data-adv]').forEach((e) => { const a = releaseAdvice(sim, e.dataset.adv!); if (e.textContent !== a.why) e.textContent = a.why; e.className = a.ok ? 'ok' : 'warn'; });
+    }
   }
   private icomHtml = '';
 }

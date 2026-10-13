@@ -196,7 +196,8 @@ function play(sc: Scenario, replay?: { cmds: { t: number; cl: Clearance }[]; unt
       document.body.classList.remove('in-game');
       renderDebrief(app, r, {
         replay: (t) => play(sc, { cmds: cmds.filter((c) => c.t < t), until: t }),
-        retry: () => brief(sc.freePlay ? { ...sc } : sc, 'home'),
+        // a failed checkride cannot be retried at once: the retake rule sends the player to the career page
+        retry: ride && !replay && (careerNow().promotion?.retakeIn ?? 0) > 0 ? () => go('career') : () => brief(sc.freePlay ? { ...sc } : sc, 'home'),
         home: () => go('home'),
         next: r.suggested && !dr ? () => { const n = CHALLENGES.find((c) => c.id === r.suggested); if (n) brief(n, 'challenges'); } : undefined,
       }, data, extra);

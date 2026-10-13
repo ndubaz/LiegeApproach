@@ -376,7 +376,7 @@ describe('lessons fly the way the coach says', () => {
   it('11 the full position: estimates, sequence, correction, and the short night', () => {
     const { sim } = walk(L('position'), {
       seq: (f) => { const order = ['TAY4EK', 'CLX7HK']; f.sim.setSequence(order); },
-      corr: (f) => { const r = say(f, 'CLX7HK', [{ k: 'spd', spd: 160 }]); expect(r.ok).toBe(true); expect(f.sim.correct('CLX7HK')).toBe(true); },
+      corr: (f) => { const r = say(f, 'CLX7HK', [{ k: 'spd', spd: 220 }]); expect(r.ok).toBe(true); expect(f.sim.correct('CLX7HK')).toBe(true); },
     });
     expect(sim.events.filter((e) => ['los', 'wake'].includes(e.kind))).toEqual([]);
     const good = exam(L('position'), (sim) => {

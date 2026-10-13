@@ -34,7 +34,7 @@ export const GLOSSARY: Record<string, string> = {
   FTDi: 'Final target distance indicator: a mark on the final ahead of each follower showing where the leader must be for minimum spacing.',
   CPA: 'Closest point of approach: how near two aircraft will get, and when, if nothing changes.',
   RBL: 'Range and bearing line: a measuring tool. Tap RBL, then two points or aircraft, for distance and bearing.',
-  EFC: 'Expected further clearance (or expected approach time): when a holding aircraft can expect to leave the hold. Give it with every hold.',
+  EFC: 'Expected approach time (EAT), called expected further clearance (EFC) when the aircraft will not make an approach from the hold: when a holding aircraft can expect to leave. Give it with every hold, and revise it when it moves by five minutes or more.',
   Release: 'Tower asks on the intercom before a departure takes off. You release it when there is a gap: no arrival inside 5 NM and enough spacing behind the last departure.',
   Intercom: 'The landline to Tower, Brussels, military control and your supervisor. It does not use the radio frequency.',
   'Go-around': 'An aborted landing. The aircraft climbs straight ahead on the missed approach and needs a new sequence slot.',

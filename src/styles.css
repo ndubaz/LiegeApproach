@@ -430,7 +430,7 @@ button.strip:not(.aman-item) {
 .ic-b { display: flex; gap: 6px; flex-wrap: wrap; }
 .ic-b button { min-height: 34px; padding: 0 12px; border: 1px solid var(--line2); border-radius: var(--r); font: 600 13px var(--ui); letter-spacing: 0.04em; background: rgba(255, 255, 255, 0.03); }
 .ic-b button.ok { border-color: var(--green); color: var(--green); }
-.strip-pend { display: grid; grid-template-columns: 20px auto 1fr auto; gap: 8px; align-items: center; font-size: 12.5px; border: 1px dashed #5c4b86; border-radius: 2px; min-height: 30px; padding-right: 8px; color: var(--dim); }
+.strip-pend { width: 100%; text-align: left; display: grid; grid-template-columns: 20px auto 1fr auto; gap: 8px; align-items: center; font-size: 12.5px; border: 1px dashed #5c4b86; border-radius: 2px; min-height: 30px; padding-right: 8px; color: var(--dim); }
 .strip-pend .bay { align-self: stretch; display: flex; align-items: center; justify-content: center; background: #3b3156; color: #c9b8f0; }
 .strip-pend b { color: var(--ink); }
 .strip-pend i { font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -691,6 +691,15 @@ button.strip:not(.aman-item) {
   .tb-wide { display: inline-flex !important; }
 }
 @media (max-width: 1399px) { .tb-wide { display: none !important; } }
+/* short consoles (1440×900 and similar): the top bar already shows wind, QNH and TL, so the info panel gives its row to AMAN and coordination */
+@media (min-width: 1400px) and (max-height: 1000px) {
+  .stage { grid-template-rows: minmax(0, 1fr) auto minmax(96px, 0.6fr) 0; }
+  .side .panel.info { display: none !important; }
+  .side .panel.coord { max-height: 44vh; }
+  .side .panel.coord .ikeys { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .side .panel.coord .ikey small { display: none; }
+  .side .panel.coord .ikey { min-height: 32px; }
+}
 /* iPad and small desktops: one docked column with tabs */
 @media (min-width: 900px) and (max-width: 1399px) {
   .side { display: flex !important; flex-direction: column; min-height: 0; }
@@ -700,3 +709,5 @@ button.strip:not(.aman-item) {
   .game:not([data-tab]) .side .panel.strips, .game[data-tab="strips"] .side .panel.strips, .game[data-tab="aman"] .side .panel.aman, .game[data-tab="coord"] .side .panel.coord, .game[data-tab="comms"] .side .panel.comms, .game[data-tab="info"] .side .panel.info { display: block !important; }
 }
 .game[data-tab="coord"] .side .panel.coord { display: block; flex: 1; }
+/* phone: the floating intercom cards give way to the drawer (the Coord tab shows the same cards) */
+@media (max-width: 899px) { .drawer-open .scope-wrap .icom { display: none; } }

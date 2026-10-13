@@ -4,19 +4,15 @@ An approach and departure radar simulator for Liège (EBLG). It runs as an insta
 
 Not a training device. Flights are fictional. Some airspace is approximate (listed in `src/pack/eblg.ts`).
 
-## What is in v0.4
+## What is in 1.0
 
-- **Orders in one tap.** Next-call suggestion chips work out the likely clearance from the aircraft's phase and geometry and check the landing slot before they recommend it. There is also a heading dial, a level grid, a level and speed ladder on the selected label, heading drag with a predicted turn and snapping, a right-click or long-press radial menu, Roger and Standby, and typed shorthand with a live preview.
-- **Coordination.** Tower asks for departure releases (Release, After an arrival, or Hold). Go-arounds come back through Tower. The military asks to cross. The supervisor announces ATIS changes and the end of traffic.
-- **A scope that shows the future.** Predicted ghost tracks, level-off ticks, separation bubbles with time to closest approach, a final-approach gap ruler, a slim vertical profile, edge arrows for off-screen callers, hold stack chips, relief contours, moving weather, and a real day skin.
-- **A game around the sim.**
-  - Sessions: a cargo night shift with a demand curve and an event deck, a daily shift seeded by date, and 21 challenges in four tiers.
-  - Grades: Pass, Good and Rated, with a debrief that explains what caused each cost.
-  - Progress: a logbook with ranks.
-- **Learning the job.**
-  - Ten lessons in the real sim, each ending in an exam.
-  - Supervisor hints during play.
-  - A glossary you can open from anywhere.
+- **A full working position.** On a wide screen (1400 px and up) the console lays out like a real sector: strip bay on the left (offered by Brussels, landing sequence you reorder by dragging, hold stack, departures), the radar in the middle, and AMAN, coordination, comms and a monitor with a large transmit key on the right. iPad gets the same panels as tabs; the phone keeps a drawer.
+- **Voice and push to talk.** Hold Space, a foot pedal (learned in Settings) or the mic button, say the clearance, let go. If the recognizer is sure it sends; otherwise the shorthand waits in the command line for Enter. A correction key takes back a clearance within three seconds.
+- **Coordination like the real room.** Brussels passes estimates and asks for early transfers, Tower requests departure releases, the military asks to cross, and intercom keys light up for TWR, BRU, MIL, BEEK, MUAC and the supervisor. A safety-net list shows STCA, loss of separation, Mode S level mismatch, MSAW and cleared-level deviations.
+- **Orders in one tap.** Suggestion chips, heading dial and drag, level and speed ladders, radial menu, Roger and Standby, typed shorthand with live preview, ICAO phraseology in the transcript.
+- **Career.** Ranks with checkrides and a retake rule, drills, challenges in four tiers, a daily shift with a streak, a cargo night shift in free play, ghost replay of your shift against an expert run, a shift poster, and save export and import.
+- **Learning the job.** Eleven lessons in the real sim, each ending in an exam, plus supervisor hints and a glossary.
+- **Validated realism.** A rated-controller review checked the data pack against the Belgian eAIP and flew the procedures. See `docs/REALISM.md` for what was checked, what was fixed in 1.0 and the remaining approximations.
 
 ## Run it
 
@@ -24,7 +20,7 @@ Not a training device. Flights are fictional. Some airspace is approximate (list
 nvm use            # Node 20 (18.18 or newer works)
 npm ci
 npm run dev        # local dev server on http://localhost:5173
-npm test           # 125 tests: procedure fly-through, engine, scoring, suggestions, every tutorial lesson
+npm test           # 262 tests: procedures, engine, separation, scoring, suggestions, voice, career, every tutorial lesson
 npm run build      # type check + PWA build in dist/ (what Vercel deploys)
 npm run preview    # serve dist/ locally
 ```

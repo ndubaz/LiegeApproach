@@ -97,7 +97,7 @@ export function renderHome(root: HTMLElement, hd: MenuHandlers) {
         ${strip('career', 'car', 'K', 'Career', cLine, rank.name, 'rank', prom?.ready ? 'ready' : '')}
         ${strip('drills', 'drl', 'X', 'Drills', 'Two-minute exercises: intercept, wake gap, conflict, descent, release', `${drillsPlayed}/${DRILLS.length}`, 'passed')}
         <div class="bay-row three">
-          <button class="bay-strip mini rec" data-go="records"><span class="bs-bay mono">L</span><span class="bs-body"><b>Logbook</b><span>${recs.length} sessions, save file</span></span></button>
+          <button class="bay-strip mini rec" data-go="records"><span class="bs-bay mono">L</span><span class="bs-body"><b>Logbook</b><span>${recs.length} session${recs.length === 1 ? '' : 's'}, save file</span></span></button>
           <button class="bay-strip mini help" data-go="help"><span class="bs-bay mono">?</span><span class="bs-body"><b>Help</b><span>Controls and glossary</span></span></button>
           <button class="bay-strip mini set" data-go="settings"><span class="bs-bay mono">S</span><span class="bs-body"><b>Settings</b><span>Voices, labels, input</span></span></button>
         </div>
@@ -143,7 +143,7 @@ export function renderTutorial(root: HTMLElement, hd: MenuHandlers & { startLess
   };
   root.innerHTML = shell(`
     <h2>Learn the position</h2>
-    <p class="lede">Ten lessons in the real sim. The coach pauses the clock, points at the control or aircraft to use, and waits until you have done it. Each lesson ends with a short exam with no coach: pass it to earn up to three stars. Take them in order the first time.</p>
+    <p class="lede">Eleven lessons in the real sim. The coach pauses the clock, points at the control or aircraft to use, and waits until you have done it. Each lesson ends with a short exam with no coach: pass it to earn up to three stars. Take them in order the first time.</p>
     ${passedN ? `<p class="tut-sum mono">${passedN} of ${LESSONS.length} exams passed · ${starsN} of ${LESSONS.length * 3} stars</p>` : ''}
     <ol class="lessons">
       ${LESSONS.map((l, i) => `<li><button class="bay-strip lesson ${res[l.id]?.pass ? 'done passed' : done.has(l.id) ? 'done' : ''} ${i === next ? 'next' : ''}" data-lesson="${i}">
@@ -474,7 +474,7 @@ export function renderSettings(root: HTMLElement, hd: MenuHandlers) {
       ${radio('brightness', 'Console brightness', [['night', 'Night'], ['day', 'Day']])}
       ${radio('speedVectorMin', 'Speed vector', [['1', '1 min'], ['2', '2 min'], ['3', '3 min']])}
       <fieldset><legend>Voice speed</legend><input type="range" min="0.8" max="1.4" step="0.02" data-k="speechRate" value="${s.speechRate}"></fieldset>
-      ${radio('pttKey', 'Push-to-talk key <small>hold to speak a clearance; pause moves to P</small>', [['Space', 'Space bar'], ['Backquote', '` key'], ['ControlRight', 'Right Ctrl'], ['', 'Off']])}
+      ${radio('pttKey', 'Push-to-talk key <small>hold to speak a clearance; Shift+Space pauses</small>', [['Space', 'Space bar'], ['Backquote', '` key'], ['ControlRight', 'Right Ctrl'], ['', 'Off']])}
       ${radio('voiceLang', 'Speech recognition accent', [['en-GB', 'English (UK)'], ['en-US', 'English (US)']])}
       <fieldset><legend>Foot pedal <small>${s.pedal ? `bound: ${s.pedal.kind === 'key' ? s.pedal.code : `gamepad button ${s.pedal.button}`}` : 'none'}</small></legend><button class="link" type="button" data-pedal="learn">Press to learn your pedal</button>${s.pedal ? ' · <button class="link" type="button" data-pedal="clear">Clear</button>' : ''}<span data-e="pedalMsg" class="dim"></span></fieldset>
     </div>
@@ -485,8 +485,16 @@ export function renderSettings(root: HTMLElement, hd: MenuHandlers) {
     if (b.dataset.pedal === 'clear') { s.pedal = null; saveSettings(s); renderSettings(root, hd); return; }
     const msg = root.querySelector('[data-e="pedalMsg"]'); if (msg) msg.textContent = ' Press the pedal now (Escape to cancel)…';
     const ptt = createPtt({ target: document.createElement('button'), key: '', onDown() {}, onUp() {} });
+    // leaving the settings page cancels learning, so the next key press elsewhere is not captured
+    const watch = window.setInterval(() => { if (!b.isConnected) ptt.destroy(); }, 200);
     const got = await ptt.learnPedal(10000);
+    clearInterval(watch);
     ptt.destroy();
+    if (!b.isConnected) return;
+    if (got && got.kind === 'key' && /^(Key[A-Z]|Digit\d|Enter|Tab|Backspace|Escape|Arrow\w+)$/.test(got.code)) {
+      if (msg) msg.textContent = ` ${got.code.replace(/^Key|^Digit/, '')} is a typing key. Use a pedal, a function key or a gamepad button.`;
+      return;
+    }
     if (got) { s.pedal = got as Settings['pedal']; saveSettings(s); }
     renderSettings(root, hd);
   }));
@@ -598,10 +606,10 @@ function savePanelHtml(): string {
   const ok = storageAvailable();
   return `<section class="panel save-file" data-e="save">
     <h3>Save file</h3>
-    <p>${ok ? 'Your progress lives in this browser only. Export it to keep a backup or to carry it to another device, then import it there.' : 'This browser is not letting the game store anything (a private window, or site data blocked), so nothing will be kept after you close it. You can still import a save to play with it for now.'}</p>
+    <p>${ok ? 'Your progress lives in this browser only. Export it to keep a backup or to carry it to another device, then import it there.' : 'This browser is not letting the game store anything (a private window, or site data blocked), so nothing will be kept after you close it, and a save file cannot be loaded here. Open the game in a normal window to export or import.'}</p>
     <div class="sf-actions">
       <button class="sf-btn" data-sf="export">Export save</button>
-      <label class="sf-btn">Import save<input type="file" accept="application/json,.json" data-sf="file"></label>
+      ${ok ? '<label class="sf-btn">Import save<input type="file" accept="application/json,.json" data-sf="file"></label>' : ''}
     </div>
     <div class="sf-confirm" data-sf="confirm" hidden></div>
     <p class="sf-status" data-sf="status" role="status"></p>
@@ -612,7 +620,7 @@ function wireSavePanel(root: HTMLElement, hd: MenuHandlers, rerender: () => void
   if (!box) return;
   const status = box.querySelector<HTMLElement>('[data-sf="status"]')!;
   const confirm = box.querySelector<HTMLElement>('[data-sf="confirm"]')!;
-  const file = box.querySelector<HTMLInputElement>('[data-sf="file"]')!;
+  const file = box.querySelector<HTMLInputElement>('[data-sf="file"]');
   const say = (t: string, bad = false) => { status.textContent = t; status.classList.toggle('bad', bad); };
   box.querySelector('[data-sf="export"]')!.addEventListener('click', () => {
     try {
@@ -621,7 +629,8 @@ function wireSavePanel(root: HTMLElement, hd: MenuHandlers, rerender: () => void
       say(`Saved ${Object.keys(f.keys).length} items to ${saveFileName()}.`);
     } catch { say('Could not create the save file in this browser.', true); }
   });
-  file.addEventListener('change', async () => {
+  file?.addEventListener('change', async () => {
+    if (!file) return;
     const f = file.files?.[0];
     file.value = '';
     if (!f) return;
@@ -640,7 +649,7 @@ function wireSavePanel(root: HTMLElement, hd: MenuHandlers, rerender: () => void
       if (!r.ok) { confirm.hidden = true; say(r.error, true); return; }
       Object.assign(hd.settings, loadSettings());
       rerender();
-      root.querySelector<HTMLElement>('[data-sf="status"]')?.replaceChildren(document.createTextNode(`Save loaded: ${v.summary.sessions} sessions, rank ${v.summary.rank}.`));
+      root.querySelector<HTMLElement>('[data-sf="status"]')?.replaceChildren(document.createTextNode(`Save loaded: ${v.summary.sessions} session${v.summary.sessions === 1 ? '' : 's'}, rank ${v.summary.rank}.`));
     });
   });
 }
@@ -751,6 +760,7 @@ export function renderHelp(root: HTMLElement) {
       <h3>Glossary</h3>
       <input class="hp-search" type="search" placeholder="Find a term" aria-label="Find a term">
       ${GLOSSARY_GROUPS.map((g) => `<div class="hp-group"><h4>${g.title}</h4><dl class="hp-gl">${g.terms.filter((t) => GLOSSARY[t]).map((t) => `<div data-term="${esc(t.toLowerCase())} ${esc(GLOSSARY[t].toLowerCase())}"><dt>${esc(t)}</dt><dd>${esc(GLOSSARY[t])}</dd></div>`).join('')}</dl></div>`).join('')}
+      <p class="lede hp-none" hidden>No term matches. Try a shorter word, such as “wake” or “hold”.</p>
     </section>
   `, true, 'help');
   const q = root.querySelector<HTMLInputElement>('.hp-search')!;
@@ -758,6 +768,7 @@ export function renderHelp(root: HTMLElement) {
     const s = q.value.trim().toLowerCase();
     root.querySelectorAll<HTMLElement>('[data-term]').forEach((el) => { el.hidden = !!s && !el.dataset.term!.includes(s); });
     root.querySelectorAll<HTMLElement>('.hp-group').forEach((g) => { g.hidden = !g.querySelector('[data-term]:not([hidden])'); });
+    root.querySelector<HTMLElement>('.hp-none')!.hidden = !!root.querySelector('.hp-group:not([hidden])');
   });
   root.querySelectorAll<HTMLAnchorElement>('.hp-nav a').forEach((a) => a.addEventListener('click', (e) => {
     e.preventDefault();

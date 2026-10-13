@@ -88,7 +88,8 @@ export function saveRecord(r: Result, x?: SessionExtra) {
     best[r.scenarioId] = better(best[r.scenarioId], r.grade);
     put('lgg.best', best);
   }
-  if (r.scenarioId.startsWith('daily-')) recordDaily(r);
+  // a daily shift counts toward the streak once at least one arrival has landed, so opening and quitting does not
+  if (r.scenarioId.startsWith('daily-') && r.landed > 0) recordDaily(r);
   addToLogbook(r, x);
   // a free-play or daily session of 15 minutes or more is a logged shift for the career
   const seconds = x?.seconds ?? r.durationMin * 60;
