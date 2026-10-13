@@ -1,13 +1,25 @@
 {
   "name": "liege-approach",
-  "version": "0.1.0",
-  "description": "Liège (EBLG) approach and departure radar simulator",
+  "version": "0.4.0",
+  "description": "Liège (EBLG) approach and departure radar simulator: an installable web app for phone, iPad and desktop",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18.18"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "build:single": "vite build --mode single",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "preview": "vite preview"
+    "test:survey": "SURVEY=1 vitest run tests/chiprun.test.ts tests/survey.test.ts",
+    "walk": "node tests/tutorial-walk.mjs"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5.1.0",
+    "@fontsource/ibm-plex-sans-condensed": "^5.1.0"
   },
   "devDependencies": {
     "playwright": "^1.48.2",
@@ -16,11 +28,5 @@
     "vite-plugin-pwa": "^0.20.5",
     "vite-plugin-singlefile": "^2.0.3",
     "vitest": "^2.1.4"
-  },
-  "dependencies": {
-    "@fontsource/ibm-plex-mono": "^5.1.0",
-    "@fontsource/ibm-plex-sans-condensed": "^5.1.0"
-  },
-  "private": true,
-  "type": "module"
+  }
 }

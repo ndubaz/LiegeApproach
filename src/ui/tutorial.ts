@@ -405,7 +405,7 @@ const L4: Lesson = {
     },
     {
       id: 'rest', title: 'Tap the ALHUV1B chip: the rest in one call',
-      body: `The bright chip clears the transition, 2,500 ft and the ILS in one call. From here the aircraft flies to the final by itself and never needs to level off above 2,500 ft.`,
+      body: `The bright chip clears the transition, 3,000 ft and the ILS in one call. From here the aircraft flies to the final by itself and never needs to level off above 3,000 ft until LIBVA.`,
       cs: 'TAY4EK', el: '.sg.lead', done: (g, x) => sentTo(g, x, 'TAY4EK', (it) => it.k === 'trans'),
     },
     {
@@ -639,14 +639,14 @@ const L7: Lesson = {
       focus: { fix: 'ALHUV', scale: 6 }, done: (g) => calling(g, 'AZG7321'),
     },
     {
-      id: 'trans', title: 'Tap AZG7321’s chip “ALHUV1A · 2500 · ILS 22L”',
-      body: `A ${G('Transition')} is a published path from ALHUV round to LIBVA on the final. This chip clears the transition, 2,500 ft and the ILS in one call. The aircraft does the rest by itself.`,
+      id: 'trans', title: 'Tap AZG7321’s chip “ALHUV1A · 3000 · ILS 22L”',
+      body: `A ${G('Transition')} is a published path from ALHUV round to LIBVA on the final. This chip clears the transition, 3,000 ft and the ILS in one call. The aircraft does the rest by itself.`,
       cs: 'AZG7321', el: '.sg.lead', done: (g, x) => sentTo(g, x, 'AZG7321', (it) => it.k === 'trans') && sentTo(g, x, 'AZG7321', (it) => it.k === 'app'),
     },
     { id: 'second', title: 'QTR8152 will call', run: 1, body: 'It is too close to follow AZG7321 straight in.', mark: { cs: 'QTR8152' }, done: (g) => calling(g, 'QTR8152') },
     {
       id: 'hold', title: 'MORE → Hold ALHUV → TRANSMIT',
-      body: `Hold it at ALHUV as published: left turns, 3,000 ft to FL050. Tap ${K('MORE')}, then ${K('Hold ALHUV')}, then ${K('TRANSMIT')}. With others already in the hold you would also give an ${G('EFC')}, the time it can expect to leave.`,
+      body: `Hold it at ALHUV as published: left turns, 3,000 ft to FL050. Tap ${K('MORE')}, then ${K('Hold ALHUV')}, then ${K('TRANSMIT')}. The amber line warns that FL070 is above the top of the hold: you fix that next, so tap ${K('TRANSMIT')} a second time to send anyway. The phrase includes an ${G('EFC')}, the time it can expect to leave.`,
       cs: 'QTR8152', el: flow(MORE('hold', 'HOLD ALHUV')), done: (g, x) => sentTo(g, x, 'QTR8152', (it) => it.k === 'hold'),
     },
     {
@@ -666,7 +666,7 @@ const L7: Lesson = {
     },
     {
       id: 'release', title: 'Tap QTR8152’s “Leave hold” chip',
-      body: `The chip clears it out of the hold onto ALHUV1B, 2,500 ft and the ILS, in one call.`,
+      body: `The chip clears it out of the hold onto ALHUV1B, 3,000 ft and the ILS, in one call.`,
       cs: 'QTR8152', el: sg('Leave hold'), run: 1, done: (g, x) => sentTo(g, x, 'QTR8152', (it) => it.k === 'trans') && !!find(g, 'QTR8152')?.app,
     },
     {
@@ -789,9 +789,9 @@ const L9: Lesson = {
   steps: [
     {
       id: 'arr', title: 'FDX5203 is on its way in', run: 2,
-      body: `FDX5203, an MD-11, comes from the south-east. When it calls, the coach clears it for ALHUV1B, 2,500 ft and the ILS. Departures today climb out west on LNO9S, to FL060 at first.`,
+      body: `FDX5203, an MD-11, comes from the south-east. When it calls, the coach clears it for ALHUV1B, 3,000 ft and the ILS. Departures today climb out west on LNO9S, to FL060 at first.`,
       mark: { cs: 'FDX5203' },
-      done: (g) => { if (isCalling(g.sim, 'FDX5203') && !find(g, 'FDX5203')?.app && !g.sim.readbackPending('FDX5203')) g.sim.issue({ cs: 'FDX5203', items: [{ k: 'trans', name: 'ALHUV1B' }, { k: 'lvl', lvl: { ft: 2500 } }, ILS] }); return g.sim.releases.some((r) => r.cs === 'CHG7302'); },
+      done: (g) => { if (isCalling(g.sim, 'FDX5203') && !find(g, 'FDX5203')?.app && !g.sim.readbackPending('FDX5203')) g.sim.issue({ cs: 'FDX5203', items: [{ k: 'trans', name: 'ALHUV1B' }, { k: 'lvl', lvl: { ft: 3000 } }, ILS] }); return g.sim.releases.some((r) => r.cs === 'CHG7302'); },
     },
     {
       id: 'card', title: 'Tower asks: tap “After FDX5203”',
@@ -896,7 +896,7 @@ const L10: Lesson = {
     },
     {
       id: 'approach', title: 'Now its lead chip: transition and ILS', cs: 'ETH3721', el: '.sg.lead',
-      body: `Send ETH3721 on its way: the lead chip clears ALHUV1A, 2,500 ft and the ILS.`,
+      body: `Send ETH3721 on its way: the lead chip clears ALHUV1A, 3,000 ft and the ILS.`,
       done: (g, x) => sentTo(g, x, 'ETH3721', (it) => it.k === 'app'),
     },
     {
@@ -921,7 +921,7 @@ const L10: Lesson = {
     },
     {
       id: 'priority', title: 'Give it the shortest way in: its lead chip', cs: 'CLX7HK', el: '.sg.lead',
-      body: `An emergency comes first. Its lead chip clears the transition, 2,500 ft and the ILS. In a real emergency you would also ask what help the crew needs, and keep others out of its way.`,
+      body: `An emergency comes first. Its lead chip clears it direct to LIBVA, 3,000 ft and the ILS: the shortest way in. In a real emergency you would also ask what help the crew needs, and keep others out of its way.`,
       done: (g, x) => sentTo(g, x, 'CLX7HK', (it) => it.k === 'app' || it.k === 'trans' || it.k === 'dct'),
     },
     {
@@ -936,7 +936,7 @@ const L10: Lesson = {
     },
   ],
   exam: {
-    title: 'Final checkride', run: 1, limitS: 22 * 60,
+    title: 'Final checkride', run: 1, limitS: 20 * 60,
     brief: 'Twenty minutes at most, four arrivals and two departures, graded like a real session. Two of the arrivals converge at the same level in the east. Every arrival must land and both departures must reach Brussels.',
     rule: '<b>Pass:</b> grade Pass or better: safety gate passed, every arrival landed, both departures handed on, no missed readbacks. <b>Stars:</b> Pass 1, Good 2, Rated 3.',
     scenario: sc('checkride', [

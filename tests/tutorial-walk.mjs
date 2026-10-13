@@ -67,7 +67,8 @@ async function dial(hdgMag) {
   await wait(400);
 }
 async function picker(btn, key) { await tap(btn); await tap(`.picker [data-pick="${key}"]`); }
-const send = () => tap('[data-a="send"]');
+// a send with a warning needs a second tap (the button turns amber)
+const send = async () => { await tap('[data-a="send"]'); if (await page.$('[data-a="send"].armed')) await tap('[data-a="send"]'); };
 const notes = [];
 const select = async (cs) => {
   await tapAt(await xy({ cs }));

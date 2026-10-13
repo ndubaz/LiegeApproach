@@ -552,3 +552,21 @@ button.strip:not(.aman-item) {
 .emer-card:not([hidden]) ~ .toast, .emer-card:not([hidden]) ~ .feed { top: 64px; }
 .emer-card:not([hidden]) ~ .feed { top: 120px; }
 .toast { font-size: 13.5px; }
+
+/* v0.4 fixes */
+.kbd-btn { width: 38px; height: 34px; border: 1px solid var(--line2); border-radius: var(--r); flex: none; color: var(--dim); font-size: 18px; }
+@media (min-width: 900px) and (hover: hover) and (pointer: fine) { .kbd-btn { display: none; } }
+.game.kbd .cmd { display: block; }
+.bar-grid .send.armed { background: var(--amber); color: #1a1205; animation: pulse 0.9s steps(2) infinite; }
+.ic-s .ok { color: var(--green); }
+.ic-s .warn { color: var(--amber); }
+.ic-card.mil .ic-s { display: block !important; }
+.emer-card .em { grid-template-columns: auto auto minmax(0, 1fr) auto auto; }
+.emer-card .em .em-w { color: #f3c9c6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.emer-card .em .em-n { color: var(--ink); font-size: 12px; white-space: nowrap; }
+@media (max-width: 599px) {
+  .emer-card .em { grid-template-columns: auto auto minmax(0, 1fr) auto; }
+  .emer-card .em .em-w { display: none; }
+  .ic-card .ic-s .ok, .ic-card .ic-s .warn { display: none; }
+}
+@media (max-width: 599px) { .req:not(:empty) { justify-content: flex-start; } .req .req-text { flex: 1 1 100%; } }

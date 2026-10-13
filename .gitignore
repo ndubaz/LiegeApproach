@@ -3,4 +3,8 @@ dist
 dist-single
 test-results
 shots
+tut-shots
 .claude/
+.vercel
+*.log
+.DS_Store

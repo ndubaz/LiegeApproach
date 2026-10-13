@@ -76,7 +76,7 @@ export function renderHome(root: HTMLElement, hd: MenuHandlers) {
         <p class="home-live mono" data-e="live"></p>
       </header>
       <nav class="bay" aria-label="Main menu">
-        ${strip('tutorial', 'tut', 'T', 'Learn the position', 'Seven short lessons, from first contact to the safety nets', `${tut.size}/${LESSONS.length}`, 'lessons', firstTime ? 'start' : '')}
+        ${strip('tutorial', 'tut', 'T', 'Learn the position', 'Ten short lessons with exams, from the scope to a checkride', `${tut.size}/${LESSONS.length}`, 'lessons', firstTime ? 'start' : '')}
         ${strip('daily', 'day', 'D', 'Daily shift', dLine, String(daily.streak), daily.streak === 1 ? 'day streak' : 'day streak', daily.today ? 'played' : '')}
         ${strip('free', 'arr', 'F', 'Free play', 'Cargo night shift or your own mix of hour, weather and military activity', '∞', 'sessions')}
         ${strip('challenges', 'dep', 'C', 'Challenges', `${CHALLENGES.length} scripted scenarios, one freighter to a compound emergency`, `${passed.size}/${CHALLENGES.length}`, 'passed')}

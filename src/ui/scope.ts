@@ -482,7 +482,7 @@ export class Scope {
   private slideLadder(y: number) {
     const L = this.ladder!;
     const rowH = this.touch ? 26 : 20;
-    const pos = L.det[L.idx0] + (y - L.y0) / (rowH * 0.8);
+    const pos = L.det[L.idx0] + (y - L.y0) / Math.max(24, rowH * 1.1);
     let best = L.idx, bd = Infinity;
     L.det.forEach((p, i) => { const d = Math.abs(p - pos); if (d < bd) { bd = d; best = i; } });
     if (best !== L.idx) {
@@ -504,7 +504,7 @@ export class Scope {
       h.last = { x, y }; h.lastMove = now;
       if (h.still) h.still = false;
       if (h.timer) clearTimeout(h.timer);
-      h.timer = window.setTimeout(() => { if (this.hdg === h && h.item && this.ev.stage) { h.still = true; vib(12); } }, 400);
+      h.timer = window.setTimeout(() => { if (this.hdg === h && h.item && this.ev.stage) { h.still = true; vib(12); } }, 1000);
     }
     if ((t.snap === 'int' || t.snap === 'dct') && t.key !== h.key) vib(8);
     h.item = t.item; h.text = t.text; h.snap = t.snap; h.sub = t.sub;

@@ -97,12 +97,12 @@ function play(sc: Scenario, replay?: { cmds: { t: number; cl: Clearance }[]; unt
     onQuit: () => go('home'),
     onEnd: (r, sim) => {
       const data = debriefData(sim);
-      saveRecord(r, {
+      if (!replay) saveRecord(r, {
         moves: sim.landings.length + sim.departuresHandled,
         departures: sim.departuresHandled,
         emergencies: sim.emergencies.map((e) => ({ cs: e.cs, type: e.type, landed: e.landedT !== undefined })),
-        seconds: replay ? Math.max(0, sim.t - replay.until) : sim.t,
-        counts: !replay && !sc.tutorial,
+        seconds: sim.t,
+        counts: !sc.tutorial,
       });
       const cmds = sim.cmdLog.slice();
       game = undefined;
