@@ -13,6 +13,8 @@ export interface PilotWorld {
   onRouteEnd(ac: Aircraft, last: Leg): void;
   onTouchdown(ac: Aircraft, rwy: Runway): void;
   goAround(ac: Aircraft, reason: string): void;
+  /** Pilot is too high to capture the glide from above and asks for vectors. */
+  onTooHigh(ac: Aircraft): void;
   runwayBusy(): boolean;
   lvp: boolean;
 }
@@ -195,11 +197,24 @@ export function stepAircraft(ac: Aircraft, world: PilotWorld, dt: number) {
 
   // ---- Vertical
   let tgtAlt = ac.tgtAlt;
+  let fromAbove = false;
   if (app?.locCap) {
     const d = distToThr(ac.p, app.rwy);
     const g = glideAlt(app.rwy, d);
-    if (!app.gsCap && ac.alt >= g - 60 && ac.alt <= g + 250) app.gsCap = true;
+    if (!app.gsCap && !app.tooHigh && ac.alt >= g - 60 && ac.alt <= g + 250) app.gsCap = true;
     if (app.gsCap) tgtAlt = g;
+    else if (!app.tooHigh && !ac.lowPass && ac.alt > g + 250) {
+      const high = ac.alt - g;
+      if (high > 1000 && d <= 10 && d > 2) {
+        // too high to make it: stay on the localizer at the cleared level and ask for vectors
+        app.tooHigh = true;
+        world.onTooHigh(ac);
+      } else if (high <= 1100) {
+        // capture the glide from above (cleared for the approach): descend through the cleared level
+        tgtAlt = Math.min(tgtAlt, g - 1000);
+        fromAbove = true;
+      }
+    }
   }
   const dAlt = tgtAlt - ac.alt;
   let vsTgt = 0;
@@ -210,9 +225,10 @@ export function stepAircraft(ac: Aircraft, world: PilotWorld, dt: number) {
       vsTgt = Math.min(rate, dAlt * 1.2 + 150);
     } else {
       let rate = pf.descentFpm * (ac.emergency === 'smoke' ? 1.8 : 1);
+      if (fromAbove) rate = 1500;
       if (app?.gsCap) rate = Math.max(rate, ac.gs * 6);
       const decelerating = ac.ias - speedTarget(ac, world) > 8;
-      if (decelerating && !app?.gsCap) rate *= 0.6;
+      if (decelerating && !app?.gsCap && !fromAbove) rate *= 0.6;
       vsTgt = -Math.min(rate, -dAlt * 1.2 + 150);
     }
   }
@@ -249,8 +265,13 @@ export function stepAircraft(ac: Aircraft, world: PilotWorld, dt: number) {
     const r = app.rwy;
     const d = distToThr(ac.p, r);
     const g = glideAlt(r, Math.max(0, d));
-    if (d <= 4 && ac.stable4 === undefined) {
-      ac.stable4 = !(ac.alt > g + 300 || ac.ias > pf.vapp + 25 || !app.gsCap);
+    // stability gate at 1,000 ft above aerodrome level (about 3 NM on a 3° path):
+    // on the localizer and glidepath within one dot, speed no more than Vapp + 20
+    if ((d <= 3.1 || ac.alt - r.elevation <= 1000) && ac.stable4 === undefined) {
+      const xte = Math.abs(crossTrack(ac.p, r.thr, r.crs));
+      const onLoc = xte <= Math.max(0.05, d * Math.tan(0.6 * DEG));
+      const onGs = app.gsCap || Math.abs(ac.alt - g) <= Math.max(120, d * 45);
+      ac.stable4 = onLoc && onGs && ac.ias <= pf.vapp + 20;
       if (!ac.stable4 && !ac.lowPass) { world.goAround(ac, 'unstable'); return; }
     }
     if (ac.lowPass) {
@@ -268,11 +289,14 @@ export function stepAircraft(ac: Aircraft, world: PilotWorld, dt: number) {
   if (ac.mode === 'HOLD') ac.holdSec += dt;
   if (ac.kind === 'arr') {
     const level = Math.abs(ac.vs) < 150;
-    const relevant = ac.alt < 9500 && ac.alt > 2000 && !app?.gsCap && ac.mode !== 'HOLD';
+    // the published level segment from the IF (LIBVA) to the FAF is not a level-off
+    const rw = app?.rwy;
+    const intermediate = !!rw && ac.alt <= Math.max(rw.ifAlt, rw.fafAlt) + 600 && (app!.locCap || ac.route.some((l) => l.fix === rw.ifFix));
+    const relevant = ac.alt < 9500 && ac.alt > 2000 && !app?.gsCap && ac.mode !== 'HOLD' && !intermediate;
     if (level && relevant) {
       ac.levelSegT += dt;
       if (ac.levelSegT === 90) ac.levelOffs++;
-    } else if (!level) ac.levelSegT = 0;
+    } else if (!level || intermediate) ac.levelSegT = 0;
     if (ac.alt < 3000 && Math.hypot(ac.p.x, ac.p.y) < 15 && !app?.locCap) ac.lowSec += dt;
   }
 }

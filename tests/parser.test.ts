@@ -18,6 +18,21 @@ describe('shorthand', () => {
     expect(parseShorthand('8125 DCT LIBVA', ctx).cs).toBe('QTR8125');
   });
   it('reports unknown tokens', () => { expect(parseShorthand('DHK7 ZZZ', ctx).errors.length).toBe(1); });
+  it('parses departure releases', () => {
+    const c = { ...ctx, callsigns: [...ctx.callsigns, 'CHG9598', 'QTR586'] };
+    expect(parseShorthand('CHG9598 REL', c)).toEqual({ cs: 'CHG9598', items: [{ k: 'rel', after: undefined }], errors: [] });
+    expect(parseShorthand('CHG9598 REL AFTER QTR586', c).items).toEqual([{ k: 'rel', after: 'QTR586' }]);
+    expect(parseShorthand('CHG9598 REL/QTR586', c).items).toEqual([{ k: 'rel', after: 'QTR586' }]);
+    expect(parseShorthand('CHG9598 REL H250 A50', c).items).toEqual([{ k: 'rel', after: undefined, hdg: 250, lvl: { ft: 5000 } }]);
+    expect(parseShorthand('CHG9598 RH', c).items).toEqual([{ k: 'relhold', mins: undefined }]);
+    expect(parseShorthand('CHG9598 RH3', c).items).toEqual([{ k: 'relhold', mins: 3 }]);
+    expect(parseShorthand('CHG9598 REL HOLD 5', c).items).toEqual([{ k: 'relhold', mins: 5 }]);
+  });
+  it('parses break-off, ATIS and MIL transfer', () => {
+    expect(parseShorthand('DHK7 BRK L040 A30', ctx).items).toEqual([{ k: 'brk' }, { k: 'hdg', hdg: 40, dir: 'L' }, { k: 'lvl', lvl: { ft: 3000 } }]);
+    expect(parseShorthand('DHK7 ATIS', ctx).items).toEqual([{ k: 'atis' }]);
+    expect(parseShorthand('DHK7 MIL', ctx).items).toEqual([{ k: 'xfr', unit: 'MIL' }]);
+  });
 });
 describe('voice', () => {
   const tels = { DHK7: 'World Express seven', QTR8125: 'Qatari eight one two five' };

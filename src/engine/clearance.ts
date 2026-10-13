@@ -1,6 +1,6 @@
 import type { Level } from '../pack/load';
 
-export type Unit = 'TWR' | 'BRU' | 'MUAC' | 'BEEK';
+export type Unit = 'TWR' | 'BRU' | 'MUAC' | 'BEEK' | 'MIL';
 export type ApproachType = 'ILS' | 'RNP' | 'VIS';
 
 export type Item =
@@ -17,16 +17,20 @@ export type Item =
   | { k: 'xfr'; unit: Unit }
   | { k: 'appr' }
   | { k: 'deny' }
-  | { k: 'sqk'; code: string };
+  | { k: 'sqk'; code: string }
+  | { k: 'brk' }                                    // cancel approach clearance (break-off)
+  | { k: 'atis' }                                   // "information L now current, QNH 1016"
+  | { k: 'rel'; after?: string; hdg?: number; lvl?: Level }   // departure release (intercom to Tower); hdg magnetic
+  | { k: 'relhold'; mins?: number };                // hold a departure, expect release in n minutes
 
 export interface Clearance { cs: string; items: Item[] }
 
-export const ITEM_ORDER: Item['k'][] = ['hdg', 'dct', 'trans', 'ron', 'hold', 'lvl', 'spd', 'spdmin', 'spdres', 'app', 'sqk', 'appr', 'deny', 'xfr'];
+export const ITEM_ORDER: Item['k'][] = ['rel', 'relhold', 'atis', 'brk', 'hdg', 'dct', 'trans', 'ron', 'hold', 'lvl', 'spd', 'spdmin', 'spdres', 'app', 'sqk', 'appr', 'deny', 'xfr'];
 export const sortItems = (items: Item[]) => [...items].sort((a, b) => ITEM_ORDER.indexOf(a.k) - ITEM_ORDER.indexOf(b.k));
 
 /** Merge a new item into a list: one item per kind (approve/deny exclusive, spd variants exclusive). */
 export function mergeItem(items: Item[], it: Item): Item[] {
-  const group = (k: Item['k']) => (k === 'spd' || k === 'spdmin' || k === 'spdres' ? 'spd' : k === 'appr' || k === 'deny' ? 'ans' : k === 'hdg' || k === 'dct' || k === 'trans' || k === 'ron' || k === 'hold' ? 'lat' : k);
+  const group = (k: Item['k']) => (k === 'spd' || k === 'spdmin' || k === 'spdres' ? 'spd' : k === 'appr' || k === 'deny' ? 'ans' : k === 'rel' || k === 'relhold' ? 'rel' : k === 'hdg' || k === 'dct' || k === 'trans' || k === 'ron' || k === 'hold' ? 'lat' : k);
   return sortItems([...items.filter((x) => group(x.k) !== group(it.k)), it]);
 }
 
@@ -69,11 +73,21 @@ export function levelSpeech(l: Level): string {
 }
 export const levelShort = (l: Level) => (l.fl !== undefined ? String(l.fl).padStart(3, '0') : 'A' + String(Math.round(l.ft! / 100)).padStart(2, '0'));
 
+/** Frequency in words: all six digits, unless the last two are zero ("one three one decimal one"). */
+export function freqSpeech(f: string): string {
+  const [a, b = ''] = f.split('.');
+  const dec = b.padEnd(3, '0');
+  const said = dec.endsWith('00') ? dec.slice(0, 1) : dec;
+  return `${digits(a)} decimal ${digits(said)}`;
+}
+const U = (name: string, freq: string) => ({ text: `${name} ${freq}`, speech: `${name} ${freqSpeech(freq)}` });
 const UNIT_NAME: Record<Unit, { text: string; speech: string }> = {
-  TWR: { text: 'Tower 118.130', speech: 'Tower one one eight decimal one three' },
-  BRU: { text: 'Brussels Control 131.100', speech: 'Brussels Control one three one decimal one' },
-  MUAC: { text: 'Maastricht 132.755', speech: 'Maastricht one three two decimal seven five five' },
-  BEEK: { text: 'Beek Approach 123.980', speech: 'Beek Approach one two three decimal niner eight' },
+  TWR: U('Tower', '118.130'),
+  BRU: U('Brussels Control', '131.100'),
+  MUAC: U('Maastricht', '132.755'),
+  BEEK: U('Beek Approach', '123.980'),
+  // Military unit name and frequency are a sim construct (approximate).
+  MIL: U('Military', '129.100'),
 };
 export const unitName = (u: Unit) => UNIT_NAME[u];
 
@@ -83,53 +97,133 @@ export interface Ctx {
   qnh: number;
   hdgMag: number;
   request?: string;
+  /** current IAS, for reduce / increase / maintain */
+  ias?: number;
+  /** say the QNH after the first altitude (first altitude clearance below the transition level) */
+  qnhSay?: boolean;
+  /** append "vectoring for <app> approach runway <rwy>" after the first heading */
+  vectorFor?: { app: ApproachType; rwy: string };
+  /** approach clearance on vectors: distance from touchdown to prefix */
+  posNm?: number;
+  /** hold: expected approach clearance time "HHMM", or null for "no delay expected" */
+  efc?: string | null;
+  /** the request being answered (for approve / unable phraseology) */
+  req?: { kind: string; route?: string[]; vfr?: boolean; sqk?: string; alt?: number };
+  /** current ATIS letter (for the 'atis' item) */
+  atis?: string;
+  /** force the level verb (readback errors keep the controller's verb) */
+  lvlVerb?: 'descend' | 'climb' | 'maintain';
 }
+
+export const rwySpeech = (rwy: string) => rwy.replace(/(\d+)([LRC]?)/, (_m, n, l) => `${digits(n)}${l ? ' ' + (l === 'L' ? 'left' : l === 'R' ? 'right' : 'center') : ''}`);
+const appName = (a: ApproachType) => (a === 'ILS' ? { t: 'ILS', s: 'I L S' } : a === 'RNP' ? { t: 'RNP', s: 'R N P' } : { t: 'visual', s: 'visual' });
+export function levelVerb(l: Level, alt: number, qnh: number): 'descend' | 'climb' | 'maintain' {
+  const ft = l.fl !== undefined ? l.fl * 100 + (qnh - 1013.25) * 27 : l.ft!;
+  return ft < alt - 50 ? 'descend' : ft > alt + 50 ? 'climb' : 'maintain';
+}
+const qnhSpeech = (q: number) => `Q N H ${digits(q)}`;
 
 /** ATC phraseology for a clearance, as display text and as speech text. */
 export function phraseology(cl: Clearance, ctx: Ctx): { text: string; speech: string } {
   const t: string[] = [];
   const s: string[] = [];
+  let qnhDone = !ctx.qnhSay;
+  let vecDone = !ctx.vectorFor;
+  const hasApp = cl.items.some((i) => i.k === 'app');
+  if (ctx.posNm !== undefined && hasApp) { t.push(`${Math.round(ctx.posNm)} miles from touchdown`); s.push(`${digits(Math.round(ctx.posNm))} miles from touchdown`); }
   for (const it of cl.items) {
     switch (it.k) {
+      case 'brk': t.push('cancel approach clearance'); s.push('cancel approach clearance'); break;
       case 'hdg': {
         const h = String(Math.round(it.hdg) % 360 || 360).padStart(3, '0');
         const dir = it.dir === 'L' ? 'left ' : it.dir === 'R' ? 'right ' : '';
         if (dir) { t.push(`turn ${dir}heading ${h}`); s.push(`turn ${dir}heading ${digits(h)}`); } else { t.push(`fly heading ${h}`); s.push(`fly heading ${digits(h)}`); }
+        if (!vecDone && !hasApp) {
+          vecDone = true;
+          const a = appName(ctx.vectorFor!.app);
+          t.push(`vectoring for ${a.t} approach runway ${ctx.vectorFor!.rwy}`);
+          s.push(`vectoring for ${a.s} approach runway ${rwySpeech(ctx.vectorFor!.rwy)}`);
+        }
         break;
       }
       case 'dct': t.push(`proceed direct ${it.fix}`); s.push(`proceed direct ${it.fix}`); break;
       case 'trans': t.push(`cleared ${it.name} transition`); s.push(`cleared ${it.name.replace(/(\d)([A-Z])$/, (_m, d, l) => ` ${digits(d)} ${digits(l)}`)} transition`); break;
       case 'ron': t.push('resume own navigation'); s.push('resume own navigation'); break;
-      case 'hold': t.push(`hold at ${it.fix} as published`); s.push(`hold at ${it.fix} as published`); break;
+      case 'hold':
+        t.push(`hold at ${it.fix} as published`); s.push(`hold at ${it.fix} as published`);
+        if (ctx.efc === null) { t.push('no delay expected'); s.push('no delay expected'); }
+        else if (ctx.efc) { t.push(`expect approach clearance at ${ctx.efc}`); s.push(`expect approach clearance at ${digits(ctx.efc)}`); }
+        break;
       case 'lvl': {
-        const ft = it.lvl.fl !== undefined ? it.lvl.fl * 100 + (ctx.qnh - 1013.25) * 27 : it.lvl.ft!;
-        const verb = ft < ctx.alt - 50 ? 'descend' : ft > ctx.alt + 50 ? 'climb' : 'maintain';
+        const verb = ctx.lvlVerb ?? levelVerb(it.lvl, ctx.alt, ctx.qnh);
         t.push(`${verb} ${levelText(it.lvl)}`);
         s.push(`${verb} ${levelSpeech(it.lvl)}`);
+        if (!qnhDone && it.lvl.ft !== undefined) { qnhDone = true; t.push(`QNH ${ctx.qnh}`); s.push(qnhSpeech(ctx.qnh)); }
         break;
       }
-      case 'spd': t.push(`speed ${it.spd} kt${it.until ? ` until ${it.until} DME` : ''}`); s.push(`speed ${digits(it.spd)} knots${it.until ? ` until ${digits(it.until)} D M E` : ''}`); break;
-      case 'spdmin': t.push('reduce minimum clean speed'); s.push('reduce minimum clean speed'); break;
+      case 'spd': {
+        const verb = ctx.ias === undefined ? 'speed' : it.spd < ctx.ias - 3 ? 'reduce speed' : it.spd > ctx.ias + 3 ? 'increase speed' : 'maintain';
+        t.push(`${verb} ${it.spd} kt${it.until ? ` until ${it.until} DME` : ''}`);
+        s.push(`${verb} ${digits(it.spd)} knots${it.until ? ` until ${digits(it.until)} D M E` : ''}`);
+        break;
+      }
+      case 'spdmin': t.push('reduce to minimum clean speed'); s.push('reduce to minimum clean speed'); break;
       case 'spdres': t.push('resume normal speed'); s.push('resume normal speed'); break;
       case 'app': {
-        const r = it.rwy.replace(/(\d+)([LRC]?)/, (_m, n, l) => `${digits(n)}${l ? ' ' + (l === 'L' ? 'left' : l === 'R' ? 'right' : 'center') : ''}`);
-        const name = it.app === 'ILS' ? 'ILS' : it.app === 'RNP' ? 'RNP' : 'visual';
-        t.push(`cleared ${name} approach runway ${it.rwy}`); s.push(`cleared ${name === 'ILS' ? 'I L S' : name === 'RNP' ? 'R N P' : 'visual'} approach runway ${r}`);
+        const a = appName(it.app);
+        t.push(`cleared ${a.t} approach runway ${it.rwy}`); s.push(`cleared ${a.s} approach runway ${rwySpeech(it.rwy)}`);
         break;
       }
       case 'sqk': t.push(`squawk ${it.code}`); s.push(`squawk ${digits(it.code)}`); break;
-      case 'appr': t.push(ctx.request ? `approved` : 'approved'); s.push('approved'); break;
-      case 'deny': t.push('unable, standby'); s.push('unable, standby'); break;
+      case 'atis': t.push(`information ${ctx.atis ?? ''} now current, QNH ${ctx.qnh}`); s.push(`information ${digits(ctx.atis ?? '')} now current, ${qnhSpeech(ctx.qnh)}`); break;
+      case 'appr': {
+        const r = ctx.req;
+        if (r?.kind === 'crossing' && r.vfr && r.route?.length) {
+          const last = r.route[r.route.length - 1];
+          const alt = r.alt ?? 1500;
+          t.push(`cleared to cross the control zone via ${r.route.join(', ')}, VFR, altitude ${alt.toLocaleString('en-US')} ft or below${r.sqk ? `, squawk ${r.sqk}` : ''}, QNH ${ctx.qnh}, report ${last}`);
+          s.push(`cleared to cross the control zone via ${r.route.join(', ')}, V F R, ${levelSpeech({ ft: alt })} or below${r.sqk ? `, squawk ${digits(r.sqk)}` : ''}, ${qnhSpeech(ctx.qnh)}, report ${last}`);
+        } else { t.push('approved'); s.push('approved'); }
+        break;
+      }
+      case 'deny': {
+        const r = ctx.req;
+        const x = r?.kind === 'crossing' && r.vfr ? 'remain outside the control zone, expect 5 minutes delay' : r ? 'unable, due traffic' : 'unable, standby';
+        t.push(x); s.push(x);
+        break;
+      }
       case 'xfr': t.push(`contact ${UNIT_NAME[it.unit].text}`); s.push(`contact ${UNIT_NAME[it.unit].speech}`); break;
+      case 'rel': case 'relhold': {
+        const r = releasePhrase(cl.cs, it);
+        t.push(r.text); s.push(r.speech);
+        break;
+      }
     }
   }
   return { text: `${cl.cs}, ${t.join(', ')}`, speech: `${telephony(cl.cs)}, ${s.join(', ')}` };
 }
 
+/** Intercom phraseology for a departure release (Approach to Tower). */
+export function releasePhrase(cs: string, it: Extract<Item, { k: 'rel' | 'relhold' }>): { text: string; speech: string } {
+  if (it.k === 'relhold') {
+    const x = it.mins ? `hold ${cs}, expect release in ${it.mins} minute${it.mins === 1 ? '' : 's'}` : `hold ${cs}, expect further release`;
+    return { text: x, speech: x };
+  }
+  const parts = [`${cs} released`];
+  if (it.after) parts[0] += ` after ${it.after}`;
+  if (it.hdg !== undefined) parts.push(`heading ${String(Math.round(it.hdg) % 360 || 360).padStart(3, '0')}`);
+  if (it.lvl) parts.push(`climb ${levelText(it.lvl)}`);
+  const text = parts.join(', ');
+  return { text, speech: text };
+}
+
 /** Pilot readback text. `wrong` optionally overrides one item with an erroneous value. */
 export function readback(cs: string, items: Item[], ctx: Ctx, wrong?: { idx: number; item: Item }): { text: string; speech: string } {
   const its = items.map((it, i) => (wrong && wrong.idx === i ? wrong.item : it));
-  const p = phraseology({ cs, items: its }, ctx);
+  // a wrong level is read back with the controller's verb ("descend 5,000 ft" stays "descend")
+  const orig = wrong ? items[wrong.idx] : undefined;
+  const c2: Ctx = orig?.k === 'lvl' ? { ...ctx, lvlVerb: levelVerb(orig.lvl, ctx.alt, ctx.qnh) } : ctx;
+  const p = phraseology({ cs, items: its }, { ...c2, posNm: undefined });
   // Pilots read back with the callsign at the end and drop "proceed"/"fly" filler.
   const body = (x: string, csx: string) => x.slice(csx.length + 2).replace(/^fly /, '').replace(/, fly /g, ', ').replace(/proceed direct/g, 'direct').replace(/contact /, '');
   return { text: `${body(p.text, cs)}, ${cs}`, speech: `${body(p.speech, telephony(cs))}, ${telephony(cs)}` };
@@ -147,10 +241,14 @@ export function itemChip(it: Item): string {
     case 'hold': return `HOLD ${it.fix}`;
     case 'trans': return it.name;
     case 'ron': return 'OWN NAV';
-    case 'xfr': return it.unit === 'TWR' ? 'TWR' : it.unit === 'BRU' ? 'BRU' : it.unit;
+    case 'xfr': return it.unit;
     case 'appr': return 'APPROVED';
     case 'deny': return 'UNABLE';
     case 'sqk': return `SQK ${it.code}`;
+    case 'brk': return 'BRK OFF';
+    case 'atis': return 'ATIS';
+    case 'rel': return `REL${it.after ? ' /' + it.after : ''}${it.hdg !== undefined ? ' H' + String(it.hdg).padStart(3, '0') : ''}${it.lvl ? ' ' + (it.lvl.fl !== undefined ? 'FL' + String(it.lvl.fl).padStart(3, '0') : it.lvl.ft) : ''}`;
+    case 'relhold': return `REL HOLD${it.mins ? ' ' + it.mins + ' MIN' : ''}`;
   }
 }
 

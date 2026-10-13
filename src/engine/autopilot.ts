@@ -2,10 +2,12 @@ import type { Sim } from './sim';
 
 /** Autopilot controller (start-page demo and tests) that re-issues until the pilot actually complies (handles "say again"). */
 export function autoControl(sim: Sim) {
+  for (const r of sim.releases) if (r.state === 'pending') sim.issue({ cs: r.cs, items: [{ k: 'rel' }] }); // engine: release departures at once
   for (const ac of sim.aircraft) {
+    if (ac.request?.kind === 'milxing' && ac.state === 'inbound') { sim.issue({ cs: ac.cs, items: [{ k: 'appr' }] }); continue; } // engine: approve MIL crossings
     if (ac.state !== 'assumed' || ac.radioFail) continue;
     const st = (ac as any)._auto ?? ((ac as any)._auto = { last: -99 });
-    if (sim.t - st.last < 15) continue;
+    if (sim.t - st.last < 15 || sim.readbackPending(ac.cs)) continue;
     const send = (items: any[]) => { sim.issue({ cs: ac.cs, items }); st.last = sim.t; };
     if (ac.request) { send([{ k: 'appr' }]); continue; }
     if (ac.kind === 'arr') {

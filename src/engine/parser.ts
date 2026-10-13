@@ -9,9 +9,13 @@ import type { Item } from './clearance';
 //              HOLD | HOLD ALHUV
 //              ALHUV1A                    transition
 //              RON                        resume own navigation
-//              TWR | BRU | MUAC | BEEK    transfer
+//              TWR | BRU | MUAC | BEEK | MIL   transfer
 //              SQ4521                     squawk
 //              Y | APPR  /  N | UNABLE    answer a request
+//              BRK                        cancel approach clearance (break-off; add H040 A30)
+//              ATIS                       "information X now current, QNH ..."
+//              REL | REL AFTER QTR586 | REL/QTR586 | REL H250 A50   departure release (intercom)
+//              RH | RH3 | REL HOLD [3]    hold the departure, expect release in n minutes
 
 export interface ParseCtx {
   callsigns: string[];
@@ -80,18 +84,41 @@ export function parseShorthand(input: string, ctx: ParseCtx): ParseResult {
       if (f && ctx.fixes.has(f)) { items.push({ k: 'hold', fix: f }); i++; } else items.push({ k: 'hold', fix: 'ALHUV' });
     } else if (ctx.transitions.has(t)) items.push({ k: 'trans', name: t });
     else if (t === 'RON' || t === 'OWN') items.push({ k: 'ron' });
-    else if (t === 'TWR' || t === 'BRU' || t === 'MUAC' || t === 'BEEK') items.push({ k: 'xfr', unit: t });
+    else if (t === 'TWR' || t === 'BRU' || t === 'MUAC' || t === 'BEEK' || t === 'MIL') items.push({ k: 'xfr', unit: t });
+    else if (t === 'BRK' || t === 'BREAK') items.push({ k: 'brk' });
+    else if (t === 'ATIS') items.push({ k: 'atis' });
+    else if ((m = t.match(/^REL(?:\/([A-Z0-9]+))?$/))) {
+      if (toks[i + 1] === 'HOLD' || toks[i + 1] === 'HLD') {
+        i++;
+        const n = toks[i + 1] && /^\d{1,2}$/.test(toks[i + 1]) ? Number(toks[++i]) : undefined;
+        items.push({ k: 'relhold', mins: n });
+      } else {
+        let after = m[1];
+        if (toks[i + 1] === 'AFTER' && toks[i + 2]) { after = toks[i + 2]; i += 2; }
+        if (after) after = resolveCallsign(after, ctx.callsigns) ?? after;
+        items.push({ k: 'rel', after });
+      }
+    } else if ((m = t.match(/^RH(\d{1,2})?$/))) items.push({ k: 'relhold', mins: m[1] ? Number(m[1]) : undefined });
     else if ((m = t.match(/^SQ(?:K)?(\d{4})$/))) items.push({ k: 'sqk', code: m[1] });
     else if (t === 'Y' || t === 'APPR' || t === 'APPROVED') items.push({ k: 'appr' });
     else if (t === 'N' || t === 'UNABLE') items.push({ k: 'deny' });
     else if (ctx.fixes.has(t) && items.length && items[items.length - 1].k === 'hold') { /* handled */ }
     else errors.push(`Unknown: ${t}`);
   }
+  // a release takes any heading / level given with it
+  const rel = items.find((x) => x.k === 'rel') as Extract<Item, { k: 'rel' }> | undefined;
+  if (rel) {
+    for (const x of items) {
+      if (x.k === 'hdg') rel.hdg = x.hdg;
+      if (x.k === 'lvl') rel.lvl = x.lvl;
+    }
+    return { cs, items: items.filter((x) => x.k !== 'hdg' && x.k !== 'lvl'), errors };
+  }
   return { cs, items, errors };
 }
 
 function isCommand(t: string, ctx: ParseCtx) {
-  return /^(H|HDG|L|R|D|C|A|F|FL|S)\d/.test(t) || ['SMIN', 'SRES', 'DCT', 'ILS', 'RNP', 'VIS', 'HOLD', 'RON', 'TWR', 'BRU', 'MUAC', 'BEEK', 'Y', 'N'].includes(t) || ctx.transitions.has(t);
+  return /^(H|HDG|L|R|D|C|A|F|FL|S)\d/.test(t) || ['SMIN', 'SRES', 'DCT', 'ILS', 'RNP', 'VIS', 'HOLD', 'RON', 'TWR', 'BRU', 'MUAC', 'BEEK', 'MIL', 'Y', 'N', 'BRK', 'ATIS', 'REL', 'RH'].includes(t) || ctx.transitions.has(t);
 }
 
 // ---------------- voice → shorthand ----------------
@@ -153,5 +180,7 @@ export function voiceToShorthand(transcript: string, tels: Record<string, string
   if (/\bapproved\b/.test(s)) out.push('Y');
   if (/\bunable\b/.test(s)) out.push('N');
   if (/resume own navigation/.test(s)) out.push('RON');
+  if (/cancel approach clearance/.test(s)) out.splice(bestScore >= 2 ? 1 : 0, 0, 'BRK');
+  if (/now current/.test(s)) out.push('ATIS');
   return out.join(' ');
 }

@@ -10,7 +10,7 @@ export type LatMode = 'NAV' | 'HDG' | 'HOLD' | 'LOC' | 'ORBIT';
 export type Comp = 'SEPC' | 'SITU' | 'TRAF' | 'COMM' | 'CORD' | 'WORK' | 'NONR' | 'SPP';
 
 export interface Request {
-  kind: 'climb' | 'crossing' | 'direct' | 'lowpass' | 'deviate' | 'approach' | 'vectors';
+  kind: 'climb' | 'crossing' | 'direct' | 'lowpass' | 'deviate' | 'approach' | 'vectors' | 'milxing';
   text: string;
   speech: string;
   level?: Level;
@@ -22,7 +22,7 @@ export interface Request {
 
 export interface HoldState { fix: string; p: XY; inbound: number; turn: 'L' | 'R'; phase: 'entry' | 'turnOut' | 'outbound' | 'turnIn' | 'inbound'; tPhase: number }
 
-export interface ApproachState { type: ApproachType; rwy: Runway; locCap: boolean; gsCap: boolean; capT?: number }
+export interface ApproachState { type: ApproachType; rwy: Runway; locCap: boolean; gsCap: boolean; capT?: number; tooHigh?: boolean }
 
 export interface Aircraft {
   id: number;
@@ -89,9 +89,47 @@ export interface Aircraft {
   goArounds: number;
   landed?: boolean;
   remove?: boolean;
+  /** Result of the stability gate at 1,000 ft above aerodrome level (about 3 NM). */
   stable4?: boolean;
   exitFix?: string;
   stormInside?: boolean;
+  /** RECAT-EU wake category A–F, for the label. */
+  recat: string;
+  /** Expected approach clearance time (sim seconds) given with a hold instruction. */
+  efc?: number;
+  efcCalled?: boolean;
+  /** The controller has passed the QNH to this aircraft. */
+  qnhGiven?: boolean;
+  /** The controller has said "vectoring for ... approach". */
+  vecInfo?: boolean;
+  /** Pilot has asked for lower because the hold maximum is below its level. */
+  holdMaxCalled?: boolean;
+  /** ATIS letter the pilot reported if it was out of date, and when. */
+  atisOld?: string;
+  atisOldT?: number;
+  /** Seconds of free frequency since the pilot's last unanswered call. */
+  waitFree?: number;
+}
+
+/** Departure release request from Tower (coordinated on intercom). */
+export interface ReleaseReq {
+  cs: string;
+  type: string;
+  wake: string;
+  sid: string;
+  rwy: string;
+  t: number;
+  state: 'pending' | 'released' | 'held' | 'airborne';
+  /** Released after this aircraft (arrival lands / departure gets airborne). */
+  after?: string;
+  /** Magnetic heading on release instead of the SID. */
+  hdg?: number;
+  lvl?: Level;
+  /** Sim time Tower was told to expect a release (held). */
+  expectAt?: number;
+  chased?: boolean;
+  tReleased?: number;
+  tAirborne?: number;
 }
 
 export interface SimEvent {
@@ -110,12 +148,15 @@ export interface Tx {
   id: number;
   t0: number;
   t1: number;
-  from: 'ATC' | 'PILOT' | 'SYS';
+  /** ATC = the player; TWR/BRU/MIL/SUP are other units on the intercom. */
+  from: 'ATC' | 'PILOT' | 'SYS' | 'TWR' | 'BRU' | 'MIL' | 'SUP';
   cs: string;
   text: string;
   speech: string;
   emergency?: boolean;
   blocked?: boolean;
+  /** 'rt' (default) is 119.280; 'icom' is the intercom: no airtime, never blocked. */
+  channel?: 'rt' | 'icom';
 }
 
 export interface LandingRecord {
@@ -146,6 +187,8 @@ export type SpawnSpec = {
   spawnDist?: number;       // arrivals: track miles before the STAR end
   silent?: boolean;         // never calls (unconcerned traffic)
   goAroundAt?: number;      // forced go-around (tower) at this distance from threshold
+  released?: true;          // departures: skip the release protocol and appear airborne
+  callNow?: boolean;        // arrivals: call at once on spawn
 };
 
 export type ScEvent =
@@ -187,4 +230,6 @@ export interface Scenario {
   freePlay?: boolean;
   noSayAgain?: boolean;
   tutorial?: boolean;
+  /** Free play: new ATIS every 30 min with QNH and wind drift. */
+  atisDrift?: boolean;
 }

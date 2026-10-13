@@ -1,10 +1,10 @@
 import { alongTrack, angDiff, bearing, crossTrack, dist, move, norm360, pointInPolygon, type XY } from '../geo';
 import { levelToFt, mvaAt, type Leg, type Level, type Pack, type Runway } from '../pack/load';
-import { airtime, levelSpeech, levelText, mergeItem, phraseology, readback, telephony, unitName, digits, type Clearance, type Item } from './clearance';
+import { airtime, levelSpeech, levelText, mergeItem, phraseology, readback, releasePhrase, telephony, unitName, digits, type Clearance, type Ctx, type Item } from './clearance';
 import { PERF, wakeMinNm } from './perf';
 import { distToThr, glideAlt, startHold, stepAircraft, type PilotWorld } from './pilot';
 import { Rng } from './rng';
-import type { Aircraft, Comp, LandingRecord, Scenario, SimEvent, SpawnSpec, Storm, Tx } from './types';
+import type { Aircraft, Comp, LandingRecord, ReleaseReq, Scenario, SimEvent, SpawnSpec, Storm, Tx } from './types';
 import { buildMetar, isLvp, parseMetar, selectRunway, transitionLevel, type Weather } from './weather';
 
 export interface IssueResult { ok: boolean; warnings: string[]; blocked?: boolean }
@@ -41,6 +41,10 @@ export class Sim implements PilotWorld {
   departuresSpawned = 0;
   departuresHandled = 0;
   ended = false;
+  /** Why the session ended: 'complete' (traffic complete), 'time' (duration reached) or 'manual'. */
+  endReason?: 'complete' | 'time' | 'manual';
+  /** Departure release requests from Tower (pending, released, held, recently airborne). */
+  releases: ReleaseReq[] = [];
   radarRefresh = 4;
   onTx: ((tx: Tx) => void)[] = [];
   /** Callsigns whose next level or heading readback will be wrong (tutorial). */
@@ -60,6 +64,12 @@ export class Sim implements PilotWorld {
   private conflicts = new Map<string, { t: number; stca: boolean }>();
   private lastXfr = new Map<string, string>();
   private spawns: SpawnSpec[];
+  private endAt?: number;
+  private relSpecs = new Map<string, SpawnSpec>();
+  private lastDepT = -999;
+  private atisChangeT = -999;
+  private prevAtis?: string;
+  private stackSeen = new Set<string>();
 
   constructor(public pack: Pack, public sc: Scenario, opts: { radarRefresh?: number } = {}) {
     this.rng = new Rng(sc.seed);
@@ -97,6 +107,8 @@ export class Sim implements PilotWorld {
   runwayBusy() { return this.t < this.runwayBusyUntil; }
   mvaAt(p: XY) { return mvaAt(this.pack, p, pointInPolygon); }
   freqBusy() { return this.t < this.busyUntil; }
+  /** A readback (or say-again) from this callsign is still to come. */
+  readbackPending(cs: string) { return this.queue.some((q) => q.priority && q.tx.cs === cs); }
   callers(): Aircraft[] { return this.aircraft.filter((a) => a.awaitingSince !== undefined && !a.remove).sort((a, b) => a.awaitingSince! - b.awaitingSince!); }
 
   /** Transitions usable for a runway. */
@@ -132,16 +144,124 @@ export class Sim implements PilotWorld {
         if (ac.history.length > 7) ac.history.shift();
       }
     }
+    // calls made during this second (check-ins, requests) can start at once
+    this.pumpQueue();
     this.moveStorms(dt);
     this.monitor();
     this.aircraft = this.aircraft.filter((a) => !a.remove);
-    if (t >= this.durationS) this.finish();
+    this.stepReleases();
+    if (this.sc.atisDrift && t % 1800 === 0) this.driftAtis();
+    // traffic complete: supervisor announces the hand-over, the session ends 30 s later
+    if (this.endAt === undefined && this.trafficComplete()) {
+      this.endAt = t + 30;
+      this.icom('SUP', 'Traffic complete. Hand-over in 30 s');
+    }
+    if (this.endAt !== undefined && t >= this.endAt) this.finish('complete');
+    if (t >= this.durationS) this.finish('time');
   }
 
-  finish() {
+  /** No spawns left, nobody on frequency or coming, no release outstanding. */
+  trafficComplete(): boolean {
+    if (this.spawnIdx < this.spawns.length || this.t < 5) return false;
+    if (this.releases.some((r) => r.state !== 'airborne')) return false;
+    if (this.queue.length || this.freqBusy()) return false;
+    return !this.aircraft.some((a) => !a.remove && (a.state === 'assumed' || a.state === 'inbound' || (a.state === 'transferred' && a.xfrUnit === 'TWR' && !a.landed)));
+  }
+
+  finish(reason: 'complete' | 'time' | 'manual' = 'manual') {
     if (this.ended) return;
     for (const [key] of this.ongoing) this.closeOngoing(key);
     this.ended = true;
+    this.endReason = reason;
+  }
+
+  /** Intercom message from another unit (or from the player when from = 'ATC'). No RT airtime, never blocked. */
+  icom(from: Tx['from'], text: string, cs = ''): Tx {
+    return this.emitTx({ from, cs, text, speech: text, channel: 'icom' }, this.t);
+  }
+
+  // ---------------- departure release protocol ----------------
+  private requestRelease(spec: SpawnSpec) {
+    const sid = this.pack.sids.find((s) => s.name === spec.sid && s.runways.includes(this.runway)) ?? this.rng.pick(this.pack.sids.filter((s) => s.runways.includes(this.runway) && !s.atcDiscretion));
+    const perf = PERF[spec.type] ?? PERF.B738;
+    const r: ReleaseReq = { cs: spec.cs, type: perf.type, wake: perf.wake, sid: sid.name, rwy: this.runway, t: this.t, state: 'pending' };
+    this.releases.push(r);
+    this.relSpecs.set(spec.cs, { ...spec, sid: sid.name });
+    this.icom('TWR', `Approach, Tower, request release ${spec.cs}, ${sid.name}, runway ${this.runway}`, spec.cs);
+  }
+
+  /** Arrival on final for the runway in use within n NM of the threshold. */
+  private arrivalWithin(nm: number): boolean {
+    return this.aircraft.some((a) => !a.remove && !a.landed && a.app?.locCap && a.app.rwy.id === this.runway && !a.lowPass && (() => { const d = distToThr(a.p, a.app!.rwy); return d > -0.5 && d < nm; })());
+  }
+
+  private afterSatisfied(after: string): boolean {
+    if (this.landings.some((l) => l.cs === after)) return true;
+    const rel = this.releases.find((r) => r.cs === after);
+    if (rel) return rel.state === 'airborne' && this.t - (rel.tAirborne ?? 0) >= 60;
+    const ac = this.find(after);
+    if (!ac) return true; // unknown or gone: nothing to wait for
+    if (ac.kind === 'dep') return true;
+    return false;
+  }
+
+  private stepReleases() {
+    const t = this.t;
+    for (const r of this.releases) {
+      if (r.state === 'pending' && !r.chased && t - r.t > 180) {
+        r.chased = true;
+        this.icom('TWR', `Approach, Tower, still waiting release for ${r.cs}`, r.cs);
+        this.event({ kind: 'release_delay', cs: r.cs, comp: 'CORD', sev: 'minor', text: `${r.cs}: release request unanswered for 3 minutes`, cost: 10 });
+      }
+      if (r.state === 'held' && !r.chased && r.expectAt !== undefined && t > r.expectAt + 60) {
+        r.chased = true;
+        this.icom('TWR', `Approach, Tower, ${r.cs} is past the expected release time, request release`, r.cs);
+        this.event({ kind: 'release_delay', cs: r.cs, comp: 'CORD', sev: 'minor', text: `${r.cs}: held past the expected release time`, cost: 10 });
+      }
+      if (r.state === 'released' && t - (r.tReleased ?? t) >= 30 && t - this.lastDepT >= 60 && !this.runwayBusy()) {
+        const heavy = r.wake === 'H' || r.wake === 'J';
+        if (this.arrivalWithin(heavy ? 6 : 5)) continue;
+        if (r.after && !this.afterSatisfied(r.after)) continue;
+        const spec = this.relSpecs.get(r.cs);
+        if (!spec) continue;
+        r.state = 'airborne';
+        r.tAirborne = t;
+        this.lastDepT = t;
+        this.launchDeparture(spec, r);
+      }
+    }
+    // forget departures airborne for more than two minutes
+    this.releases = this.releases.filter((r) => r.state !== 'airborne' || t - (r.tAirborne ?? t) < 120);
+  }
+
+  private answerRelease(r: ReleaseReq, it: Extract<Item, { k: 'rel' | 'relhold' }>, items: Item[]) {
+    const ph = releasePhrase(r.cs, it);
+    this.icom('ATC', ph.text, r.cs);
+    if (it.k === 'relhold') {
+      r.state = 'held';
+      r.expectAt = this.t + (it.mins ?? 3) * 60;
+      r.chased = false;
+      this.icom('TWR', `Holding ${r.cs}`, r.cs);
+      return;
+    }
+    // heading / level given as separate items count as part of the release
+    const hdg = it.hdg ?? (items.find((x) => x.k === 'hdg') as { hdg: number } | undefined)?.hdg;
+    const lvl = it.lvl ?? (items.find((x) => x.k === 'lvl') as { lvl: Level } | undefined)?.lvl;
+    if (r.state === 'pending') this.responseTimes.push(Math.max(0, this.t - r.t));
+    r.state = 'released';
+    r.after = it.after; r.hdg = hdg; r.lvl = lvl;
+    r.tReleased = this.t;
+    this.icom('TWR', `Released ${r.cs}${r.after ? ' after ' + r.after : ''}`, r.cs);
+  }
+
+  // ---------------- ATIS drift (free play) ----------------
+  private driftAtis() {
+    const dq = (this.rng.chance(0.5) ? 1 : -1) * this.rng.int(1, 2);
+    const veer = this.rng.int(10, 20);
+    this.prevAtis = this.atis;
+    this.atisChangeT = this.t;
+    this.setWeather({ ...this.weather, qnh: this.weather.qnh + dq, windDir: norm360(this.weather.windDir + veer) }, true);
+    this.icom('SUP', `New ATIS: information ${this.atis} now current, QNH ${this.qnh}`);
   }
 
   // ---------------- spawning ----------------
@@ -156,7 +276,7 @@ export class Sim implements PilotWorld {
       cleared, cflSys: cleared, tgtAlt: this.ftOf(cleared), mode: 'NAV', route: [], state: spec.silent ? 'unconcerned' : 'inbound',
       sqk: String(this.rng.int(4001, 4677)).replace(/[89]/g, '7'), label: { dx: 14, dy: -34 }, history: [{ ...p }],
       spawnT: this.t, flownNm: 0, baselineNm: 0, holdSec: 0, levelSegT: 0, levelOffs: 0, fuelKg: 0, lowSec: 0, txCount: 0, goArounds: 0,
-      unfamiliar: spec.unfamiliar,
+      unfamiliar: spec.unfamiliar, recat: perf.recat,
     };
   }
 
@@ -210,20 +330,12 @@ export class Sim implements PilotWorld {
       const best = trans.length ? Math.min(...trans.map((t) => tLen(t.legs))) : 15;
       const r = this.rwy;
       ac.baselineNm = starNm + best + distToThr(this.fixP(r.ifFix), r);
-      ac.checkInAt = this.t + this.rng.int(10, 22);
+      ac.checkInAt = spec.callNow ? this.t : this.t + this.rng.int(10, 22);
       this.arrivalsSpawned++;
     } else if (spec.kind === 'dep') {
-      const sid = this.pack.sids.find((s) => s.name === spec.sid && s.runways.includes(this.runway)) ?? this.rng.pick(this.pack.sids.filter((s) => s.runways.includes(this.runway) && !s.atcDiscretion));
-      const r = this.rwy;
-      const lenNm = r.lengthM / 1852;
-      const p = move(r.thr, r.crs, lenNm + 1.2);
-      ac = this.base({ ...spec, level: sid.initialClimb, spd: spec.spd ?? (PERF[spec.type]?.vminFlap ?? 160) + 20 }, p, r.elevation + 1300, r.crs);
-      ac.vs = 2000;
-      ac.route = sid.legs.map((l) => ({ ...l }));
-      ac.proc = sid.name;
-      ac.exitFix = sid.exitFix;
-      ac.checkInAt = this.t + 4;
-      this.departuresSpawned++;
+      if (!spec.released) { this.requestRelease(spec); return; }
+      this.launchDeparture(spec);
+      return;
     } else {
       const route = (spec.route ?? []).map((f) => ({ fix: f, p: this.fixP(f) }));
       const first = route[0]?.p ?? { x: 0, y: 0 };
@@ -244,6 +356,44 @@ export class Sim implements PilotWorld {
     }
     (ac as any)._spec = spec;
     this.aircraft.push(ac);
+    if (spec.kind === 'mil' && ac.perf.fighter && !spec.silent) this.milCrossing(ac);
+  }
+
+  /** A departure gets airborne: it appears past the runway end and calls on RT. */
+  private launchDeparture(spec: SpawnSpec, rel?: ReleaseReq) {
+    const sid = this.pack.sids.find((s) => s.name === spec.sid && s.runways.includes(this.runway)) ?? this.rng.pick(this.pack.sids.filter((s) => s.runways.includes(this.runway) && !s.atcDiscretion));
+    const r = this.rwy;
+    const lenNm = r.lengthM / 1852;
+    const p = move(r.thr, r.crs, lenNm + 1.2);
+    const level = rel?.lvl ?? sid.initialClimb;
+    const ac = this.base({ ...spec, level, spd: spec.spd ?? (PERF[spec.type]?.vminFlap ?? 160) + 20 }, p, r.elevation + 1300, r.crs);
+    ac.vs = 2000;
+    ac.route = sid.legs.map((l) => ({ ...l }));
+    ac.proc = sid.name;
+    ac.exitFix = sid.exitFix;
+    if (rel?.hdg !== undefined) {
+      ac.savedRoute = ac.route;
+      ac.route = [];
+      ac.mode = 'HDG';
+      ac.hdgAssigned = norm360(rel.hdg + this.pack.meta.magVar);
+      ac.hdgSys = ac.hdgAssigned;
+    }
+    ac.checkInAt = this.t + 4;
+    this.departuresSpawned++;
+    (ac as any)._spec = spec;
+    this.aircraft.push(ac);
+  }
+
+  /** Military fighters: MIL asks for the crossing on the intercom before the formation calls. */
+  private milCrossing(ac: Aircraft) {
+    const spec = (ac as any)._spec as SpawnSpec;
+    const route = spec.route ?? [];
+    const via = route.length ? `${route[0]} to ${route[route.length - 1]}` : 'the TMA';
+    const text = `Approach, MIL, request crossing for ${ac.cs}${ac.formation > 1 ? ' flight of ' + ac.formation : ''}, ${ac.type}, ${via}, ${levelText(ac.cleared)}`;
+    ac.request = { kind: 'milxing', text: `MIL crossing ${route.join('–')} ${levelText(ac.cleared)}`, speech: '', route, t: this.t };
+    (ac as any)._milCheckIn = ac.checkInAt;
+    ac.checkInAt = undefined;
+    this.icom('MIL', text, ac.cs);
   }
 
   // ---------------- comms ----------------
@@ -252,7 +402,7 @@ export class Sim implements PilotWorld {
     const full: Tx = { ...tx, id: this.txId++, t0, t1: t0 + dur };
     this.log.push(full);
     if (this.log.length > 200) this.log.shift();
-    if (tx.from === 'ATC') this.atcAirtime += dur; else if (tx.from === 'PILOT') this.pilotAirtime += dur;
+    if (tx.channel !== 'icom') { if (tx.from === 'ATC') this.atcAirtime += dur; else if (tx.from === 'PILOT') this.pilotAirtime += dur; }
     for (const f of this.onTx) f(full);
     return full;
   }
@@ -263,7 +413,7 @@ export class Sim implements PilotWorld {
   private pumpQueue() {
     if (this.t < this.busyUntil) return;
     const due = this.queue.filter((q) => q.notBefore <= this.t && !q.priority);
-    if (due.length >= 2 && this.t - this.lastBlocked > 90 && this.rng.chance(0.35)) {
+    if (due.length >= 2 && !this.queue.some((q) => q.priority) && this.t - this.lastBlocked > 90 && this.rng.chance(0.35)) {
       // two stations transmit at once: the controller hears a heterodyne
       this.lastBlocked = this.t;
       const tx = this.emitTx({ from: 'PILOT', cs: '', text: '— blocked transmission —', speech: '', blocked: true }, this.t);
@@ -271,7 +421,9 @@ export class Sim implements PilotWorld {
       for (const q of due.slice(0, 2)) q.notBefore = this.t + this.rng.range(3, 7);
       return;
     }
-    const idx = this.queue.findIndex((q) => q.notBefore <= this.t);
+    // a pilot does not start a call while another is about to read back
+    const readbackDue = this.queue.some((q) => q.priority && q.notBefore > this.t && q.notBefore - this.t < 4);
+    const idx = this.queue.findIndex((q) => q.notBefore <= this.t && (q.priority || !readbackDue));
     if (idx < 0) return;
     const q = this.queue.splice(idx, 1)[0];
     const tx = this.emitTx(q.tx, this.t);
@@ -303,6 +455,17 @@ export class Sim implements PilotWorld {
     const csT = ac.cs + (ac.formation > 1 ? ` flight of ${ac.formation}` : '');
     const csS = ac.tel + (ac.formation > 1 ? ` flight of ${digits(ac.formation)}` : '');
     const spec = (ac as any)._spec as SpawnSpec;
+    const back = (ac as any)._returnCall as { text: string; speech: string } | undefined;
+    if (back) {
+      // handed back by Tower (go-around, too high for the glide)
+      (ac as any)._returnCall = undefined;
+      this.queueCall({ from: 'PILOT', cs: ac.cs, text: `Liège Approach, ${ac.cs}, ${back.text}`, speech: `Liège Approach, ${ac.tel}, ${back.speech}` }, this.t, () => {
+        ac.state = 'assumed'; ac.xfrUnit = undefined;
+        ac.awaitingSince = this.t + 3;
+        ac.repeatedCall = false;
+      });
+      return;
+    }
     switch (ac.kind) {
       case 'arr':
         if (ac.unfamiliar) {
@@ -312,13 +475,22 @@ export class Sim implements PilotWorld {
         } else {
           const desc = Math.abs(ac.alt - ac.tgtAlt) > 300 ? `${now.text} descending ${cl.text}` : `${cl.text}`;
           const descS = Math.abs(ac.alt - ac.tgtAlt) > 300 ? `${now.speech} descending ${cl.speech}` : cl.speech;
-          text = `Liège Approach, ${ac.cs}, ${desc}, ${ac.proc}, information ${atis}`;
-          speech = `Liège Approach, ${ac.tel}, ${descS}, ${this.procSpeech(ac.proc!)}, information ${digits(atis)}`;
+          let letter = atis;
+          if (this.sc.atisDrift && this.prevAtis && this.t - this.atisChangeT < 900 && this.rng.chance(0.15)) {
+            letter = this.prevAtis;
+            ac.atisOld = letter; ac.atisOldT = this.t;
+          }
+          text = `Liège Approach, ${ac.cs}, ${desc}, ${ac.proc}, information ${letter}`;
+          speech = `Liège Approach, ${ac.tel}, ${descS}, ${this.procSpeech(ac.proc!)}, information ${digits(letter)}`;
         }
         break;
       case 'dep':
-        text = `Liège Approach, ${ac.cs}, passing ${Math.round(ac.alt / 100) * 100} ft climbing ${cl.text}, ${ac.proc}`;
-        speech = `Liège Approach, ${ac.tel}, passing ${digits(Math.round(ac.alt / 1000))} thousand ${Math.round((ac.alt % 1000) / 100) ? digits(Math.round((ac.alt % 1000) / 100)) + ' hundred' : ''} climbing ${cl.speech}, ${this.procSpeech(ac.proc!)}`;
+        {
+          const onHdg = ac.mode === 'HDG' && ac.hdgAssigned !== undefined;
+          const h = onHdg ? String(Math.round(norm360(ac.hdgAssigned! - this.pack.meta.magVar)) || 360).padStart(3, '0') : '';
+          text = `Liège Approach, ${ac.cs}, passing ${(Math.round(ac.alt / 100) * 100).toLocaleString('en-US')} ft climbing ${cl.text}, ${onHdg ? 'heading ' + h : ac.proc}`;
+          speech = `Liège Approach, ${ac.tel}, passing ${digits(Math.floor(ac.alt / 1000))} thousand ${Math.round((ac.alt % 1000) / 100) % 10 ? digits(Math.round((ac.alt % 1000) / 100) % 10) + ' hundred' : ''} climbing ${cl.speech}, ${onHdg ? 'heading ' + digits(h) : this.procSpeech(ac.proc!)}`;
+        }
         if (this.rng.chance(0.35)) {
           text += ', request higher'; speech += ', request higher';
           ac.request = { kind: 'climb', level: { fl: 90 }, text: 'Higher, FL090', speech: '', t: this.t };
@@ -395,6 +567,14 @@ export class Sim implements PilotWorld {
         if (!ac.app?.locCap && (ac.mode === 'HDG' || hdgItem) && (ang > 45 || d < 6 || d > 28)) w.push('Poor intercept geometry');
       }
       if (it.k === 'xfr' && it.unit === 'TWR' && !(ac.app?.locCap)) w.push('Not established on final');
+      if (it.k === 'xfr' && it.unit === 'MIL' && ac.kind !== 'mil') w.push('MIL only takes military traffic');
+      if (it.k === 'hold') {
+        const h = this.pack.holds.find((x) => x.fix === it.fix);
+        const lv = (cl.items.find((x) => x.k === 'lvl') as { lvl: Level } | undefined)?.lvl ?? ac.cleared;
+        if (h && this.ftOf(lv) > this.ftOf(h.max) + 50) w.push(`Above the ${h.fix} holding maximum ${levelText(h.max)}`);
+        if (h && this.ftOf(lv) < this.ftOf(h.min) - 50) w.push(`Below the ${h.fix} holding minimum ${levelText(h.min)}`);
+      }
+      if (it.k === 'brk' && !ac.app) w.push('No approach clearance to cancel');
       if (it.k === 'dct' && !this.pack.fixes.has(it.fix)) w.push(`Unknown fix ${it.fix}`);
       if (it.k === 'hdg') {
         const target = norm360(it.hdg + this.pack.meta.magVar);
@@ -409,14 +589,29 @@ export class Sim implements PilotWorld {
 
   /** Issue a clearance at the current sim time. Deterministic given seed + command log. */
   issue(cl: Clearance, opts: { replay?: boolean } = {}): IssueResult {
+    // departure release: answered to Tower on the intercom
+    const relIt = cl.items.find((i) => i.k === 'rel' || i.k === 'relhold') as Extract<Item, { k: 'rel' | 'relhold' }> | undefined;
+    if (relIt) {
+      const r = this.releases.find((x) => x.cs === cl.cs && x.state !== 'airborne');
+      if (!r) return { ok: false, warnings: [`No release request for ${cl.cs}`] };
+      this.cmdLog.push({ t: this.t, cl: JSON.parse(JSON.stringify(cl)) });
+      this.answerRelease(r, relIt, cl.items);
+      return { ok: true, warnings: [] };
+    }
     const target = this.find(cl.cs);
     if (!target || !cl.items.length) return { ok: false, warnings: ['Nothing to send'] };
+    // military crossing request: answered to MIL on the intercom
+    if (target.request?.kind === 'milxing' && target.state === 'inbound' && cl.items.every((i) => i.k === 'appr' || i.k === 'deny')) {
+      this.cmdLog.push({ t: this.t, cl: JSON.parse(JSON.stringify(cl)) });
+      this.answerMil(target, cl.items[0].k === 'appr');
+      return { ok: true, warnings: [] };
+    }
     const warnings = this.validate(cl);
     this.cmdLog.push({ t: this.t, cl: JSON.parse(JSON.stringify(cl)) });
     this.clearancesSent++;
     if (warnings.length) { this.warningsSent++; this.event({ kind: 'warning_sent', cs: cl.cs, comp: 'SPP', sev: 'minor', text: `${cl.cs}: sent with "${warnings[0]}"`, cost: 6 }); }
 
-    const ctx = { alt: target.alt, qnh: this.qnh, hdgMag: norm360(target.hdg - this.pack.meta.magVar), request: target.request?.text };
+    const ctx = this.phraseCtx(target, cl);
     const ph = phraseology(cl, ctx);
     const t0 = Math.max(this.t, this.busyUntil);
     const dur = airtime(ph.speech);
@@ -458,6 +653,12 @@ export class Sim implements PilotWorld {
       return { ok: true, warnings };
     }
 
+    // what the controller said is now known to the crew
+    if (ctx.qnhSay) target.qnhGiven = true;
+    if (ctx.vectorFor) target.vecInfo = true;
+    const holdIt = cl.items.find((i) => i.k === 'hold');
+    if (holdIt) { target.efc = ctx.efc ? (ctx as any)._efcT : undefined; (target as any)._efcFix = (holdIt as { fix: string }).fix; target.efcCalled = false; target.holdMaxCalled = false; }
+
     // Who actually answers? Similar callsigns cause confusion.
     let ac = target;
     if (this.sc.confusion) {
@@ -492,7 +693,7 @@ export class Sim implements PilotWorld {
         wrong = { idx, item: bad };
       }
     }
-    const rb = readback(ac.cs, accepted, { ...ctx, alt: ac.alt }, wrong);
+    const rb = readback(ac.cs, accepted, { ...ctx, alt: ac.alt, vectorFor: undefined }, wrong);
     const unableTxt = unable.map((u) => this.unableReason(ac, u)!).join(', ');
     let rbText = accepted.length ? rb.text : `${ac.cs}`;
     let rbSpeech = accepted.length ? rb.speech : ac.tel;
@@ -504,6 +705,64 @@ export class Sim implements PilotWorld {
       if (wrong) ac.wrong = { item: wrong.item, t: this.t, issuedT: t0 };
     }, true);
     return { ok: true, warnings };
+  }
+
+  /** Context for the controller's phraseology: QNH, speed verbs, vectoring, position, EFC, request answers. */
+  private phraseCtx(ac: Aircraft, cl: Clearance): Ctx {
+    const has = (k: Item['k']) => cl.items.some((i) => i.k === k);
+    const rwyUse = this.pack.runways.get(ac.expectRwy ?? this.runway) ?? this.rwy;
+    const ctx: Ctx = {
+      alt: ac.alt, qnh: this.qnh, hdgMag: norm360(ac.hdg - this.pack.meta.magVar), request: ac.request?.text, ias: ac.ias, atis: this.atis,
+      qnhSay: !ac.qnhGiven && cl.items.some((i) => i.k === 'lvl' && i.lvl.ft !== undefined),
+    };
+    if (ac.kind === 'arr' && !ac.vecInfo && !ac.app && has('hdg') && !has('app')) ctx.vectorFor = { app: rwyUse.ils && !this.ilsOut.has(rwyUse.id) ? 'ILS' : 'RNP', rwy: rwyUse.id };
+    const appIt = cl.items.find((i) => i.k === 'app') as { rwy: string } | undefined;
+    if (appIt && !ac.app?.locCap && (ac.mode === 'HDG' || has('hdg'))) {
+      const r = this.pack.runways.get(appIt.rwy);
+      const d = r ? distToThr(ac.p, r) : -1;
+      if (d >= 3 && d <= 30) ctx.posNm = d;
+    }
+    const holdIt = cl.items.find((i) => i.k === 'hold') as { fix: string } | undefined;
+    if (holdIt) {
+      const e = this.efcFor(ac, holdIt.fix);
+      ctx.efc = e.say;
+      (ctx as any)._efcT = e.t;
+    }
+    if (ac.request) {
+      const r = ac.request;
+      const vfr = ac.rules === 'VFR';
+      const route = r.route ?? ((ac as any)._plannedRoute as string[] | undefined);
+      let sqk: string | undefined;
+      if (r.kind === 'crossing' && vfr && has('appr')) sqk = (ac as any)._xsqk ?? ((ac as any)._xsqk = `70${ac.id % 8}${(ac.id * 3 + 1) % 8}`);
+      const vr = route ? this.pack.vfrRoutes.find((v) => v.points.join() === route.join()) : undefined;
+      ctx.req = { kind: r.kind, route, vfr, sqk, alt: vr?.alt ?? 1500 };
+    }
+    return ctx;
+  }
+
+  /** Expected approach clearance time for a new holder: 2.5 min per aircraft ahead in that hold. */
+  efcFor(ac: Aircraft, fix: string): { t: number; say: string | null } {
+    const ahead = this.aircraft.filter((o) => o !== ac && !o.remove && o.kind === 'arr' && ((o.mode === 'HOLD' && o.hold?.fix === fix) || (o as any)._holdAt === fix || ((o as any)._efcFix === fix && this.readbackPending(o.cs)))).length;
+    if (ahead === 0) return { t: this.t + 300, say: null };
+    const t = Math.ceil((this.t + ahead * 150) / 60) * 60;
+    return { t, say: this.utc(t).slice(0, 5).replace(':', '') };
+  }
+
+  private answerMil(ac: Aircraft, yes: boolean) {
+    const r = ac.request!;
+    ac.request = undefined;
+    this.responseTimes.push(Math.max(0, this.t - r.t));
+    if (yes) {
+      this.icom('ATC', `${ac.cs} crossing approved, ${levelText(ac.cleared)}, call me on 119.280`, ac.cs);
+      this.icom('MIL', `Approved, ${ac.cs} will call you`, ac.cs);
+      ac.checkInAt = this.t + this.rng.int(15, 40);
+    } else {
+      this.icom('ATC', `${ac.cs} unable, due traffic, remain outside the TMA`, ac.cs);
+      this.icom('MIL', `Copied, ${ac.cs} remains outside`, ac.cs);
+      ac.state = 'unconcerned';
+      ac.mode = 'HDG'; ac.hdgAssigned = norm360(ac.hdg + 180);
+      this.schedule(this.t + 300, () => { ac.remove = true; });
+    }
   }
 
   private unableReason(ac: Aircraft, it: Item): string | undefined {
@@ -591,6 +850,15 @@ export class Sim implements PilotWorld {
           break;
         }
         case 'sqk': ac.sqk = it.code; break;
+        case 'brk':
+          if (ac.app) { ac.app = undefined; ac.stable4 = undefined; }
+          if (ac.mode === 'LOC') { ac.mode = 'HDG'; ac.hdgAssigned = ac.hdg; }
+          if (ac.request?.kind === 'vectors') ac.request = undefined;
+          break;
+        case 'atis':
+          if (ac.atisOld) { this.event({ kind: 'atis_corrected', cs: ac.cs, comp: 'COMM', sev: 'good', text: `${ac.cs}: old ATIS corrected`, cost: 0 }); ac.atisOld = undefined; }
+          break;
+        case 'rel': case 'relhold': break;
         case 'appr': this.answerRequest(ac, true); break;
         case 'deny': this.answerRequest(ac, false); break;
         case 'xfr':
@@ -615,7 +883,7 @@ export class Sim implements PilotWorld {
     if (!r) return;
     ac.request = undefined;
     if (!yes) {
-      if (r.kind === 'crossing') { ac.mode = 'ORBIT'; this.schedule(this.t + 150, () => { if (!ac.remove && ac.mode === 'ORBIT') { ac.request = { ...r, t: this.t }; this.queueCall({ from: 'PILOT', cs: ac.cs, text: `${ac.cs}, still waiting, request crossing`, speech: `${ac.tel}, still waiting, request crossing` }, this.t, () => { ac.awaitingSince = this.t + 3; }); } }); }
+      if (r.kind === 'crossing') { ac.mode = 'ORBIT'; this.schedule(this.t + (ac.rules === 'VFR' ? 300 : 150), () => { if (!ac.remove && ac.mode === 'ORBIT') { ac.request = { ...r, t: this.t }; this.queueCall({ from: 'PILOT', cs: ac.cs, text: `${ac.cs}, still waiting, request crossing`, speech: `${ac.tel}, still waiting, request crossing` }, this.t, () => { ac.awaitingSince = this.t + 3; }); } }); }
       return;
     }
     switch (r.kind) {
@@ -625,6 +893,7 @@ export class Sim implements PilotWorld {
         const pts = r.route ?? ((ac as any)._plannedRoute as string[]);
         ac.route = pts.map((f) => ({ fix: f, p: this.fixP(f) }));
         ac.mode = 'NAV';
+        if ((ac as any)._xsqk) ac.sqk = (ac as any)._xsqk;
         break;
       }
       case 'deviate': ac.mode = 'HDG'; ac.hdgAssigned = norm360(r.hdg! + this.pack.meta.magVar); break;
@@ -653,6 +922,11 @@ export class Sim implements PilotWorld {
       }
       this.lastXfr.set(ac.exitFix ?? '', ac.cs);
       this.schedule(this.t + 25, () => { if (!ac.remove) { ac.cleared = { fl: 150 }; ac.tgtAlt = this.ftOf({ fl: 150 }); ac.spdAssigned = undefined; } });
+    }
+    if (ac.kind === 'mil') {
+      // MIL (or the next unit) gives the requested climb
+      const want = ((ac as any)._spec as SpawnSpec | undefined)?.request?.level;
+      if (want) this.schedule(this.t + 20, () => { if (!ac.remove) { ac.cleared = want; ac.tgtAlt = this.ftOf(want); } });
     }
   }
 
@@ -724,6 +998,7 @@ export class Sim implements PilotWorld {
       return;
     }
     ac.goArounds++;
+    const withTwr = ac.state === 'transferred' && ac.xfrUnit === 'TWR';
     const missed = r.missed.map((f) => ({ fix: f, p: this.fixP(f), min: { ft: 3000 } }));
     ac.route = missed;
     ac.mode = 'NAV';
@@ -731,12 +1006,36 @@ export class Sim implements PilotWorld {
     ac.app = undefined;
     ac.cleared = { ft: 3000 }; ac.tgtAlt = 3000;
     ac.spdAssigned = undefined; ac.spdUntil = undefined; ac.stable4 = undefined;
-    ac.state = 'assumed';
     const why: Record<string, string> = { unstable: 'unstable approach', noclearance: 'no landing clearance', occupied: 'runway occupied', forced: 'instructed by Tower' };
     const cost = reason === 'unstable' ? 35 : reason === 'noclearance' ? 40 : reason === 'forced' ? 0 : 30;
     const comp: Comp = reason === 'unstable' ? 'TRAF' : reason === 'noclearance' ? 'CORD' : reason === 'forced' ? 'NONR' : 'SEPC';
     this.event({ kind: 'goaround', cs: ac.cs, comp, sev: reason === 'forced' ? 'info' : 'major', text: `${ac.cs}: go-around, ${why[reason] ?? reason}`, cost });
-    if (!ac.radioFail) this.pilotSays(ac, `Liège Approach, ${ac.cs}, going around, ${why[reason]}, climbing 3000 ft`, `Liège Approach, ${ac.tel}, going around, ${why[reason]}, climbing altitude three thousand feet`);
+    if (withTwr && !ac.radioFail) {
+      // Tower tells Approach on the intercom; the crew calls on 119.280 once they are settled in the climb
+      this.icom('TWR', `Approach, Tower, ${ac.cs} going around, ${reason === 'forced' ? 'runway occupied' : why[reason] ?? reason}, climbing 3,000 ft on the missed approach`, ac.cs);
+      ac.state = 'inbound';
+      (ac as any)._returnCall = { text: 'going around, climbing 3,000 ft', speech: 'going around, climbing altitude three thousand feet' };
+      ac.checkInAt = this.t + this.rng.int(20, 40);
+      return;
+    }
+    ac.state = 'assumed';
+    if (!ac.radioFail) this.pilotSays(ac, `Liège Approach, ${ac.cs}, going around, ${why[reason]}, climbing 3,000 ft`, `Liège Approach, ${ac.tel}, going around, ${why[reason]}, climbing altitude three thousand feet`);
+  }
+
+  onTooHigh(ac: Aircraft) {
+    if (ac.radioFail || ac.lowPass) return;
+    const text = 'too high, unable to capture the glide, request vectors';
+    const req = { kind: 'vectors' as const, text: 'Vectors, too high for the glide', speech: '', t: this.t };
+    if (ac.state === 'transferred' && ac.xfrUnit === 'TWR') {
+      this.icom('TWR', `Approach, Tower, ${ac.cs} too high for the glide, wants vectors, sending back to you`, ac.cs);
+      ac.state = 'inbound';
+      (ac as any)._returnCall = { text, speech: text };
+      ac.checkInAt = this.t + this.rng.int(8, 15);
+      ac.request = req;
+    } else if (ac.state === 'assumed') {
+      this.pilotSays(ac, `${ac.cs}, ${text}`, `${ac.tel}, ${text}`);
+      ac.request = req;
+    }
   }
 
   onTouchdown(ac: Aircraft, r: Runway) {
@@ -787,11 +1086,36 @@ export class Sim implements PilotWorld {
       this.event({ kind: 'readback_missed', cs: ac.cs, comp: 'COMM', sev: 'major', text: `${ac.cs}: took a clearance meant for ${(ac as any)._confusedFor}, not caught`, cost: 45 });
       (ac as any)._confusedT = undefined;
     }
-    // unanswered calls
-    if (ac.awaitingSince !== undefined && t - ac.awaitingSince > 25 && !ac.repeatedCall && ac.state === 'assumed') {
+    // unanswered calls: the pilot repeats after 25 s of free frequency (not wall time)
+    if (ac.awaitingSince === undefined) ac.waitFree = 0;
+    else if (t >= ac.awaitingSince && !this.freqBusy() && !this.queue.some((q) => q.notBefore <= t)) ac.waitFree = (ac.waitFree ?? 0) + 1;
+    if (ac.awaitingSince !== undefined && (ac.waitFree ?? 0) > 25 && !ac.repeatedCall && ac.state === 'assumed') {
       ac.repeatedCall = true;
       this.event({ kind: 'unanswered', cs: ac.cs, comp: 'WORK', sev: 'minor', text: `${ac.cs}: call unanswered for 25 s`, cost: 10 });
       this.queueCall({ from: 'PILOT', cs: ac.cs, text: `Liège Approach, ${ac.cs}, how do you read?`, speech: `Liège Approach, ${ac.tel}, how do you read?` }, t);
+    }
+    // holding discipline: published maximum, EFC
+    if (ac.mode === 'HOLD' && ac.hold && ac.state === 'assumed' && !ac.radioFail) {
+      const h = this.pack.holds.find((x) => x.fix === ac.hold!.fix);
+      if (h && !ac.holdMaxCalled && this.ftOf(ac.cleared) > this.ftOf(h.max) + 50) {
+        ac.holdMaxCalled = true;
+        this.pilotSays(ac, `${ac.cs}, request lower, maximum holding altitude ${levelText(h.max)}`, `${ac.tel}, request lower, maximum holding ${levelSpeech(h.max)}`);
+      }
+      if (ac.efc !== undefined && t >= ac.efc && !ac.efcCalled && ac.awaitingSince === undefined) {
+        ac.efcCalled = true;
+        this.pilotSays(ac, `${ac.cs}, EFC time, request onward clearance`, `${ac.tel}, E F C time, request onward clearance`);
+      }
+    }
+    if (ac.efc !== undefined && ac.mode !== 'HOLD' && !(ac as any)._holdAt && !this.readbackPending(ac.cs)) ac.efc = undefined;
+    // old ATIS not corrected
+    if (ac.atisOld && ac.atisOldT !== undefined && t - ac.atisOldT > 90) {
+      this.event({ kind: 'atis_missed', cs: ac.cs, comp: 'COMM', sev: 'minor', text: `${ac.cs}: reported information ${ac.atisOld}, not corrected`, cost: 8 });
+      ac.atisOld = undefined;
+    }
+    // MIL waiting for an answer to a crossing request
+    if (ac.request?.kind === 'milxing' && ac.state === 'inbound' && t - ac.request.t === 120) {
+      this.icom('MIL', `Approach, MIL, still waiting on the crossing for ${ac.cs}`, ac.cs);
+      this.event({ kind: 'mil_delay', cs: ac.cs, comp: 'CORD', sev: 'minor', text: `${ac.cs}: MIL crossing request unanswered for 2 minutes`, cost: 10 });
     }
     // speed limit below FL100
     if (ac.state === 'assumed' && ac.kind !== 'mil' && ac.alt < 9800 && ac.ias > 262 && !(ac as any)._spdEv) {
@@ -882,7 +1206,7 @@ export class Sim implements PilotWorld {
     }
   }
 
-  setWeather(w: Omit<Weather, 'raw'> & { raw?: string }) {
+  setWeather(w: Omit<Weather, 'raw'> & { raw?: string }, quiet = false) {
     const hh = this.utc().slice(0, 5).replace(':', '');
     const raw = buildMetar(this.pack.meta.icao, w, '12' + hh);
     this.weather = { ...w, raw };
@@ -891,7 +1215,7 @@ export class Sim implements PilotWorld {
     const was = this.lvp;
     this.lvp = isLvp(this.weather);
     this.atisIdx++;
-    this.sys(`New weather, ATIS ${this.atis}: ${raw}`);
+    if (!quiet) this.sys(`New weather, ATIS ${this.atis}: ${raw}`);
     if (this.lvp !== was) this.sys(this.lvp ? 'LOW VISIBILITY PROCEDURES IN FORCE' : 'Low visibility procedures cancelled');
   }
 
@@ -1010,6 +1334,18 @@ export class Sim implements PilotWorld {
           if (!this.tsaOn.has(tsa.name)) continue;
           if (pointInPolygon(a.p, tsa.poly) && a.alt >= this.ftOf(tsa.floor) && a.alt <= this.ftOf(tsa.ceiling)) { seen.add('tsa:' + a.cs + tsa.name); this.openOrUpdate('tsa:' + a.cs + tsa.name, 'tsa', a.cs, undefined, 0, 0, tsa.name); }
         }
+      }
+    }
+    // holding stack: two aircraft in the same hold less than 1,000 ft apart
+    const holding = live.filter((a) => a.mode === 'HOLD' && a.hold && a.hold.phase !== 'entry');
+    for (let i = 0; i < holding.length; i++) {
+      for (let j = i + 1; j < holding.length; j++) {
+        const a = holding[i], b = holding[j];
+        if (a.hold!.fix !== b.hold!.fix || Math.abs(a.alt - b.alt) >= EPS_VERT || dist(a.p, b.p) > 8) continue;
+        const k = 'stack:' + this.key(a, b);
+        if (this.stackSeen.has(k)) continue;
+        this.stackSeen.add(k);
+        this.event({ kind: 'stack', cs: a.cs, cs2: b.cs, comp: 'SEPC', sev: 'major', value: Math.abs(a.alt - b.alt), text: `Holding stack ${a.hold!.fix}: ${a.cs} / ${b.cs} only ${Math.round(Math.abs(a.alt - b.alt))} ft apart`, cost: 100 });
       }
     }
     for (const k of [...this.ongoing.keys()]) if (!seen.has(k)) this.closeOngoing(k);
