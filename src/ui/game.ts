@@ -69,6 +69,10 @@ export class Game {
   private barSig = '';
   /** fired after every transmission by the player (tutorial hooks) */
   onSent: ((cl: Clearance) => void)[] = [];
+  /** Tutorial hook: checked before every transmission (radio and intercom). Return a message to block it; the message is shown as a toast. */
+  onBeforeSend?: (cl: Clearance) => string | undefined;
+  /** Tutorial hook: show supervisor hints even though the scenario is a tutorial (the coach turns this on for the lessons that teach the SUP line). */
+  coachHints = false;
 
   constructor(public pack: Pack, public sc: Scenario, public settings: Settings, mount: HTMLElement, radio: Radio, public opts: GameOpts) {
     this.radio = radio;
@@ -113,6 +117,24 @@ export class Game {
     if (opts.replay) this.toast(`Replay from ${this.sim.utc().slice(0, 5)}Z. Your earlier commands ran up to here.`);
     else if (!opts.coach && sc.objective) this.toast(sc.objective, 5000);
     if (opts.coach) this.coach = opts.coach(this);
+  }
+
+  /** Tutorial hook: replace the sim with a fresh one for another scenario (lesson exams), keeping the screen and the coach. */
+  loadScenario(sc: Scenario) {
+    this.sc = sc;
+    this.sim = new Sim(this.pack, sc, { radarRefresh: this.settings.radarRefresh });
+    this.opts.onSim?.(this.sim);
+    this.scope.sim = this.sim;
+    this.scope.closeTransient();
+    this.scope.clearRbls();
+    this.sim.onTx.push((tx) => this.onTx(tx));
+    this.seenLandings = 0; this.seenRel.clear(); this.knownAlerts.clear(); this.icomSig = ''; this.endedShown = false;
+    this.hint = undefined; this.renderHint();
+    this.els.comms.innerHTML = '';
+    this.els.ticker.innerHTML = '';
+    this.closePicker();
+    this.select(undefined);
+    this.renderPanels(); this.renderLive(); this.renderIcom();
   }
 
   destroy() {
@@ -312,6 +334,8 @@ export class Game {
   private send() {
     if (!this.cs || !this.items.length) return;
     const cl: Clearance = { cs: this.cs, items: sortItems(this.items) };
+    const veto = this.onBeforeSend?.(cl); // tutorial hook
+    if (veto) { this.toast(veto); return; }
     const warns = this.sim.validate(cl);
     if (this.settings.trainingWheels && warns.length) { this.toast(`Blocked: ${warns.join('; ')}`); return; }
     const r = this.sim.issue(cl);
@@ -792,7 +816,7 @@ export class Game {
 
   // ---------------- supervisor hints ----------------
   private updateHint() {
-    if (!this.settings.hints || this.sc.tutorial) { if (this.hint) { this.hint = undefined; this.renderHint(); } return; }
+    if (!(this.coachHints || (this.settings.hints && !this.sc.tutorial))) { if (this.hint) { this.hint = undefined; this.renderHint(); } return; }
     const list = hints(this.sim).filter((x) => !this.hintMuted.has(x.key));
     const top = list[0];
     if (top?.key !== this.hint?.key || top?.text !== this.hint?.text) { this.hint = top; this.renderHint(); }
@@ -839,6 +863,8 @@ export class Game {
     else if (v === 'hold') items = [{ k: 'relhold', mins: 3 }];
     else if (v === 'milok') items = [{ k: 'appr' }];
     else items = [{ k: 'deny' }];
+    const veto = this.onBeforeSend?.({ cs, items }); // tutorial hook
+    if (veto) { this.toast(veto); return; }
     const r = this.sim.issue({ cs, items });
     if (!r.ok) this.toast(r.warnings.join('; '));
     else for (const f of this.onSent) f({ cs, items });

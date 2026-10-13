@@ -12,7 +12,7 @@ import {
 import { Attract } from './attract';
 import { SKIN } from './scope';
 import { GLOSSARY, GLOSSARY_GROUPS } from './glossary';
-import { LESSONS, tutorialDone } from './tutorial';
+import { LESSONS, tutorialDone, tutorialResults } from './tutorial';
 import type { Pack } from '../pack/load';
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
@@ -115,15 +115,25 @@ export function renderHome(root: HTMLElement, hd: MenuHandlers) {
 
 export function renderTutorial(root: HTMLElement, hd: MenuHandlers & { startLesson(i: number): void }) {
   const done = tutorialDone();
-  const next = LESSONS.findIndex((l) => !done.has(l.id));
+  const res = tutorialResults();
+  const next = LESSONS.findIndex((l) => !res[l.id]?.pass && !(done.has(l.id) && !l.exam));
+  const passedN = LESSONS.filter((l) => res[l.id]?.pass).length;
+  const starsN = LESSONS.reduce((s, l) => s + (res[l.id]?.stars ?? 0), 0);
+  const stat = (l: (typeof LESSONS)[number]) => {
+    const r = res[l.id];
+    if (r?.pass) return `<span class="tut-stars" aria-label="${r.stars ?? 1} of 3 stars">${'★'.repeat(r.stars ?? 1)}<i>${'★'.repeat(3 - (r.stars ?? 1))}</i></span><small>exam passed</small>`;
+    if (done.has(l.id)) return `<b class="mono">✓</b><small>${l.exam ? 'exam to do' : 'done'}</small>`;
+    return `<b class="mono">${l.minutes}</b><small>min</small>`;
+  };
   root.innerHTML = shell(`
     <h2>Learn the position</h2>
-    <p class="lede">Each lesson runs in the real sim. The coach pauses the clock, points at the button or aircraft to use, and waits until you have done it. Take them in order the first time.</p>
+    <p class="lede">Ten lessons in the real sim. The coach pauses the clock, points at the control or aircraft to use, and waits until you have done it. Each lesson ends with a short exam with no coach: pass it to earn up to three stars. Take them in order the first time.</p>
+    ${passedN ? `<p class="tut-sum mono">${passedN} of ${LESSONS.length} exams passed · ${starsN} of ${LESSONS.length * 3} stars</p>` : ''}
     <ol class="lessons">
-      ${LESSONS.map((l, i) => `<li><button class="bay-strip lesson ${done.has(l.id) ? 'done' : ''} ${i === next ? 'next' : ''}" data-lesson="${i}">
+      ${LESSONS.map((l, i) => `<li><button class="bay-strip lesson ${res[l.id]?.pass ? 'done passed' : done.has(l.id) ? 'done' : ''} ${i === next ? 'next' : ''}" data-lesson="${i}">
         <span class="bs-bay mono">${i + 1}</span>
         <span class="bs-body"><b>${l.title}</b><span>${l.summary}</span></span>
-        <span class="bs-stat"><b class="mono">${done.has(l.id) ? '✓' : l.minutes}</b><small>${done.has(l.id) ? 'done' : 'min'}</small></span>
+        <span class="bs-stat">${stat(l)}</span>
       </button></li>`).join('')}
     </ol>`);
   root.querySelectorAll<HTMLButtonElement>('[data-lesson]').forEach((b) => b.addEventListener('click', () => hd.startLesson(Number(b.dataset.lesson))));
