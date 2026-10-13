@@ -32,9 +32,12 @@ export function hints(sim: Sim): Hint[] {
         continue;
       }
       // descent planning: about 3 NM per 1,000 ft, plus a few miles to slow down
-      const togo = remainNm(sim, ac);
+      // miles left before the intermediate fix, where it should be at the approach altitude
+      const ifP = sim.pack.fixes.get(rw.ifFix)?.p;
+      const finalNm = ifP ? dist(ifP, rw.thr) : 9;
+      const togo = Math.max(0, remainNm(sim, ac) - finalNm);
       const need = (Math.max(0, ac.alt - rw.ifAlt) / 1000) * 3 + (ac.ias > 220 ? 4 : 2);
-      if (ac.alt > rw.ifAlt + 1500 && togo < need && togo < 30) {
+      if (ac.alt > rw.ifAlt + 1500 && togo < need && togo < 25) {
         out.push({ key: `high:${ac.cs}`, cs: ac.cs, text: `${ac.cs} needs about ${need.toFixed(0)} NM to get down but has about ${togo.toFixed(0)}. Descend it now, slow it, or give it more miles.`, term: 'Descent planning', urgency: 30 + (need - togo) * 3 });
       }
       if (ac.mode === 'HDG') {

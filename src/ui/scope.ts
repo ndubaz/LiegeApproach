@@ -535,9 +535,11 @@ export class Scope {
     if (Math.hypot(x - from.x, y - from.y) < 22) return { text: 'CANCEL', sub: '', snap: 'none', key: 'none' };
     let best: { id: string; d: number } | undefined;
     for (const f of this.visibleFixes()) {
+      // snap only to points a controller would send an IFR aircraft direct to
+      if ((f.kind !== 'fix' && f.kind !== 'vor' && f.kind !== 'ndb') || /^LG0\d/.test(f.id)) continue;
       const s = this.toS(f.p);
       const d = Math.hypot(s.x - x, s.y - y);
-      if (d < 28 && (!best || d < best.d)) best = { id: f.id, d };
+      if (d < 24 && (!best || d < best.d)) best = { id: f.id, d };
     }
     if (best) return { item: { k: 'dct', fix: best.id }, text: `DCT ${best.id}`, sub: 'DCT FIX', snap: 'dct', key: 'dct' + best.id };
     const brgTrue = norm360(Math.atan2(x - from.x, -(y - from.y)) * 180 / Math.PI);

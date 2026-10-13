@@ -407,7 +407,9 @@ export class Sim implements PilotWorld {
     return full;
   }
   private queueCall(tx: Omit<Tx, 'id' | 't0' | 't1'>, notBefore: number, onStart?: () => void, priority = false) {
-    if (priority) this.queue.unshift({ tx, notBefore, onStart, priority }); else this.queue.push({ tx, notBefore, onStart });
+    // readbacks go ahead of initial calls, but stay in the order the clearances were given
+    if (priority) { let i = 0; while (i < this.queue.length && this.queue[i].priority) i++; this.queue.splice(i, 0, { tx, notBefore, onStart, priority }); }
+    else this.queue.push({ tx, notBefore, onStart });
   }
   private lastBlocked = -999;
   private pumpQueue() {
