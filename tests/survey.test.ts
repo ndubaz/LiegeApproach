@@ -13,6 +13,6 @@ it.skipIf(!(globalThis as any).process?.env?.SURVEY)('survey', () => {
     const r = assess(sim);
     const kinds: Record<string, number> = {};
     for (const e of sim.events) kinds[e.kind] = (kinds[e.kind] ?? 0) + 1;
-    console.log(`${sc.id.padEnd(18)} landed ${sim.landings.length}/${sim.arrivalsSpawned} gate=${r.gate.pass} pass=${r.pass?.ok} ${JSON.stringify(kinds)}`);
+    console.log(`${sc.id.padEnd(18)} landed ${sim.landings.length}/${sim.arrivalsSpawned} gate=${r.gate.pass} pass=${r.pass?.ok} grade=${r.grade} seq=${r.seqBest} ${JSON.stringify(kinds)}`);
   }
 });

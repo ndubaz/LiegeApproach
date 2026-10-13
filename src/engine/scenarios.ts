@@ -1,6 +1,7 @@
 import type { Scenario, SpawnSpec } from './types';
+import { durationFor, emergencyObjectives, hotStart } from './traffic';
 
-// The challenge library: 18 scripted scenarios in four tiers.
+// The challenge library: 21 scripted scenarios in four tiers.
 // Times are seconds from the start. Callsigns are realistic in format; flights are fictional.
 
 const A = (t: number, cs: string, type: string, star: string, x: Partial<SpawnSpec> = {}): SpawnSpec => ({ t, kind: 'arr', cs, type, star, spawnDist: 40, ...x });
@@ -10,7 +11,7 @@ const GOOD22 = 'EBLG 120140Z 22008KT 9999 FEW035 12/07 Q1018 NOSIG';
 const NIGHT22 = 'EBLG 120140Z 23010KT 9999 SCT030 10/06 Q1015 NOSIG';
 const GOOD04 = 'EBLG 121010Z 05012KT 9999 FEW040 14/05 Q1024 NOSIG';
 
-export const CHALLENGES: Scenario[] = [
+const LIBRARY: Scenario[] = [
   // ---------------- Tier 1: fundamentals ----------------
   {
     id: 'first-freighter', tier: 1, title: 'First freighter', seed: 101, durationMin: 20, startUtc: '02:05', metar: GOOD22, runway: '22L', readbackErr: 0,
@@ -20,10 +21,21 @@ export const CHALLENGES: Scenario[] = [
   },
   {
     id: 'trombone', tier: 1, title: 'Trombone', seed: 102, durationMin: 30, startUtc: '02:20', metar: GOOD22, runway: '22L', readbackErr: 0,
-    desc: 'Four freighters in trail on CIV7X, a minute apart. Build a sequence with speed control and 3 NM on final, or more where wake demands it.',
+    desc: 'Four freighters in trail on CIV7X, about a minute apart, handed over alternately at FL080 and FL090. Build a sequence with speed control and 3 NM on final, or more where wake demands it.',
     objective: 'Land all four with no wake infringements; final spacing within 1.5 NM of the minimum.',
-    spawns: [A(5, 'QTR8125', 'B77L', 'CIV7X'), A(65, 'TAY4EK', 'B763', 'CIV7X'), A(125, 'ETH3721', 'B77L', 'CIV7X'), A(185, 'BCS5AB', 'A306', 'CIV7X')],
+    spawns: [A(5, 'QTR8125', 'B77L', 'CIV7X'), A(65, 'TAY4EK', 'B763', 'CIV7X', { level: { fl: 90 } }), A(145, 'ETH3721', 'B77L', 'CIV7X'), A(210, 'BCS5AB', 'A306', 'CIV7X', { level: { fl: 90 } })],
     events: [], pass: { minLanded: 4, minRatings: { TRAF: 3, SEPC: 4 } },
+  },
+  {
+    id: 'first-release', tier: 1, title: 'First release', seed: 104, durationMin: 30, startUtc: '02:40', metar: GOOD22, runway: '22L', readbackErr: 0,
+    desc: 'One runway, two arrivals and three departures. Departures wait at the holding point until you release them. Release each one into a gap: never with an arrival inside 5 NM, and two minutes behind a heavier departure on the same route.',
+    objective: 'Land both arrivals and hand all three departures to Brussels with no loss of separation.',
+    briefing: 'Quiet night. 2 inbound, 3 out. Runway 22L. Tower calls when a departure is ready; you decide when it rolls.',
+    spawns: [
+      A(5, 'TAY4EK', 'B763', 'KOK7X', { spawnDist: 34 }), A(420, 'QTR8125', 'B77L', 'CIV7X'),
+      D(60, 'FDX5240', 'MD11', 'LNO9S'), D(200, 'CHG7302', 'B748', 'BUB9S'), D(560, 'ETH3730', 'B77L', 'LNO9S'),
+    ],
+    events: [], pass: { allArrivalsHandled: true, minDeparturesHandled: 3, minRatings: { SEPC: 4 } },
   },
   {
     id: 'cross-streams', tier: 1, title: 'Cross the streams', seed: 103, durationMin: 30, startUtc: '03:10', metar: GOOD22, runway: '22L', readbackErr: 0.02,
@@ -37,17 +49,28 @@ export const CHALLENGES: Scenario[] = [
   },
   // ---------------- Tier 2: Liège operations ----------------
   {
+    id: 'half-bank', tier: 2, title: 'Half bank', seed: 206, durationMin: 45, startUtc: '01:50', metar: NIGHT22, runway: '22L', readbackErr: 0.02,
+    desc: 'Seven freighters in twenty-five minutes from the west, alternating between KOK7X and CIV7X. The two streams meet at ALHUV: decide who goes first well before they get there.',
+    objective: 'Land at least six, no loss of separation, under 2 minutes holding per arrival on average.',
+    briefing: 'Half bank. 7 inbound, none out. Runway 22L. Two streams from the west merge at ALHUV.',
+    spawns: [
+      A(5, 'QTR8125', 'B77L', 'KOK7X'), A(200, 'TAY4EK', 'B763', 'CIV7X'), A(420, 'CHG201', 'B748', 'KOK7X'), A(610, 'ETH3721', 'B77L', 'CIV7X'),
+      A(840, 'BCS5AB', 'A306', 'KOK7X'), A(1050, 'FDX5203', 'MD11', 'CIV7X'), A(1260, 'CKS231', 'B744', 'KOK7X'),
+    ],
+    events: [], pass: { minLanded: 6, maxHoldMinPerArrival: 2, minRatings: { SEPC: 4, TRAF: 3 } },
+  },
+  {
     id: 'night-bank', tier: 2, title: 'Night bank', seed: 201, durationMin: 50, startUtc: '01:30', metar: NIGHT22, runway: '22L', readbackErr: 0.04,
-    desc: 'Fourteen arrivals in forty minutes: B747-8F, B777F, A330F and A300F mixed, plus outbound departures. RECAT-EU wake spacing decides the sequence.',
-    objective: 'Land at least twelve, no wake infringements, holding under 3 minutes per arrival on average.',
+    desc: 'Ten arrivals in twenty minutes: B747-8F, B777F, A330F and A300F mixed, plus two departures. RECAT-EU wake spacing decides the sequence.',
+    objective: 'Land at least nine, no wake infringements, holding under 3 minutes per arrival on average.',
+    briefing: 'Night bank. 10 inbound, 2 out. Runway 22L. Arrivals from all five STARs; the wave peaks around 01:40Z.',
     spawns: [
       A(5, 'QTR8125', 'B77L', 'KOK7X'), A(140, 'CHG201', 'B748', 'LNO6X', { spawnDist: 30 }), A(290, 'TAY4EK', 'B763', 'CIV7X'), A(410, 'ETH3721', 'B77L', 'GESLO6X'),
       A(540, 'BCS5AB', 'A306', 'NIK7X'), A(660, 'AZG7321', 'B748', 'KOK7X'), A(800, 'FDX5203', 'MD11', 'LNO6X', { spawnDist: 32 }), A(930, 'THY6411', 'A332', 'CIV7X'),
-      A(1050, 'CKS231', 'B744', 'GESLO6X'), A(1180, 'CLX7HK', 'B748', 'KOK7X'), A(1320, 'DHK7', 'B763', 'NIK7X'), A(1440, 'QTR8152', 'B77L', 'LNO6X', { spawnDist: 30 }),
-      A(1590, 'MSR555', 'A332', 'CIV7X'), A(1720, 'TAY71K', 'B744', 'KOK7X'),
-      D(400, 'FDX5240', 'MD11', 'LNO9S'), D(1300, 'CHG7302', 'B748', 'BUB9S'), D(2000, 'ETH3730', 'B77L', 'CIV5S'),
+      A(1050, 'CKS231', 'B744', 'GESLO6X'), A(1180, 'CLX7HK', 'B748', 'KOK7X'),
+      D(400, 'FDX5240', 'MD11', 'LNO9S'), D(1000, 'CHG7302', 'B748', 'BUB9S'),
     ],
-    events: [], pass: { minLanded: 12, maxHoldMinPerArrival: 3, minRatings: { SEPC: 3 } },
+    events: [], pass: { minLanded: 9, maxHoldMinPerArrival: 3, minRatings: { SEPC: 3 } },
   },
   {
     id: 'runway-change', tier: 2, title: 'Runway change', seed: 202, durationMin: 45, startUtc: '04:00', metar: 'EBLG 120400Z 24010KT 9999 FEW030 09/05 Q1012 NOSIG', runway: '22L', readbackErr: 0.03,
@@ -89,9 +112,9 @@ export const CHALLENGES: Scenario[] = [
     objective: 'Land at least eight of the eleven arrivals.',
     spawns: [
       A(5, 'BEL3EF', 'A320', 'KOK7X', { unfamiliar: true, spawnDist: 30 }), A(90, 'RYR83KM', 'B738', 'KOK7X', { unfamiliar: true, spawnDist: 34 }),
-      A(200, 'TRA6421', 'B738', 'KOK7X', { unfamiliar: true, spawnDist: 32 }), A(300, 'BEL5RK', 'A321', 'KOK7X', { unfamiliar: true, spawnDist: 36 }),
-      A(420, 'JAF4NT', 'B738', 'KOK7X', { unfamiliar: true, spawnDist: 30 }), A(560, 'RYR4VB', 'B738', 'KOK7X', { unfamiliar: true, spawnDist: 34 }),
-      A(700, 'BEL7AF', 'A320', 'KOK7X', { unfamiliar: true, spawnDist: 32 }), A(860, 'TRA6533', 'B738', 'KOK7X', { unfamiliar: true, spawnDist: 30 }),
+      A(200, 'TRA6421', 'B738', 'KOK7X', { unfamiliar: true, spawnDist: 32, level: { fl: 90 } }), A(300, 'BEL5RK', 'A321', 'KOK7X', { unfamiliar: true, spawnDist: 36 }),
+      A(420, 'JAF4NT', 'B738', 'KOK7X', { unfamiliar: true, spawnDist: 30, level: { fl: 90 } }), A(560, 'RYR4VB', 'B738', 'KOK7X', { unfamiliar: true, spawnDist: 34 }),
+      A(700, 'BEL7AF', 'A320', 'KOK7X', { unfamiliar: true, spawnDist: 32, level: { fl: 90 } }), A(860, 'TRA6533', 'B738', 'KOK7X', { unfamiliar: true, spawnDist: 30 }),
       A(120, 'QTR8125', 'B77L', 'LNO6X', { spawnDist: 30 }), A(480, 'TAY4EK', 'B763', 'CIV7X'), A(780, 'FDX5203', 'MD11', 'GESLO6X'),
     ],
     events: [{ t: 2, kind: 'note', text: 'Brussels (EBBR) closed: fog below CAT III minima. Diversions inbound from the north-west.' }],
@@ -162,6 +185,20 @@ export const CHALLENGES: Scenario[] = [
     ],
     events: [], pass: { minRatings: { SEPC: 4, WORK: 3 } },
   },
+  {
+    id: 'night-bank-full', tier: 3, title: 'Night bank (full)', seed: 307, durationMin: 50, startUtc: '01:30', metar: NIGHT22, runway: '22L', readbackErr: 0.04,
+    desc: 'Fourteen arrivals in forty minutes: B747-8F, B777F, A330F and A300F mixed, plus outbound departures. RECAT-EU wake spacing decides the sequence.',
+    briefing: 'Full night bank. 14 inbound, 3 out. Runway 22L. Wave peaks around 01:45Z; departures push from 01:52Z.',
+    objective: 'Land at least twelve, no wake infringements, holding under 3 minutes per arrival on average.',
+    spawns: [
+      A(5, 'QTR8125', 'B77L', 'KOK7X'), A(140, 'CHG201', 'B748', 'LNO6X', { spawnDist: 30 }), A(290, 'TAY4EK', 'B763', 'CIV7X'), A(410, 'ETH3721', 'B77L', 'GESLO6X'),
+      A(540, 'BCS5AB', 'A306', 'NIK7X'), A(660, 'AZG7321', 'B748', 'KOK7X'), A(800, 'FDX5203', 'MD11', 'LNO6X', { spawnDist: 32 }), A(930, 'THY6411', 'A332', 'CIV7X'),
+      A(1050, 'CKS231', 'B744', 'GESLO6X'), A(1180, 'CLX7HK', 'B748', 'KOK7X'), A(1320, 'DHK7', 'B763', 'NIK7X'), A(1440, 'QTR8152', 'B77L', 'LNO6X', { spawnDist: 30 }),
+      A(1590, 'MSR555', 'A332', 'CIV7X'), A(1720, 'TAY71K', 'B744', 'KOK7X'),
+      D(400, 'FDX5240', 'MD11', 'LNO9S'), D(1300, 'CHG7302', 'B748', 'BUB9S'), D(2000, 'ETH3730', 'B77L', 'CIV5S'),
+    ],
+    events: [], pass: { minLanded: 12, maxHoldMinPerArrival: 3, minRatings: { SEPC: 3 } },
+  },
   // ---------------- Tier 4: emergency ----------------
   {
     id: 'engine-failure', tier: 4, title: 'Engine failure on departure', seed: 401, durationMin: 35, startUtc: '03:40', metar: NIGHT22, runway: '22L', readbackErr: 0.02,
@@ -207,5 +244,29 @@ export const CHALLENGES: Scenario[] = [
     pass: { minLanded: 8, emergencyLandedWithinMin: 15 },
   },
 ];
+
+/** Challenges are hot-started (first aircraft calling at once) and end ~15 minutes after the last spawn. */
+export const CHALLENGES: Scenario[] = LIBRARY.map((sc) => {
+  const spawns = sc.spawns.map((x) => ({ ...x }));
+  hotStart(spawns);
+  const obj = emergencyObjectives(spawns).map((o) => {
+    const m = sc.pass?.emergencyLandedWithinMin;
+    if (!m) return o;
+    const t0 = o.byT - (o.text.includes('15:00') ? 15 : 12) * 60;
+    return { ...o, text: `Land ${o.cs} within ${m}:00`, byT: t0 + m * 60 };
+  });
+  return { ...sc, spawns, durationMin: durationFor(spawns), objectives: obj.length ? obj : sc.objectives };
+});
+
+/** Tier n+1 opens once every challenge in tier n is passed. */
+export function unlockedTiers(passed: Set<string>, unlockAll = false): Set<number> {
+  if (unlockAll) return new Set([1, 2, 3, 4]);
+  const tiers = new Set([1]);
+  for (let t = 1; t < 4; t++) {
+    if (!tiers.has(t)) break;
+    if (CHALLENGES.filter((c) => c.tier === t).every((c) => passed.has(c.id))) tiers.add(t + 1);
+  }
+  return tiers;
+}
 
 export const TIER_NAMES: Record<number, string> = { 1: 'Fundamentals', 2: 'Liège operations', 3: 'Abnormal', 4: 'Emergency' };

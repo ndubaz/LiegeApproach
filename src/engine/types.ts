@@ -188,7 +188,7 @@ export type SpawnSpec = {
   silent?: boolean;         // never calls (unconcerned traffic)
   goAroundAt?: number;      // forced go-around (tower) at this distance from threshold
   released?: true;          // departures: skip the release protocol and appear airborne
-  callNow?: boolean;        // arrivals: call at once on spawn
+  callNow?: boolean;        // arrivals: call at once on spawn (hot start)
 };
 
 export type ScEvent =
@@ -208,6 +208,7 @@ export interface PassCriteria {
   minRatings?: Partial<Record<Comp, number>>;
   noMissedReadbacks?: boolean;
   noTsa?: boolean;
+  minDeparturesHandled?: number;
 }
 
 export interface Scenario {
@@ -232,4 +233,6 @@ export interface Scenario {
   tutorial?: boolean;
   /** Free play: new ATIS every 30 min with QNH and wind drift. */
   atisDrift?: boolean;
+  briefing?: string;   // one-paragraph shift briefing shown before the session
+  objectives?: { cs: string; text: string; byT: number }[]; // timed objectives (emergencies), byT in sim seconds
 }
