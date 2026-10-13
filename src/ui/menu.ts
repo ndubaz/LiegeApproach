@@ -7,8 +7,12 @@ import { Sim } from '../engine/sim';
 import { windComponents } from '../engine/weather';
 import { PERF, wakeMinNm, type Recat } from '../engine/perf';
 import {
-  RANKS, bestGrade, dailyStatus, loadBest, loadLogbook, loadRecords, passedChallenges, rankOf, saveSettings, type Settings,
+  RANKS, applySave, bestGrade, careerNow, currentSummary, dailyStatus, exportSave, loadBest, loadCareer, loadDrills, loadLogbook, loadRecords, loadSettings,
+  passedChallenges, saveFileName, saveSettings, storageAvailable, validateSave, type DrillRecord, type SaveFile, type Settings,
 } from '../store';
+import { CHECKRIDES, RANK_LONG, checkrideById, type CheckrideDef, type CheckrideVerdict, type TrackLog } from '../engine/career';
+import { DRILLS, drillById, parseDrillScenario, type DrillId, type DrillVerdict } from '../engine/drills';
+import { GhostViewer, downloadCanvas, downloadText, renderPoster, type GhostData, type PosterMeta } from './poster';
 import { Attract } from './attract';
 import { SKIN } from './scope';
 import { GLOSSARY, GLOSSARY_GROUPS } from './glossary';
@@ -25,6 +29,10 @@ export interface MenuHandlers {
   startFree(o: FreePlayOpts): void;
   /** Today's daily shift. Optional so older callers keep working. */
   startDaily?(): void;
+  /** Book a checkride (career screen). */
+  startCheckride?(def: CheckrideDef): void;
+  /** Fly the next variation of a drill. */
+  startDrill?(id: DrillId): void;
   settings: Settings;
   liveMetar(): Promise<string | undefined>;
 }
@@ -54,7 +62,12 @@ export function renderHome(root: HTMLElement, hd: MenuHandlers) {
   const firstTime = tut.size === 0 && recs.length === 0;
   const now = new Date();
   const daily = dailyStatus(now);
-  const rank = rankOf(loadLogbook(), loadBest());
+  const career = careerNow();
+  const rank = career;
+  const drills = loadDrills();
+  const drillsPlayed = DRILLS.filter((d) => drills[d.id]?.passes).length;
+  const prom = career.promotion;
+  const cLine = !prom ? 'Top of the ladder. You run the room.' : prom.ready ? `Checkride for ${prom.to} is ready to book` : prom.retakeIn ? `Retake for ${prom.to} after ${prom.retakeIn} more shift${prom.retakeIn > 1 ? 's' : ''}` : `Next: ${prom.to}. ${prom.reqs.filter((r) => r.ok).length} of ${prom.reqs.length} requirements met`;
   const strip = (go: string, kind: string, code: string, name: string, line: string, stat: string, statLabel: string, extra = '') => `
     <button class="bay-strip ${kind} ${extra}" data-go="${go}">
       <span class="bs-bay mono">${code}</span>
@@ -80,8 +93,10 @@ export function renderHome(root: HTMLElement, hd: MenuHandlers) {
         ${strip('daily', 'day', 'D', 'Daily shift', dLine, String(daily.streak), daily.streak === 1 ? 'day streak' : 'day streak', daily.today ? 'played' : '')}
         ${strip('free', 'arr', 'F', 'Free play', 'Cargo night shift or your own mix of hour, weather and military activity', '∞', 'sessions')}
         ${strip('challenges', 'dep', 'C', 'Challenges', `${CHALLENGES.length} scripted scenarios, one freighter to a compound emergency`, `${passed.size}/${CHALLENGES.length}`, 'passed')}
-        ${strip('records', 'rec', 'L', 'Logbook', 'Hours, movements, best grades and your rank', String(recs.length), 'sessions')}
-        <div class="bay-row">
+        ${strip('career', 'car', 'K', 'Career', cLine, rank.name, 'rank', prom?.ready ? 'ready' : '')}
+        ${strip('drills', 'drl', 'X', 'Drills', 'Two-minute exercises: intercept, wake gap, conflict, descent, release', `${drillsPlayed}/${DRILLS.length}`, 'passed')}
+        <div class="bay-row three">
+          <button class="bay-strip mini rec" data-go="records"><span class="bs-bay mono">L</span><span class="bs-body"><b>Logbook</b><span>${recs.length} sessions, save file</span></span></button>
           <button class="bay-strip mini help" data-go="help"><span class="bs-bay mono">?</span><span class="bs-body"><b>Help</b><span>Controls and glossary</span></span></button>
           <button class="bay-strip mini set" data-go="settings"><span class="bs-bay mono">S</span><span class="bs-body"><b>Settings</b><span>Voices, labels, input</span></span></button>
         </div>
@@ -207,7 +222,7 @@ const WX: Record<string, string> = {
 };
 const plainVis = (m: number) => (m >= 9999 ? '10 km or more' : m >= 5000 ? `${Math.round(m / 1000)} km` : `${thousands(m)} m`);
 
-export interface BriefingKind { kind: 'challenge' | 'free' | 'daily' | 'shift' }
+export interface BriefingKind { kind: 'challenge' | 'free' | 'daily' | 'shift' | 'checkride' | 'drill' }
 
 export function renderBriefing(root: HTMLElement, pack: Pack, sc: Scenario, hd: { start(): void; back(): void; kind?: BriefingKind['kind'] }) {
   let sim: Sim | undefined;
@@ -215,7 +230,11 @@ export function renderBriefing(root: HTMLElement, pack: Pack, sc: Scenario, hd: 
   const w = sim?.weather;
   const rwyId = sim?.runway ?? sc.runway ?? '22L';
   const rwy = pack.runways.get(rwyId);
-  const kind = hd.kind ?? (sc.id.startsWith('daily-') ? 'daily' : sc.freePlay ? 'free' : 'challenge');
+  const kind = hd.kind ?? (sc.id.startsWith('daily-') ? 'daily' : sc.id.startsWith('checkride-') ? 'checkride' : sc.id.startsWith('drill-') ? 'drill' : sc.freePlay ? 'free' : 'challenge');
+  const ride = kind === 'checkride' ? checkrideById(sc.id) : undefined;
+  const drillP = kind === 'drill' ? parseDrillScenario(sc.id) : undefined;
+  const drill = drillP ? drillById(drillP.id) : undefined;
+  const drillRec = drillP ? loadDrills()[drillP.id] : undefined;
 
   // ---- weather in plain words
   const rows: [string, string, string][] = [];
@@ -267,7 +286,7 @@ export function renderBriefing(root: HTMLElement, pack: Pack, sc: Scenario, hd: 
   }
   const best = bestGrade(sc.id);
   const serial = String(sc.seed % 10000).padStart(4, '0');
-  const kindName = { challenge: `Challenge · Tier ${sc.tier ?? 1} ${TIER_NAMES[sc.tier ?? 1] ?? ''}`, free: 'Free play', daily: 'Daily shift', shift: 'Free play · night shift' }[kind];
+  const kindName = { challenge: `Challenge · Tier ${sc.tier ?? 1} ${TIER_NAMES[sc.tier ?? 1] ?? ''}`, free: 'Free play', daily: 'Daily shift', shift: 'Free play · night shift', checkride: `Checkride · for ${RANKS[ride?.to ?? 1]}`, drill: `Drill · variation ${drillP?.variant ?? 1}` }[kind];
   const brief = sc.briefing ? `${sc.briefing}` : '';
 
   root.innerHTML = shell(`
@@ -289,7 +308,16 @@ export function renderBriefing(root: HTMLElement, pack: Pack, sc: Scenario, hd: 
         <p class="sh-metar mono">${esc(sc.metar)}</p>
       </section>
 
-      <section class="sh-sec">
+      ${drill ? `<section class="sh-sec">
+        <h3>2 · The exercise</h3>
+        <p class="sh-goal">${esc(drill.goal)}</p>
+        <div class="sh-counts">
+          <div><b class="mono">${drillRec?.bestScore ? drillRec.bestScore : '–'}</b><span>best score</span></div>
+          <div><b class="mono">${drillRec?.bestTime !== undefined ? fmtT(drillRec.bestTime).slice(1) : '–'}</b><span>best time ${esc(drill.timeLabel)}</span></div>
+          <div><b class="mono">${drillRec?.plays ?? 0}</b><span>attempts</span></div>
+        </div>
+        <p class="sh-mix">Every attempt is a new variation. The drill ends itself as soon as the examiner can judge it.</p>
+      </section>` : `<section class="sh-sec">
         <h3>2 · Traffic expected</h3>
         <div class="sh-counts">
           <div><b class="mono">${arr.length}</b><span>arrivals</span></div>
@@ -300,7 +328,7 @@ export function renderBriefing(root: HTMLElement, pack: Pack, sc: Scenario, hd: 
         <figure class="sh-fig">${demand}<figcaption><i class="k a"></i>arrivals <i class="k d"></i>departures, per ${bin / 60} min</figcaption></figure>
         ${mix ? `<p class="sh-mix">Mostly ${esc(mix)}.</p>` : ''}
         ${planned.length ? `<ul class="sh-list">${planned.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>` : ''}
-      </section>
+      </section>`}
 
       ${sc.objectives?.length || crit.length ? `<section class="sh-sec">
         <h3>3 · ${crit.length ? 'To pass' : 'Objectives'}</h3>
@@ -310,22 +338,30 @@ export function renderBriefing(root: HTMLElement, pack: Pack, sc: Scenario, hd: 
         </ul>
       </section>` : ''}
 
-      <section class="sh-sec">
+      ${ride ? `<section class="sh-sec">
+        <h3>3 · The examiner</h3>
+        <ul class="sh-check">
+          <li><i></i>Pass the safety gate</li>
+          <li><i></i>Session graded ${GRADE_NAMES[ride.minGrade]} or better</li>
+          <li><i></i>Handle what the examiner puts in front of you. You will not be told what or when.</li>
+        </ul>
+        <p class="sh-mix">A failed checkride needs two more logged shifts before the retake.</p>
+      </section>` : drill ? '' : `<section class="sh-sec">
         <h3>${sc.objectives?.length || crit.length ? 4 : 3} · Grades</h3>
         <div class="sh-grades">
           <div class="g-pass"><b>Pass</b><p>${pc ? 'Every item above, including the safety gate.' : 'The safety gate: no loss of separation beyond the tolerance and nobody below the minimum vectoring altitude.'}</p></div>
           <div class="g-good"><b>Good</b><p>Pass, plus landings within 1.0 NM of the minimum spacing (median) and under 1 minute holding per arrival.</p></div>
           <div class="g-rated"><b>Rated</b><p>Good, plus no conflict alerts at all, pilots answered within 5 seconds (median) and 60% continuous descents.</p></div>
         </div>
-      </section>
+      </section>`}
 
       <footer class="sh-foot">
-        <div><small>Handed over by</small><span class="sh-sign">Supervisor</span></div>
+        <div><small>${ride ? 'Examiner' : 'Handed over by'}</small><span class="sh-sign">${ride ? 'Examiner' : drill ? 'Instructor' : 'Supervisor'}</span></div>
         <div><small>Taken over by</small><span class="sh-line"></span></div>
       </footer>
     </article>
     <div class="sh-actions">
-      <button class="primary take" data-a="take">Take the position</button>
+      <button class="primary take" data-a="take">${drill ? 'Start the drill' : ride ? 'Start the checkride' : 'Take the position'}</button>
     </div>
   `, false, 'briefing');
   const backBtn = document.createElement('button');
@@ -370,7 +406,7 @@ export function renderRecords(root: HTMLElement, hd: MenuHandlers) {
   const recs = loadRecords();
   const log = loadLogbook();
   const best = loadBest();
-  const rank = rankOf(log, best);
+  const rank = careerNow(log, best);
   const hrs = log.seconds / 3600;
   const ladder = RANKS.map((r, i) => `<li class="${i < rank.index ? 'done' : i === rank.index ? 'now' : ''}"><i></i><span>${r}</span></li>`).join('');
   const stat = (v: string, l: string) => `<div class="lb-stat"><b class="mono">${v}</b><span>${l}</span></div>`;
@@ -394,7 +430,7 @@ export function renderRecords(root: HTMLElement, hd: MenuHandlers) {
     <section class="lb-rank">
       <div class="lb-badge"><small>Rank</small><b>${rank.name}</b></div>
       <ol class="lb-ladder">${ladder}</ol>
-      ${rank.next ? `<div class="lb-next"><h3>For ${rank.next}</h3><ul>${rank.reqs.map((r) => `<li class="${r.ok ? 'ok' : ''}"><i>${r.ok ? '✓' : ''}</i>${esc(r.text)}</li>`).join('')}</ul></div>` : '<div class="lb-next"><h3>Top of the ladder</h3><p class="lede">You run the room now.</p></div>'}
+      ${rank.promotion ? `<div class="lb-next"><h3>For ${rank.next}</h3><ul>${rank.promotion.reqs.map((r) => `<li class="${r.ok ? 'ok' : ''}"><i>${r.ok ? '✓' : ''}</i>${esc(r.text)}${r.progress && !r.ok ? ` <small class="mono">${esc(r.progress)}</small>` : ''}</li>`).join('')}<li class="ride"><i>★</i>Then the checkride ${rank.promotion.ready ? '<b>(ready)</b>' : ''}</li></ul><button class="link" data-go="career">Career and checkrides ›</button></div>` : '<div class="lb-next"><h3>Top of the ladder</h3><p class="lede">You run the room now.</p></div>'}
     </section>
     <section class="lb-stats">
       ${stat(String(log.sessions), 'sessions')}
@@ -413,8 +449,10 @@ export function renderRecords(root: HTMLElement, hd: MenuHandlers) {
     ${weakest ? `<p class="lede">Weakest recently: <b>${COMP_PLAIN[weakest].toLowerCase()}</b>.${ch ? ` Suggested next: <button class="link" data-ch="${ch.id}">${esc(ch.title)}</button>` : ''}</p>` : ''}
     <div class="rec-wrap"><table class="rec"><thead><tr><th>Date</th><th>Session</th><th>Landed</th><th>Grade</th></tr></thead><tbody>
     ${[...recs].reverse().slice(0, 40).map((r) => { const g = r.grade ?? (r.passed ? 'pass' : r.gatePass ? 'pass' : 'fail'); return `<tr><td class="mono">${r.date.slice(5, 16).replace('T', ' ')}</td><td>${esc(r.title)}</td><td class="mono">${r.landed}/${r.arrivals}</td><td>${gradeChip(g)} ${g === 'fail' ? 'Not yet' : GRADE_NAMES[g]}</td></tr>`; }).join('')}
-    </tbody></table></div>` : '<p class="lede">No sessions yet. Your first debrief starts the logbook.</p>'}`, true, 'records');
+    </tbody></table></div>` : '<p class="lede">No sessions yet. Your first debrief starts the logbook.</p>'}
+    ${savePanelHtml()}`, true, 'records');
   root.querySelectorAll<HTMLButtonElement>('[data-ch]').forEach((b) => b.addEventListener('click', () => hd.startChallenge(CHALLENGES.find((c) => c.id === b.dataset.ch)!)));
+  wireSavePanel(root, hd, () => renderRecords(root, hd));
 }
 
 export function renderSettings(root: HTMLElement, hd: MenuHandlers) {
@@ -436,13 +474,162 @@ export function renderSettings(root: HTMLElement, hd: MenuHandlers) {
       ${radio('speedVectorMin', 'Speed vector', [['1', '1 min'], ['2', '2 min'], ['3', '3 min']])}
       <fieldset><legend>Voice speed</legend><input type="range" min="0.8" max="1.4" step="0.02" data-k="speechRate" value="${s.speechRate}"></fieldset>
     </div>
+    ${savePanelHtml()}
   `);
+  wireSavePanel(root, hd, () => renderSettings(root, hd));
   root.querySelectorAll<HTMLInputElement>('[data-k]').forEach((inp) => inp.addEventListener('change', () => {
     const k = inp.dataset.k as keyof Settings;
     const v = inp.type === 'checkbox' ? inp.checked : inp.type === 'range' ? Number(inp.value) : (['radarRefresh', 'speedVectorMin'].includes(k) ? Number(inp.value) : inp.value);
     (s as any)[k] = v;
     saveSettings(s);
   }));
+}
+
+// ===========================================================================
+// Career: the ladder, what the next promotion needs, and the checkride
+const SHORT: Record<string, string> = { Student: 'Learning the position', OJT: 'Real traffic, instructor plugged in', Validated: 'Rated for the position', Senior: 'The night bank and the abnormal', Supervisor: 'Runs the room' };
+const fmtDate = (iso?: string) => { if (!iso) return ''; const d = new Date(iso); return isNaN(+d) ? '' : `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`; };
+
+export function renderCareer(root: HTMLElement, hd: MenuHandlers) {
+  const st = careerNow();
+  const car = loadCareer();
+  const log = loadLogbook();
+  const p = st.promotion;
+  const passedRides = car.checkrides.filter((c) => c.pass).length;
+  const goodShifts = car.shifts.filter((x) => x.grade !== 'fail').length;
+  const req = (r: { text: string; ok: boolean; progress?: string }) => `<li class="${r.ok ? 'ok' : ''}"><i>${r.ok ? '✓' : ''}</i><span>${esc(r.text)}</span>${r.progress ? `<small class="mono">${esc(r.progress)}</small>` : ''}</li>`;
+  const slip = (def: CheckrideDef) => {
+    const tries = car.checkrides.filter((c) => c.id === def.id && !c.credited);
+    const lock = !p ? '' : !p.reqs.every((r) => r.ok) ? 'Meet every requirement above to book it.' : p.retakeIn ? `Retake after ${p.retakeIn} more logged shift${p.retakeIn > 1 ? 's' : ''}.` : '';
+    return `<article class="cr-slip ${p?.ready ? 'ready' : ''}">
+      <header class="mono"><span>EBLG APP · CHECKRIDE</span><span>${tries.length ? `ATTEMPT ${tries.length + 1}` : 'FIRST ATTEMPT'}</span></header>
+      <h4>${esc(def.title)}</h4>
+      <p>${esc(def.brief)}</p>
+      <ul class="cr-slip-list"><li>Pass the safety gate</li><li>Graded ${GRADE_NAMES[def.minGrade]} or better</li><li>Handle the examiner's surprises. The script is hidden.</li></ul>
+      ${tries.length ? `<p class="cr-tries mono">${tries.map((t) => `<span class="${t.pass ? 'ok' : 'no'}">${fmtDate(t.date)} ${t.pass ? 'PASSED' : 'NOT YET'}</span>`).join('')}</p>` : ''}
+      <div class="cr-slip-go">${p?.ready ? '<button class="primary" data-ride="go">Book the checkride</button>' : `<p class="cr-lock">${esc(lock)}</p>`}</div>
+    </article>`;
+  };
+  const ladder = RANKS.map((r, i) => {
+    const cls = i < st.index ? 'done' : i === st.index ? 'now' : i === st.index + 1 ? 'next' : 'later';
+    const when = i === 0 ? '' : i <= st.index ? (car.checkrides.find((c) => c.id === CHECKRIDES[i - 1].id && c.pass)?.credited ? 'carried over' : fmtDate(st.promotedOn[i])) : '';
+    return `<li class="cr-step ${cls}">
+      <div class="cr-rail"><i>${i < st.index ? '✓' : i === st.index ? '●' : ''}</i></div>
+      <div class="cr-body">
+        <header><b>${r}</b><span>${SHORT[r]}</span>${when ? `<em class="mono">${when}</em>` : cls === 'now' ? '<em class="mono now">YOU ARE HERE</em>' : ''}</header>
+        ${cls === 'next' && p ? `<div class="cr-next">
+          <ul class="cr-reqs">${p.reqs.map(req).join('')}</ul>
+          ${slip(p.checkride)}
+        </div>` : ''}
+      </div>
+    </li>`;
+  }).join('');
+  root.innerHTML = shell(`
+    <h2>Career</h2>
+    <p class="lede">From student to supervisor. Each promotion needs logged shifts at a minimum grade, a few challenges, and then a checkride with an examiner behind you. A logged shift is any free play or daily shift of 15 minutes or more.</p>
+    <section class="cr-head">
+      <div class="lb-badge"><small>Rank</small><b>${st.name}</b></div>
+      <div class="cr-who">
+        <h3>${esc(RANK_LONG[st.name])}</h3>
+        <dl class="cr-nums">
+          <div><dt>Logged shifts</dt><dd class="mono">${car.shifts.length}</dd></div>
+          <div><dt>Passed or better</dt><dd class="mono">${goodShifts}</dd></div>
+          <div><dt>Checkrides passed</dt><dd class="mono">${passedRides}</dd></div>
+          <div><dt>Hours on position</dt><dd class="mono">${(log.seconds / 3600).toFixed(1)}</dd></div>
+        </dl>
+      </div>
+    </section>
+    <ol class="cr-ladder">${ladder}</ol>
+    ${!p ? '<p class="lede">Top of the ladder. Keep the logbook going; the drills and daily shift are always there.</p>' : ''}
+  `, true, 'career');
+  root.querySelector('[data-ride="go"]')?.addEventListener('click', () => p && hd.startCheckride?.(p.checkride));
+}
+
+// ===========================================================================
+// Drills
+const DRILL_ICON: Record<DrillId, string> = {
+  intercept: '<path d="M4 30 L44 30"/><path d="M14 8 L30 30" class="hl"/><path d="M14 8 L10 4" class="dim"/>',
+  wake: '<path d="M4 24 L44 24"/><circle cx="12" cy="24" r="3" class="hl"/><circle cx="34" cy="24" r="3"/><path d="M15 14 L31 14 M15 11 L15 17 M31 11 L31 17" class="hl"/>',
+  conflict: '<path d="M6 30 L40 10" /><path d="M6 10 L40 30" class="dim"/><path d="M34 10 L40 10 L37 15" /><circle cx="23" cy="20" r="4" class="hl"/>',
+  descent: '<path d="M4 8 L16 8 L40 30 L44 30" class="hl"/><path d="M4 8 L20 8 L20 18 L30 18 L30 30 L44 30" class="dim"/>',
+  release: '<path d="M18 30 L44 30" class="hl"/><circle cx="8" cy="22" r="2.5"/><circle cx="40" cy="12" r="2.5"/><path d="M24 30 L34 22" /><path d="M31 21 L34 22 L33 25"/>',
+};
+export function renderDrills(root: HTMLElement, hd: MenuHandlers) {
+  const recs = loadDrills();
+  const card = (i: number, id: DrillId) => {
+    const d = drillById(id)!;
+    const r: DrillRecord | undefined = recs[id];
+    return `<article class="dr-card ${r?.passes ? 'passed' : ''}">
+      <header><svg viewBox="0 0 48 36" aria-hidden="true">${DRILL_ICON[id]}</svg><div><span class="mono">DRILL ${String(i + 1).padStart(2, '0')}</span><b>${esc(d.title)}</b></div></header>
+      <p>${esc(d.summary)}</p>
+      <p class="dr-goal"><span class="mono">PASS</span>${esc(d.goal)}</p>
+      <dl class="dr-best">
+        <div><dt>Best score</dt><dd class="mono">${r?.bestScore ? r.bestScore : '–'}</dd></div>
+        <div><dt>Best time</dt><dd class="mono">${r?.bestTime !== undefined ? fmtT(r.bestTime).slice(1) : '–'}</dd><small>${esc(d.timeLabel)}</small></div>
+        <div><dt>Passed</dt><dd class="mono">${r ? `${r.passes}/${r.plays}` : '0'}</dd></div>
+      </dl>
+      <button class="primary" data-drill="${id}">${r ? 'Again' : 'Fly it'}</button>
+    </article>`;
+  };
+  root.innerHTML = shell(`
+    <h2>Drills</h2>
+    <p class="lede">Two-minute exercises, one skill each. Every attempt is a new variation and the drill ends itself as soon as it can be judged. Fast-forward is fine: the score does not care.</p>
+    <div class="dr-grid">${DRILLS.map((d, i) => card(i, d.id)).join('')}</div>
+  `, true, 'drills');
+  root.querySelectorAll<HTMLButtonElement>('[data-drill]').forEach((b) => b.addEventListener('click', () => hd.startDrill?.(b.dataset.drill as DrillId)));
+}
+
+// ===========================================================================
+// Save file: export and import (Logbook and Settings)
+function savePanelHtml(): string {
+  const ok = storageAvailable();
+  return `<section class="panel save-file" data-e="save">
+    <h3>Save file</h3>
+    <p>${ok ? 'Your progress lives in this browser only. Export it to keep a backup or to carry it to another device, then import it there.' : 'This browser is not letting the game store anything (a private window, or site data blocked), so nothing will be kept after you close it. You can still import a save to play with it for now.'}</p>
+    <div class="sf-actions">
+      <button class="sf-btn" data-sf="export">Export save</button>
+      <label class="sf-btn">Import save<input type="file" accept="application/json,.json" data-sf="file"></label>
+    </div>
+    <div class="sf-confirm" data-sf="confirm" hidden></div>
+    <p class="sf-status" data-sf="status" role="status"></p>
+  </section>`;
+}
+function wireSavePanel(root: HTMLElement, hd: MenuHandlers, rerender: () => void) {
+  const box = root.querySelector<HTMLElement>('[data-e="save"]');
+  if (!box) return;
+  const status = box.querySelector<HTMLElement>('[data-sf="status"]')!;
+  const confirm = box.querySelector<HTMLElement>('[data-sf="confirm"]')!;
+  const file = box.querySelector<HTMLInputElement>('[data-sf="file"]')!;
+  const say = (t: string, bad = false) => { status.textContent = t; status.classList.toggle('bad', bad); };
+  box.querySelector('[data-sf="export"]')!.addEventListener('click', () => {
+    try {
+      const f = exportSave();
+      downloadText(JSON.stringify(f, null, 1), saveFileName());
+      say(`Saved ${Object.keys(f.keys).length} items to ${saveFileName()}.`);
+    } catch { say('Could not create the save file in this browser.', true); }
+  });
+  file.addEventListener('change', async () => {
+    const f = file.files?.[0];
+    file.value = '';
+    if (!f) return;
+    let text = '';
+    try { text = await f.text(); } catch { say('Could not read that file.', true); return; }
+    const v = validateSave(text);
+    if (!v.ok) { say(v.error, true); confirm.hidden = true; return; }
+    const cur = currentSummary();
+    say('');
+    confirm.hidden = false;
+    confirm.innerHTML = `<p><b>Replace your progress?</b> This browser has ${cur.sessions} session${cur.sessions === 1 ? '' : 's'} at ${cur.rank}. The file has ${v.summary.sessions} session${v.summary.sessions === 1 ? '' : 's'} at ${v.summary.rank}${v.summary.exported ? `, saved ${fmtDate(v.summary.exported)}` : ''}. Everything here will be replaced, including settings. This cannot be undone.</p>
+      <div class="sf-actions"><button class="sf-btn danger" data-sf="yes">Replace my progress</button><button class="sf-btn" data-sf="no">Cancel</button></div>`;
+    confirm.querySelector('[data-sf="no"]')!.addEventListener('click', () => { confirm.hidden = true; say('Import cancelled. Nothing changed.'); });
+    confirm.querySelector('[data-sf="yes"]')!.addEventListener('click', () => {
+      const r = applySave(v.save as SaveFile);
+      if (!r.ok) { confirm.hidden = true; say(r.error, true); return; }
+      Object.assign(hd.settings, loadSettings());
+      rerender();
+      root.querySelector<HTMLElement>('[data-sf="status"]')?.replaceChildren(document.createTextNode(`Save loaded: ${v.summary.sessions} sessions, rank ${v.summary.rank}.`));
+    });
+  });
 }
 
 // ===========================================================================
@@ -648,10 +835,49 @@ export function debriefData(sim: Sim): DebriefData {
 const STAMP: Record<Grade, string> = { fail: 'FAIL', pass: 'PASS', good: 'GOOD', rated: 'RATED' };
 const NEXT_GRADE: Record<Grade, string> = { fail: 'To pass', pass: 'For GOOD', good: 'For RATED', rated: '' };
 
-export function renderDebrief(root: HTMLElement, r: Result, hd: { replay(t: number): void; retry(): void; home(): void; next?: () => void }, data?: DebriefData) {
+/** Career extras on the debrief: all optional, so the debrief renders exactly as before without them. */
+export interface DebriefExtra {
+  pack?: Pack;
+  /** 3 to 5 lines from the supervisor, and the rank they were written for. */
+  supervisor?: { lines: string[]; rank: string };
+  checkride?: { title: string; verdict: CheckrideVerdict; promotedTo?: string };
+  drill?: { title: string; verdict: DrillVerdict; timeLabel: string; best?: DrillRecord; newScore?: boolean; newTime?: boolean; again(): void; list(): void };
+  /** Runs the expert over the same seed (slow: call on demand). */
+  ghost?: () => Promise<GhostData>;
+  poster?: { tracks: TrackLog; meta: PosterMeta };
+}
+
+function drillPanel(x: NonNullable<DebriefExtra['drill']>): string {
+  const v = x.verdict;
+  const best = x.best;
+  return `<section class="db-drill ${v.pass ? 'ok' : 'no'}">
+    <div class="dd-score"><b class="mono">${v.pass ? v.score : '–'}</b><small>${v.pass ? 'score' : 'not passed'}</small></div>
+    <div class="dd-body">
+      <p class="db-kind mono">${esc(x.title)} · ${v.pass ? 'PASSED' : 'NOT YET'}</p>
+      <h3>${esc(v.why)}</h3>
+      ${v.facts.length ? `<p class="dd-facts mono">${v.facts.map((f) => `<span>${esc(f)}</span>`).join('')}<span>${fmtT(v.timeS).slice(1)} ${esc(x.timeLabel)}</span></p>` : ''}
+      <p class="dd-best">${x.newScore ? '<b>New best score.</b> ' : ''}${x.newTime ? '<b>New best time.</b> ' : ''}${best?.bestScore ? `Best ${best.bestScore}${best.bestTime !== undefined ? ` · ${fmtT(best.bestTime).slice(1)} ${esc(x.timeLabel)}` : ''} · passed ${best.passes} of ${best.plays}` : 'No pass yet.'}</p>
+    </div>
+    <div class="dd-go"><button class="primary" data-a="again">Next variation</button><button data-a="drills">All drills</button></div>
+  </section>`;
+}
+function examPanel(x: NonNullable<DebriefExtra['checkride']>): string {
+  const v = x.verdict;
+  return `<section class="db-exam ${v.pass ? 'ok' : 'no'}">
+    <header class="mono"><span>EXAMINER'S REPORT</span><span>${esc(x.title.replace(/^Checkride: /, ''))}</span></header>
+    <div class="ex-stamp"><span>${v.pass ? 'PASSED' : 'NOT YET'}</span></div>
+    <p class="ex-lead">${esc(v.report[0])}</p>
+    <ol class="ex-items">${v.items.map((i) => `<li class="${i.ok ? 'ok' : 'no'}"><i>${i.ok ? '✓' : '✗'}</i><div><b>${esc(i.text)}</b><span>${esc(i.note)}</span></div></li>`).join('')}</ol>
+    ${v.report.length > 1 ? `<p class="ex-sum">${esc(v.report[v.report.length - 1])}</p>` : ''}
+    ${x.promotedTo ? `<p class="ex-promo">Promoted to <b>${esc(x.promotedTo)}</b></p>` : ''}
+    <footer><small>Examiner</small><span class="sh-sign">Examiner</span></footer>
+  </section>`;
+}
+
+export function renderDebrief(root: HTMLElement, r: Result, hd: { replay(t: number): void; retry(): void; home(): void; next?: () => void }, data?: DebriefData, extra?: DebriefExtra) {
   const pips = (v: number | null) => v === null ? '<span class="na">n/a, no evidence</span>' : `<span class="pips" aria-label="${v} of 5">${[1, 2, 3, 4, 5].map((i) => `<i class="${i <= v ? 'on' : ''} r${v}"></i>`).join('')}</span><b class="mono">${v}</b>`;
   const end = data?.endReason === 'complete' ? 'Traffic complete' : data?.endReason === 'time' ? 'Session time up' : data?.endReason === 'manual' ? 'Ended by you' : '';
-  const g = r.grade;
+  const g: Grade = extra?.drill ? (extra.drill.verdict.pass ? 'pass' : 'fail') : r.grade;
   const sug = r.suggested ? CHALLENGES.find((c) => c.id === r.suggested) : undefined;
   const objs = r.objectives ?? [];
   root.innerHTML = `
@@ -665,7 +891,10 @@ export function renderDebrief(root: HTMLElement, r: Result, hd: { replay(t: numb
         </div>
         <div class="db-stamp g-${g}"><span>${STAMP[g]}</span></div>
       </header>
-      ${g !== 'rated' && r.gradeNotes.length ? `<section class="db-notes g-${g}"><h3>${NEXT_GRADE[g]}</h3><ul>${r.gradeNotes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></section>` : g === 'rated' ? '<section class="db-notes g-rated"><h3>Top grade</h3><p>Safe, tight and quiet. Nothing left to ask for.</p></section>' : ''}
+      ${extra?.drill ? drillPanel(extra.drill) : ''}
+      ${extra?.checkride ? examPanel(extra.checkride) : ''}
+      ${extra?.supervisor ? `<section class="db-sup"><header><span class="mono">SUP</span><b>From your supervisor</b><small>${esc(extra.supervisor.rank)}</small></header>${extra.supervisor.lines.map((l) => `<p>${esc(l)}</p>`).join('')}</section>` : ''}
+      ${extra?.drill ? '' : g !== 'rated' && r.gradeNotes.length ? `<section class="db-notes g-${g}"><h3>${NEXT_GRADE[g]}</h3><ul>${r.gradeNotes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></section>` : g === 'rated' ? '<section class="db-notes g-rated"><h3>Top grade</h3><p>Safe, tight and quiet. Nothing left to ask for.</p></section>' : ''}
       ${objs.length ? `<ul class="db-objs">${objs.map((o) => `<li class="${o.met ? 'met' : 'miss'}"><i>${o.met ? '✓' : '✗'}</i>${esc(o.text)}</li>`).join('')}</ul>` : ''}
 
       ${data?.trace && data.trace.lanes.length ? `<section class="panel db-tl"><h3>Session timeline <small>one lane per aircraft</small></h3><div class="tl-host" data-e="tl"></div>
@@ -694,6 +923,16 @@ export function renderDebrief(root: HTMLElement, r: Result, hd: { replay(t: numb
         </div>
       </div>
       <section class="panel db-narr"><h3>Instructor's notes</h3>${r.narrative.map((n) => `<p>${esc(n)}</p>`).join('')}</section>
+      ${extra?.ghost || extra?.poster ? `<section class="panel db-look"><h3>Look back <small>${extra.ghost ? 'your shift against the expert\'s, and a poster of the night' : 'a poster of the night'}</small></h3>
+        <div class="lk-row">
+          ${extra.poster ? `<figure class="lk-poster"><canvas data-e="poster" aria-label="Session poster"></canvas></figure>` : ''}
+          <div class="lk-side">
+            ${extra.ghost ? `<p>The expert is a scripted controller flown over the same traffic and the same seed. It is good, not perfect. Watch both scopes side by side and see where you parted ways.</p><button class="primary" data-a="ghost">Watch the expert</button>` : ''}
+            ${extra.poster ? `<p>Every track tonight as a trail of light: pale high, white low, red where an alert went off, bright threads down the final.</p><button data-a="poster">Save poster</button><span class="lk-status" data-e="pstatus"></span>` : ''}
+          </div>
+        </div>
+        <div class="lk-ghost" data-e="ghost" hidden></div>
+      </section>` : ''}
       <div class="db-actions">
         <button class="primary" data-a="retry">Try again</button>
         ${r.suggested && hd.next ? `<button data-a="next">Next: ${esc(sug?.title ?? 'suggested challenge')}</button>` : ''}
@@ -705,6 +944,7 @@ export function renderDebrief(root: HTMLElement, r: Result, hd: { replay(t: numb
   root.querySelector('[data-a="retry"]')!.addEventListener('click', hd.retry);
   root.querySelector('[data-a="home"]')!.addEventListener('click', hd.home);
   root.querySelector('[data-a="next"]')?.addEventListener('click', () => hd.next?.());
+  if (extra) wireDebriefExtra(root, extra);
   if (data) {
     const tl = root.querySelector<HTMLElement>('[data-e="tl"]');
     const gp = root.querySelector<HTMLElement>('[data-e="gap"]');
@@ -717,6 +957,40 @@ export function renderDebrief(root: HTMLElement, r: Result, hd: { replay(t: numb
     const ro = new ResizeObserver(() => { const w = (tl ?? gp)?.clientWidth ?? 0; if (Math.abs(w - lastW) > 2) { lastW = w; draw(); } });
     if (tl || gp) ro.observe((tl ?? gp)!);
   }
+}
+function wireDebriefExtra(root: HTMLElement, x: DebriefExtra) {
+  root.querySelector('[data-a="again"]')?.addEventListener('click', () => x.drill?.again());
+  root.querySelector('[data-a="drills"]')?.addEventListener('click', () => x.drill?.list());
+  const pc = root.querySelector<HTMLCanvasElement>('[data-e="poster"]');
+  if (pc && x.poster && x.pack) {
+    const paint = () => { try { renderPoster(pc, x.pack!, x.poster!.tracks, x.poster!.meta); } catch { /* the debrief works without the poster */ } };
+    setTimeout(paint, 60);
+    root.querySelector('[data-a="poster"]')?.addEventListener('click', async () => {
+      const st = root.querySelector<HTMLElement>('[data-e="pstatus"]');
+      if (!pc.width || pc.width < 400) paint();
+      const ok = await downloadCanvas(pc, `liege-approach-${x.poster!.meta.dateText.replace(/\s+/g, '-').toLowerCase()}-${x.poster!.meta.seed}.png`);
+      if (st) st.textContent = ok ? 'Saved.' : 'This browser would not save the image.';
+    });
+  }
+  const gb = root.querySelector<HTMLButtonElement>('[data-a="ghost"]');
+  const host = root.querySelector<HTMLElement>('[data-e="ghost"]');
+  let viewer: GhostViewer | undefined;
+  gb?.addEventListener('click', async () => {
+    if (!x.ghost || !host || !x.pack) return;
+    if (viewer) { host.hidden = !host.hidden; gb.textContent = host.hidden ? 'Watch the expert' : 'Hide the expert'; return; }
+    gb.disabled = true;
+    gb.textContent = 'Flying the expert\'s shift…';
+    try {
+      const d = await x.ghost();
+      host.hidden = false;
+      viewer = new GhostViewer(host, x.pack, d);
+      gb.textContent = 'Hide the expert';
+      host.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch {
+      gb.textContent = 'The expert could not be replayed';
+    }
+    gb.disabled = false;
+  });
 }
 const LEGEND: [string, string][] = [['arr', 'arrival'], ['dep', 'departure'], ['oth', 'other'], ['final', 'on the localizer'], ['hold', 'holding'], ['inb', 'calling in'], ['xfr', 'handed off'], ['red', 'conflict'], ['amb', 'go-around'], ['land', 'landed']];
 /** Legend entries for what actually appears on this session's timeline. */

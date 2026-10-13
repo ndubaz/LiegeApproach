@@ -17,8 +17,15 @@ import type { Scenario } from './engine/types';
 import type { Clearance } from './engine/clearance';
 import { Game, type GameOpts } from './ui/game';
 import { Radio } from './ui/audio';
-import { loadSettings, saveRecord } from './store';
-import { debriefData, renderBriefing, renderChallenges, renderDebrief, renderFree, renderHelp, renderHome, renderRecords, renderSettings, renderTutorial, startTrace, stopAttract, type MenuHandlers } from './ui/menu';
+import { careerNow, loadSettings, nextDrillVariant, recordCheckride, saveDrillResult, saveRecord } from './store';
+import {
+  debriefData, renderBriefing, renderCareer, renderChallenges, renderDebrief, renderDrills, renderFree, renderHelp, renderHome, renderRecords, renderSettings, renderTutorial,
+  startTrace, stopAttract, type DebriefExtra, type MenuHandlers,
+} from './ui/menu';
+import { RANKS, attachExaminer, bestExpertAsync, checkrideById, chipControl, examinerVerdict, firstDivergence, reportInputOf, sampleTracks, supervisorReport, type ExamState } from './engine/career';
+import { attachDrill, drillById, drillScenario, drillSolver, drillVerdict, parseDrillScenario } from './engine/drills';
+import { GRADE_NAMES } from './engine/assess';
+import type { GhostData } from './ui/poster';
 import { LESSONS, coachFor } from './ui/tutorial';
 
 if (!__SINGLE__ && 'serviceWorker' in navigator) registerSW({ immediate: true });
@@ -50,7 +57,43 @@ const handlers: MenuHandlers & { startLesson(i: number): void } = {
   startChallenge: (sc) => brief(sc, 'challenges'),
   startFree: (o: FreePlayOpts) => brief(freePlay(pack, o), 'free'),
   startDaily: () => brief(dailyShift(pack, new Date()), 'home'),
+  startCheckride: (def) => brief(def.scenario, 'career'),
+  startDrill: (id) => brief(drillScenario(pack, id, nextDrillVariant(id)), 'drills'),
 };
+
+/** Session hooks every Sim gets: assessment snapshots, the debrief timeline, 4 s track samples, and the examiner or drill script. */
+function attachSession(sim: Sim, sc: Scenario) {
+  track(sim);
+  startTrace(sim);
+  sampleTracks(sim, 4);
+  const ride = checkrideById(sc.id);
+  if (ride) attachExaminer(sim, ride);
+  const dr = parseDrillScenario(sc.id);
+  if (dr) attachDrill(sim, drillById(dr.id)!);
+}
+
+/** The expert's run over the same seed, for "Watch the expert". Challenges, checkrides and drills only. */
+function ghostFor(sc: Scenario, sim: Sim, playerGrade: string): (() => Promise<GhostData>) | undefined {
+  const ride = checkrideById(sc.id);
+  const dr = parseDrillScenario(sc.id);
+  const isChallenge = CHALLENGES.some((c) => c.id === sc.id);
+  if (!ride && !dr && !isChallenge) return undefined;
+  const playerTracks = sampleTracks(sim);
+  const playerCmds = sim.cmdLog.slice();
+  const rw = sim.rwy;
+  let cached: Promise<GhostData> | undefined;
+  return () => cached ??= (async () => {
+    const attach = (s: Sim) => { if (ride) attachExaminer(s, ride); if (dr) attachDrill(s, drillById(dr.id)!); };
+    const ctrls = dr ? { solution: drillSolver(drillById(dr.id)!) } : undefined;
+    const ex = await bestExpertAsync(pack, sc, attach, ctrls);
+    const div = firstDivergence({ cmds: playerCmds, tracks: playerTracks }, { cmds: ex.cmds, tracks: ex.tracks }, { crs: rw.crs, magVar: pack.meta.magVar });
+    const dv = dr ? drillVerdict(ex.sim) : undefined;
+    return {
+      player: playerTracks, expert: ex.tracks, div, startUtc: sc.startUtc, runway: sim.runway, playerGrade,
+      expertGrade: dv ? (dv.pass ? `score ${dv.score}` : 'not passed') : GRADE_NAMES[ex.result.grade],
+    };
+  })();
+}
 
 /** The handover sheet before every session; "Take the position" starts it. */
 function brief(sc: Scenario, back: string) {
@@ -68,6 +111,7 @@ function go(screen: string) {
   const map: Record<string, () => void> = {
     home: () => renderHome(app, handlers), free: () => renderFree(app, handlers), challenges: () => renderChallenges(app, handlers),
     records: () => renderRecords(app, handlers), tutorial: () => renderTutorial(app, handlers), settings: () => renderSettings(app, handlers), help: () => renderHelp(app), daily: () => handlers.startDaily!(),
+    career: () => renderCareer(app, handlers), drills: () => renderDrills(app, handlers),
   };
   (map[screen] ?? map.home)();
   window.scrollTo(0, 0);
@@ -89,7 +133,7 @@ function play(sc: Scenario, replay?: { cmds: { t: number; cl: Clearance }[]; unt
   game?.destroy();
   document.body.classList.add('in-game');
   /** Called by Game as soon as its Sim exists (before a replay fast-forwards), if Game supports it. */
-  const onSim = (sim: Sim) => { track(sim); startTrace(sim); };
+  const onSim = (sim: Sim) => attachSession(sim, sc);
   const opts: GameOpts = {
     replay,
     coach,
@@ -97,13 +141,56 @@ function play(sc: Scenario, replay?: { cmds: { t: number; cl: Clearance }[]; unt
     onQuit: () => go('home'),
     onEnd: (r, sim) => {
       const data = debriefData(sim);
+      const ride = checkrideById(sc.id);
+      const dr = parseDrillScenario(sc.id);
+      const rankBefore = careerNow().index;
       if (!replay) saveRecord(r, {
         moves: sim.landings.length + sim.departuresHandled,
         departures: sim.departuresHandled,
         emergencies: sim.emergencies.map((e) => ({ cs: e.cs, type: e.type, landed: e.landedT !== undefined })),
         seconds: sim.t,
-        counts: !sc.tutorial,
+        counts: !sc.tutorial && !dr,
       });
+      const extra: DebriefExtra = { pack };
+      if (ride) {
+        const verdict = examinerVerdict(sim, ride, r, (sim as any)._exam as ExamState | undefined);
+        if (!replay) recordCheckride(ride.id, verdict.pass, verdict.score);
+        const after = careerNow().index;
+        extra.checkride = { title: ride.title, verdict, promotedTo: !replay && after > rankBefore ? RANKS[after] : undefined };
+      }
+      if (dr) {
+        const def = drillById(dr.id)!;
+        const verdict = drillVerdict(sim)!;
+        const saved = replay ? undefined : saveDrillResult(dr.id, dr.variant, verdict);
+        extra.drill = {
+          title: def.title, verdict, timeLabel: def.timeLabel, best: saved?.record, newScore: saved?.newScore && !!saved.prev?.passes, newTime: saved?.newTime && !!saved.prev?.passes,
+          again: () => handlers.startDrill!(dr.id), list: () => go('drills'),
+        };
+      }
+      if (!sc.tutorial) {
+        const rank = careerNow();
+        extra.supervisor = {
+          rank: `To: ${rank.name === 'OJT' ? 'OJT trainee' : rank.name}`,
+          lines: supervisorReport(reportInputOf(r, rank.index, {
+            departures: sim.departuresHandled,
+            emergencies: sim.emergencies.map((e) => ({ cs: e.cs, landed: e.landedT !== undefined })),
+            endedEarly: sim.endReason === 'manual' && !dr && sim.t < sim.durationS * 0.6,
+            checkride: extra.checkride ? { pass: extra.checkride.verdict.pass } : undefined,
+            drill: extra.drill ? { pass: extra.drill.verdict.pass, score: extra.drill.verdict.score, title: extra.drill.title } : undefined,
+          })),
+        };
+        extra.ghost = ghostFor(sc, sim, extra.drill ? (extra.drill.verdict.pass ? `score ${extra.drill.verdict.score}` : 'not passed') : GRADE_NAMES[r.grade]);
+        const now = new Date();
+        extra.poster = {
+          tracks: sampleTracks(sim),
+          meta: {
+            title: sc.title.replace(/^Free play · /, ''), kind: ride ? 'Checkride' : dr ? 'Drill' : sc.id.startsWith('daily-') ? 'Daily shift' : sc.freePlay ? 'Free play' : 'Challenge',
+            dateText: `${now.getDate()} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][now.getMonth()]} ${now.getFullYear()}`,
+            utcSpan: `${sim.utc(0).slice(0, 5)}–${sim.utc().slice(0, 5)}`, landed: sim.landings.length, departures: sim.departuresHandled, moves: sim.landings.length + sim.departuresHandled,
+            runway: sim.runway, grade: GRADE_NAMES[r.grade], rank: rank.name, seed: sc.seed,
+          },
+        };
+      }
       const cmds = sim.cmdLog.slice();
       game = undefined;
       document.body.classList.remove('in-game');
@@ -111,8 +198,8 @@ function play(sc: Scenario, replay?: { cmds: { t: number; cl: Clearance }[]; unt
         replay: (t) => play(sc, { cmds: cmds.filter((c) => c.t < t), until: t }),
         retry: () => brief(sc.freePlay ? { ...sc } : sc, 'home'),
         home: () => go('home'),
-        next: r.suggested ? () => { const n = CHALLENGES.find((c) => c.id === r.suggested); if (n) brief(n, 'challenges'); } : undefined,
-      }, data);
+        next: r.suggested && !dr ? () => { const n = CHALLENGES.find((c) => c.id === r.suggested); if (n) brief(n, 'challenges'); } : undefined,
+      }, data, extra);
       window.scrollTo(0, 0);
     },
   };
@@ -126,4 +213,4 @@ app.addEventListener('click', (e) => {
 
 document.fonts?.ready.then(() => game?.scope.draw(performance.now()));
 go('home');
-(window as any).__lgg = { pack, get game() { return game; }, play, brief, autoControl, lesson, LESSONS, CHALLENGES, lastScenario: () => lastScenario };
+(window as any).__lgg = { pack, get game() { return game; }, play, brief, autoControl, lesson, LESSONS, CHALLENGES, lastScenario: () => lastScenario, go, handlers, dev: { drillSolver, drillById, chipControl } };
