@@ -5,7 +5,7 @@ import { Sim } from '../src/engine/sim';
 import type { Scenario, SimEvent, SpawnSpec } from '../src/engine/types';
 import { CHALLENGES, unlockedTiers } from '../src/engine/scenarios';
 import { assess, explain, liveStats, seqChain, track } from '../src/engine/assess';
-import { dailyShift, freePlay, handoverViolations, SHIFT_PHASES, type FreePlayOpts } from '../src/engine/traffic';
+import { dailyShift, freePlay, handoverViolations, shiftPhases, type FreePlayOpts } from '../src/engine/traffic';
 import { PERF } from '../src/engine/perf';
 import { dist } from '../src/geo';
 import { autoControl } from './auto';
@@ -70,7 +70,7 @@ describe('free-play traffic generation', () => {
     const W = 60 * 60;
     for (let seed = 1; seed <= 20; seed++) {
       const sc = freePlay(pack, { ...opts('shift', seed), emergencies: false });
-      const ph = (n: string) => SHIFT_PHASES.find((p) => p.name === n)!;
+      const ph = (n: string) => shiftPhases(W).find((p) => p.name === n)!;
       for (const s of sc.spawns) {
         const x = s.t / W;
         if (s.kind === 'arr' && s.t > 2 && x < ph('warmup').to) warm++;
@@ -79,9 +79,12 @@ describe('free-play traffic generation', () => {
         if (s.kind === 'dep' && x >= ph('crossover').from) depLate++;
       }
     }
-    const warmRate = warm / (0.15 * 20), bankRate = bank / (0.35 * 20);
+    const P = shiftPhases(W);
+    const warmRate = warm / (P[0].to * 20), bankRate = bank / ((P[1].to - P[1].from) * 20);
     expect(bankRate).toBeGreaterThan(2 * warmRate);
     expect(depLate).toBeGreaterThan(3 * depBank);
+    // the warm-up is short: the bank starts within 4 minutes, so the first quarter hour is busy
+    expect(P[1].from * W).toBeLessThanOrEqual(240);
   });
 
   it('the shift draws events from the deck and briefs them', () => {

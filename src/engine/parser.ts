@@ -12,6 +12,7 @@ import type { Item } from './clearance';
 //              TWR | BRU | MUAC | BEEK | MIL   transfer
 //              SQ4521                     squawk
 //              Y | APPR  /  N | UNABLE    answer a request
+//              R | ROG  /  SB | STBY      roger (identified) / standby: answer a call
 //              BRK                        cancel approach clearance (break-off; add H040 A30)
 //              ATIS                       "information X now current, QNH ..."
 //              REL | REL AFTER QTR586 | REL/QTR586 | REL H250 A50   departure release (intercom)
@@ -102,6 +103,8 @@ export function parseShorthand(input: string, ctx: ParseCtx): ParseResult {
     else if ((m = t.match(/^SQ(?:K)?(\d{4})$/))) items.push({ k: 'sqk', code: m[1] });
     else if (t === 'Y' || t === 'APPR' || t === 'APPROVED') items.push({ k: 'appr' });
     else if (t === 'N' || t === 'UNABLE') items.push({ k: 'deny' });
+    else if (t === 'R' || t === 'ROG' || t === 'ROGER') items.push({ k: 'roger' });
+    else if (t === 'SB' || t === 'STBY' || t === 'STANDBY') items.push({ k: 'standby' });
     else if (ctx.fixes.has(t) && items.length && items[items.length - 1].k === 'hold') { /* handled */ }
     else errors.push(`Unknown: ${t}`);
   }
@@ -118,7 +121,7 @@ export function parseShorthand(input: string, ctx: ParseCtx): ParseResult {
 }
 
 function isCommand(t: string, ctx: ParseCtx) {
-  return /^(H|HDG|L|R|D|C|A|F|FL|S)\d/.test(t) || ['SMIN', 'SRES', 'DCT', 'ILS', 'RNP', 'VIS', 'HOLD', 'RON', 'TWR', 'BRU', 'MUAC', 'BEEK', 'MIL', 'Y', 'N', 'BRK', 'ATIS', 'REL', 'RH'].includes(t) || ctx.transitions.has(t);
+  return /^(H|HDG|L|R|D|C|A|F|FL|S)\d/.test(t) || ['SMIN', 'SRES', 'DCT', 'ILS', 'RNP', 'VIS', 'HOLD', 'RON', 'TWR', 'BRU', 'MUAC', 'BEEK', 'MIL', 'Y', 'N', 'BRK', 'ATIS', 'REL', 'RH', 'R', 'ROG', 'ROGER', 'SB', 'STBY', 'STANDBY'].includes(t) || ctx.transitions.has(t);
 }
 
 // ---------------- voice → shorthand ----------------
@@ -182,5 +185,7 @@ export function voiceToShorthand(transcript: string, tels: Record<string, string
   if (/resume own navigation/.test(s)) out.push('RON');
   if (/cancel approach clearance/.test(s)) out.splice(bestScore >= 2 ? 1 : 0, 0, 'BRK');
   if (/now current/.test(s)) out.push('ATIS');
+  if (/\broger\b|\bidentified\b/.test(s)) out.push('R');
+  if (/\bstand ?by\b/.test(s)) out.push('SB');
   return out.join(' ');
 }

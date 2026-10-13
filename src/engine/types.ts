@@ -109,6 +109,12 @@ export interface Aircraft {
   atisOldT?: number;
   /** Seconds of free frequency since the pilot's last unanswered call. */
   waitFree?: number;
+  /** Plain-English nature of the emergency, as the crew declared it (e.g. "Smoke in the cargo hold"), for the UI. */
+  emergencyText?: string;
+  /** The crew queried a turn of more than 200° ("confirm left turn heading 130?") and is waiting for the controller to confirm it. */
+  turnQuery?: { hdg: number; dir: 'L' | 'R'; t: number };
+  /** The controller said "standby" at this time; the pilot calls again about 45 s later if nothing follows. */
+  standbyT?: number;
 }
 
 /** Departure release request from Tower (coordinated on intercom). */
@@ -158,6 +164,9 @@ export interface Tx {
   /** 'rt' (default) is 119.280; 'icom' is the intercom: no airtime, never blocked. */
   channel?: 'rt' | 'icom';
 }
+
+/** One pair of consecutive landings on the same runway: the follower's distance from the threshold when the leader touched down. */
+export interface SpacingRecord { leader: string; follower: string; gap: number; min: number; t?: number; rwy?: string }
 
 export interface LandingRecord {
   cs: string; type: string; t: number; spawnT: number; flownNm: number; baselineNm: number; holdSec: number;

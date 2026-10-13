@@ -110,6 +110,8 @@ export function describeItem(it: Item): string {
     case 'appr': return 'approval of its request';
     case 'deny': return 'a refusal of its request';
     case 'sqk': return `squawk ${it.code}`;
+    case 'roger': return 'roger';
+    case 'standby': return 'standby';
     default: return (it as any).k === 'rel' ? 'release for take-off' : String((it as any).k);
   }
 }
@@ -208,7 +210,7 @@ export function explain(sim: Sim, e: SimEvent): string {
     case 'unanswered': {
       const t0 = e.t - 25;
       const busy = sim.cmdLog.filter((c) => c.t >= t0 && c.t <= e.t && c.cl.cs !== cs);
-      return `${cs} called at ${hhmm(sim, t0)} and waited 25 seconds. ${busy.length ? `In that time you talked to ${[...new Set(busy.map((c) => c.cl.cs))].join(', ')}` : 'You sent nothing in that time'}. A short "${cs}, Liège, roger" buys you time to plan.`;
+      return `${cs} called at ${hhmm(sim, t0)} and waited 25 seconds. ${busy.length ? `In that time you talked to ${[...new Set(busy.map((c) => c.cl.cs))].join(', ')}` : 'You sent nothing in that time'}. A quick ROGER (type R) answers the call and buys you time to plan; STANDBY (SB) if you need longer.`;
     }
     case 'late_xfr': {
       const d = e.text.match(/\(([\d.]+) NM\)/)?.[1];
@@ -395,8 +397,8 @@ export function assess(sim: Sim): Result {
     if (!sim.arrivalsSpawned) ratings.TRAF = null;
     else {
       let r = 5;
-      const eligible = Math.max(1, sim.arrivalsSpawned - sim.aircraft.filter((a) => a.kind === 'arr' && sim.t - a.spawnT < 900).length);
-      const ratio = sim.landings.length / eligible;
+      // every arrival that appeared before the end and is still airborne counts as not handled
+      const ratio = sim.landings.length / Math.max(1, sim.arrivalsSpawned);
       if (ratio < 0.9) r -= 1;
       if (ratio < 0.7) r -= 1;
       if (holdPer > 3) r -= 1;
@@ -500,16 +502,30 @@ export function assess(sim: Sim): Result {
   }
 
   // ---- Grade
-  const passed = pass ? pass.ok : gate.pass;
+  // Work done: ending early or leaving traffic unworked can never grade above a fail.
+  const moves = sim.landings.length + sim.departuresHandled;
+  const oldArr = (sim.spawnLog.length ? sim.spawnLog : sim.landings.map((l) => ({ cs: l.cs, kind: 'arr' as const, t: l.spawnT })))
+    .filter((x) => x.kind === 'arr' && x.t < sim.t - 900).map((x) => x.cs);
+  const landedSet = new Set(sim.landings.map((l) => l.cs));
+  const oldLanded = oldArr.filter((cs) => landedSet.has(cs)).length;
+  const workNotes: string[] = [];
+  if (moves === 0) workNotes.push('No traffic worked');
+  else if (!pc && oldArr.length && oldLanded / oldArr.length < 0.6) workNotes.push(`Land at least 60% of the arrivals that had time to land (you landed ${oldLanded} of ${oldArr.length})`);
+  if (pass && workNotes.length) { pass.reasons.push({ text: workNotes[0], ok: false }); pass.ok = false; }
+  const passed = (pass ? pass.ok : gate.pass) && !workNotes.length;
   const goodNeeds: string[] = [];
   if (spacingMed !== null && spacingMed > 1.0) goodNeeds.push(`Median landing spacing within 1.0 NM of the minimum (yours +${spacingMed.toFixed(1)} NM)`);
+  else if (spacingMed === null && sim.arrivalsSpawned >= 2) goodNeeds.push('Show your landing spacing: land arrivals one behind the other (no pairs this session)');
   if (holdPer > 1) goodNeeds.push(`Holding under 1 minute per arrival on average (yours ${holdPer.toFixed(1)})`);
   const ratedNeeds: string[] = [];
   if (stcaN > 0) ratedNeeds.push(`No conflict alerts at all (you had ${stcaN})`);
   if (respMed !== null && respMed > 5) ratedNeeds.push(`Answer pilots within 5 seconds on median (yours ${respMed.toFixed(1)} s)`);
+  else if (respMed === null) ratedNeeds.push('Answer pilot calls (none answered this session)');
   if (cdo !== null && cdo < 0.6) ratedNeeds.push(`At least 60% continuous descents (yours ${Math.round(cdo * 100)}%)`);
+  else if (cdo === null && sim.arrivalsSpawned > 0) ratedNeeds.push('Show continuous descents: land an arrival (none landed)');
   let grade: Grade, gradeNotes: string[];
-  if (!passed) { grade = 'fail'; gradeNotes = pass ? pass.reasons.filter((x) => !x.ok).map((x) => (x.text === 'Safety gate passed' ? 'Pass the safety gate' : x.text)) : ['Pass the safety gate: no loss of separation beyond the tolerance and nobody below the minimum vectoring altitude']; }
+  if (workNotes.length) { grade = 'fail'; gradeNotes = workNotes; }
+  else if (!passed) { grade = 'fail'; gradeNotes = pass ? pass.reasons.filter((x) => !x.ok).map((x) => (x.text === 'Safety gate passed' ? 'Pass the safety gate' : x.text)) : ['Pass the safety gate: no loss of separation beyond the tolerance and nobody below the minimum vectoring altitude']; }
   else if (goodNeeds.length) { grade = 'pass'; gradeNotes = goodNeeds; }
   else if (ratedNeeds.length) { grade = 'good'; gradeNotes = ratedNeeds; }
   else { grade = 'rated'; gradeNotes = []; }

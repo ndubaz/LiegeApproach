@@ -21,16 +21,18 @@ export type Item =
   | { k: 'brk' }                                    // cancel approach clearance (break-off)
   | { k: 'atis' }                                   // "information L now current, QNH 1016"
   | { k: 'rel'; after?: string; hdg?: number; lvl?: Level }   // departure release (intercom to Tower); hdg magnetic
-  | { k: 'relhold'; mins?: number };                // hold a departure, expect release in n minutes
+  | { k: 'relhold'; mins?: number }                 // hold a departure, expect release in n minutes
+  | { k: 'roger' }                                  // "CS, Liège Approach, identified" (first call) or "CS, roger": answers a call, no readback
+  | { k: 'standby' };                               // "CS, standby": answers a call for now; the pilot calls again if nothing follows
 
 export interface Clearance { cs: string; items: Item[] }
 
-export const ITEM_ORDER: Item['k'][] = ['rel', 'relhold', 'atis', 'brk', 'hdg', 'dct', 'trans', 'ron', 'hold', 'lvl', 'spd', 'spdmin', 'spdres', 'app', 'sqk', 'appr', 'deny', 'xfr'];
+export const ITEM_ORDER: Item['k'][] = ['roger', 'standby', 'rel', 'relhold', 'atis', 'brk', 'hdg', 'dct', 'trans', 'ron', 'hold', 'lvl', 'spd', 'spdmin', 'spdres', 'app', 'sqk', 'appr', 'deny', 'xfr'];
 export const sortItems = (items: Item[]) => [...items].sort((a, b) => ITEM_ORDER.indexOf(a.k) - ITEM_ORDER.indexOf(b.k));
 
 /** Merge a new item into a list: one item per kind (approve/deny exclusive, spd variants exclusive). */
 export function mergeItem(items: Item[], it: Item): Item[] {
-  const group = (k: Item['k']) => (k === 'spd' || k === 'spdmin' || k === 'spdres' ? 'spd' : k === 'appr' || k === 'deny' ? 'ans' : k === 'rel' || k === 'relhold' ? 'rel' : k === 'hdg' || k === 'dct' || k === 'trans' || k === 'ron' || k === 'hold' ? 'lat' : k);
+  const group = (k: Item['k']) => (k === 'spd' || k === 'spdmin' || k === 'spdres' ? 'spd' : k === 'appr' || k === 'deny' ? 'ans' : k === 'rel' || k === 'relhold' ? 'rel' : k === 'roger' || k === 'standby' ? 'ack' : k === 'hdg' || k === 'dct' || k === 'trans' || k === 'ron' || k === 'hold' ? 'lat' : k);
   return sortItems([...items.filter((x) => group(x.k) !== group(it.k)), it]);
 }
 
@@ -108,17 +110,23 @@ export interface Ctx {
   /** hold: expected approach clearance time "HHMM", or null for "no delay expected" */
   efc?: string | null;
   /** the request being answered (for approve / unable phraseology) */
-  req?: { kind: string; route?: string[]; vfr?: boolean; sqk?: string; alt?: number };
+  req?: { kind: string; route?: string[]; vfr?: boolean; sqk?: string; alt?: number; fix?: string; level?: Level };
   /** current ATIS letter (for the 'atis' item) */
   atis?: string;
   /** force the level verb (readback errors keep the controller's verb) */
   lvlVerb?: 'descend' | 'climb' | 'maintain';
+  /** level the pilot is already cleared to (re-stating it says "maintain", never "climb" or "descend") */
+  cleared?: Level;
+  /** the aircraft has not been spoken to yet: "roger" becomes "Liège Approach, identified" */
+  firstCall?: boolean;
 }
 
 export const rwySpeech = (rwy: string) => rwy.replace(/(\d+)([LRC]?)/, (_m, n, l) => `${digits(n)}${l ? ' ' + (l === 'L' ? 'left' : l === 'R' ? 'right' : 'center') : ''}`);
 const appName = (a: ApproachType) => (a === 'ILS' ? { t: 'ILS', s: 'I L S' } : a === 'RNP' ? { t: 'RNP', s: 'R N P' } : { t: 'visual', s: 'visual' });
+const levelFt = (l: Level, qnh: number) => (l.fl !== undefined ? l.fl * 100 + (qnh - 1013.25) * 27 : l.ft!);
+const sameLevel = (a: Level, b: Level) => a.fl === b.fl && a.ft === b.ft;
 export function levelVerb(l: Level, alt: number, qnh: number): 'descend' | 'climb' | 'maintain' {
-  const ft = l.fl !== undefined ? l.fl * 100 + (qnh - 1013.25) * 27 : l.ft!;
+  const ft = levelFt(l, qnh);
   return ft < alt - 50 ? 'descend' : ft > alt + 50 ? 'climb' : 'maintain';
 }
 const qnhSpeech = (q: number) => `Q N H ${digits(q)}`;
@@ -154,8 +162,13 @@ export function phraseology(cl: Clearance, ctx: Ctx): { text: string; speech: st
         if (ctx.efc === null) { t.push('no delay expected'); s.push('no delay expected'); }
         else if (ctx.efc) { t.push(`expect approach clearance at ${ctx.efc}`); s.push(`expect approach clearance at ${digits(ctx.efc)}`); }
         break;
+      case 'roger':
+        if (ctx.firstCall) { t.push('Liège Approach, identified'); s.push('Liège Approach, identified'); } else { t.push('roger'); s.push('roger'); }
+        break;
+      case 'standby': t.push('standby'); s.push('standby'); break;
       case 'lvl': {
-        const verb = ctx.lvlVerb ?? levelVerb(it.lvl, ctx.alt, ctx.qnh);
+        const same = !!ctx.cleared && sameLevel(ctx.cleared, it.lvl) && Math.abs(levelFt(it.lvl, ctx.qnh) - ctx.alt) < 400;
+        const verb = ctx.lvlVerb ?? (same ? 'maintain' : levelVerb(it.lvl, ctx.alt, ctx.qnh));
         t.push(`${verb} ${levelText(it.lvl)}`);
         s.push(`${verb} ${levelSpeech(it.lvl)}`);
         if (!qnhDone && it.lvl.ft !== undefined) { qnhDone = true; t.push(`QNH ${ctx.qnh}`); s.push(qnhSpeech(ctx.qnh)); }
@@ -183,6 +196,10 @@ export function phraseology(cl: Clearance, ctx: Ctx): { text: string; speech: st
           const alt = r.alt ?? 1500;
           t.push(`cleared to cross the control zone via ${r.route.join(', ')}, VFR, altitude ${alt.toLocaleString('en-US')} ft or below${r.sqk ? `, squawk ${r.sqk}` : ''}, QNH ${ctx.qnh}, report ${last}`);
           s.push(`cleared to cross the control zone via ${r.route.join(', ')}, V F R, ${levelSpeech({ ft: alt })} or below${r.sqk ? `, squawk ${digits(r.sqk)}` : ''}, ${qnhSpeech(ctx.qnh)}, report ${last}`);
+        } else if (r?.kind === 'direct' && r.fix) { t.push(`proceed direct ${r.fix}`); s.push(`proceed direct ${r.fix}`); }
+        else if (r?.kind === 'climb' && r.level) {
+          const verb = levelVerb(r.level, ctx.alt, ctx.qnh);
+          t.push(`${verb} ${levelText(r.level)}`); s.push(`${verb} ${levelSpeech(r.level)}`);
         } else { t.push('approved'); s.push('approved'); }
         break;
       }
@@ -219,11 +236,13 @@ export function releasePhrase(cs: string, it: Extract<Item, { k: 'rel' | 'relhol
 
 /** Pilot readback text. `wrong` optionally overrides one item with an erroneous value. */
 export function readback(cs: string, items: Item[], ctx: Ctx, wrong?: { idx: number; item: Item }): { text: string; speech: string } {
-  const its = items.map((it, i) => (wrong && wrong.idx === i ? wrong.item : it));
+  // a refusal is acknowledged, not read back ("unable, standby" is the controller's line, never the pilot's)
+  const its = items.map((it, i) => (wrong && wrong.idx === i ? wrong.item : it)).map((it): Item => (it.k === 'deny' ? { k: 'roger' } : it)).filter((it) => it.k !== 'standby');
+  if (!its.length) return { text: `roger, ${cs}`, speech: `roger, ${telephony(cs)}` };
   // a wrong level is read back with the controller's verb ("descend 5,000 ft" stays "descend")
   const orig = wrong ? items[wrong.idx] : undefined;
   const c2: Ctx = orig?.k === 'lvl' ? { ...ctx, lvlVerb: levelVerb(orig.lvl, ctx.alt, ctx.qnh) } : ctx;
-  const p = phraseology({ cs, items: its }, { ...c2, posNm: undefined });
+  const p = phraseology({ cs, items: its }, { ...c2, posNm: undefined, firstCall: false });
   // Pilots read back with the callsign at the end and drop "proceed"/"fly" filler.
   const body = (x: string, csx: string) => x.slice(csx.length + 2).replace(/^fly /, '').replace(/, fly /g, ', ').replace(/proceed direct/g, 'direct').replace(/contact /, '');
   return { text: `${body(p.text, cs)}, ${cs}`, speech: `${body(p.speech, telephony(cs))}, ${telephony(cs)}` };
@@ -249,6 +268,8 @@ export function itemChip(it: Item): string {
     case 'atis': return 'ATIS';
     case 'rel': return `REL${it.after ? ' /' + it.after : ''}${it.hdg !== undefined ? ' H' + String(it.hdg).padStart(3, '0') : ''}${it.lvl ? ' ' + (it.lvl.fl !== undefined ? 'FL' + String(it.lvl.fl).padStart(3, '0') : it.lvl.ft) : ''}`;
     case 'relhold': return `REL HOLD${it.mins ? ' ' + it.mins + ' MIN' : ''}`;
+    case 'roger': return 'ROGER';
+    case 'standby': return 'STBY';
   }
 }
 

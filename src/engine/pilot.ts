@@ -15,6 +15,8 @@ export interface PilotWorld {
   goAround(ac: Aircraft, reason: string): void;
   /** Pilot is too high to capture the glide from above and asks for vectors. */
   onTooHigh(ac: Aircraft): void;
+  /** Cleared for the ILS on a heading parallel to the final but outside the localizer: the pilot asks for vectors (once). */
+  onCannotIntercept?(ac: Aircraft): void;
   runwayBusy(): boolean;
   lvp: boolean;
 }
@@ -29,6 +31,9 @@ export function turnRate(ac: Aircraft): number {
 export function turnRadius(ac: Aircraft): number {
   return tas(ac.ias, ac.alt) / (20 * Math.PI * turnRate(ac));
 }
+
+/** Half-width of the localizer capture window at `d` NM: about 1.5 NM at 10 NM, never less than 0.3 NM. */
+export const locWindowNm = (d: number) => Math.max(0.3, d * 0.15);
 
 export function distToThr(p: XY, rwy: Runway) { return -alongTrack(p, rwy.thr, rwy.crs); }
 export function glideAlt(rwy: Runway, dthr: number) { return rwy.elevation + 50 + dthr * GS_FT_PER_NM; }
@@ -45,17 +50,33 @@ function windCorrected(ac: Aircraft, trackTrue: number, w: Weather): number {
   return norm360(trackTrue - wca);
 }
 
+/** Distance from the threshold of the stability gate (1,000 ft above the aerodrome on a 3° path). */
+export const STABLE_GATE_NM = 3.1;
+/** Deceleration on the localizer, kt per second (approach flap and gear help). */
+export const finalDecel = (ac: Aircraft) => ac.perf.decel * 1.4;
+/** Track miles a crew needs on the localizer to slow from `from` kt to within 15 kt of Vapp, plus a small margin. */
+export function decelNm(ac: Aircraft, from: number): number {
+  const dv = Math.max(0, from - (ac.perf.vapp + 15));
+  return (dv / finalDecel(ac)) * ((from + ac.perf.vapp) / 2) / 3600 + 0.4;
+}
+/** Final approach fix distance for a runway (FAF position is not in the Runway record: use the 3° path from the FAF altitude). */
+const finalFixNm = (r: Runway) => Math.max(0, (r.fafAlt - r.elevation - 50) / GS_FT_PER_NM);
+
 export function speedTarget(ac: Aircraft, world: PilotWorld): number {
   const pf = ac.perf;
   if (ac.kind === 'vfr' || ac.kind === 'heli') return pf.vfrCruise ?? pf.vcruiseLow;
-  if (ac.emergency === 'engine') return Math.min(ac.spdAssigned ?? 200, 200);
+  // one engine out: no more than 200 kt, until the localizer where it slows like everyone else
+  if (ac.emergency === 'engine' && !ac.app?.locCap) return Math.min(ac.spdAssigned ?? 200, 200);
   const app = ac.app;
   if (app && app.locCap) {
     const d = distToThr(ac.p, app.rwy);
     if (d <= 4.5) return pf.vapp;
     if (ac.spdAssigned) {
-      if (ac.spdUntil && d > ac.spdUntil) return ac.spdAssigned;
-      if (!ac.spdUntil && d > 5) return ac.spdAssigned;
+      // An open speed restriction ends at the final approach fix (about 6 NM); "until 4 NM" holds it to 4 NM.
+      // Either way the crew slows early enough to be stable at the 1,000 ft gate, whatever they were told.
+      const fafNm = Math.max(6, finalFixNm(app.rwy));
+      const release = Math.max(ac.spdUntil ?? fafNm, STABLE_GATE_NM + decelNm(ac, ac.spdAssigned));
+      if (d > release) return ac.spdAssigned;
       return pf.vapp;
     }
     if (d <= 7) return Math.max(pf.vapp, 160);
@@ -107,15 +128,24 @@ export function stepAircraft(ac: Aircraft, world: PilotWorld, dt: number) {
     const d = distToThr(ac.p, r);
     const xte = crossTrack(ac.p, r.thr, r.crs);
     const a = angDiff(r.crs, ac.trk);
-    if (d > 0.8 && d < 30 && Math.abs(a) < 100 && Math.abs(xte) < Math.max(1, d * Math.tan(35 * DEG))) {
+    if (d > 0.8 && d < 30 && Math.abs(a) < 135 && Math.abs(xte) < Math.max(1, d * Math.tan(35 * DEG))) {
       const lead = turnRadius(ac) * (1 - Math.cos(Math.abs(a) * DEG)) + 0.12;
       const converging = xte * a <= 0 || Math.abs(xte) < 0.15;
-      if (converging && Math.abs(xte) <= lead) {
+      // Nearly parallel (within 10°) and inside the localizer's full-scale deflection: the autopilot arms and
+      // captures, converging on the centreline, even from an offset or a slightly diverging heading.
+      const parallelIn = Math.abs(a) <= 10 && Math.abs(xte) <= locWindowNm(d);
+      if ((converging && Math.abs(xte) <= lead) || parallelIn) {
         ac.mode = 'LOC';
         app.locCap = true;
         app.capT = world.t;
         ac.turnDir = undefined;
       }
+    }
+    // Parallel to the final but outside the localizer, and not closing it: the crew says so, once.
+    if (!app.locCap && ac.mode === 'HDG' && !(ac as any)._noIntercept && d > 3 && d < 30 && Math.abs(a) <= 10 && Math.abs(xte) > locWindowNm(d) && Math.abs(xte) < 6
+      && ac.hdgAssigned !== undefined && Math.abs(angDiff(ac.hdg, ac.hdgAssigned)) < 3 && !(xte * a < 0 && Math.abs(a) >= 3)) {
+      (ac as any)._noIntercept = true;
+      world.onCannotIntercept?.(ac);
     }
   }
 
@@ -247,7 +277,8 @@ export function stepAircraft(ac: Aircraft, world: PilotWorld, dt: number) {
   const sT = speedTarget(ac, world);
   const dv = sT - ac.ias;
   const desc = ac.vs < -1000;
-  const rate = dv > 0 ? pf.accel : pf.decel * (desc ? 0.5 : 1) * (app?.locCap ? 1.4 : 1);
+  // descending clean halves the deceleration; on the localizer the crew uses flap and gear instead
+  const rate = dv > 0 ? pf.accel : app?.locCap ? finalDecel(ac) : pf.decel * (desc ? 0.5 : 1);
   ac.ias += clamp(dv, -rate * dt, rate * dt);
 
   // ---- Position

@@ -20,9 +20,11 @@ export function hints(sim: Sim): Hint[] {
   }
   for (const ac of sim.aircraft) {
     if (ac.remove) continue;
+    // a readback (or a say-again) is still to come: whatever was just said may already fix it
+    if (sim.readbackPending(ac.cs)) continue;
     if (ac.awaitingSince !== undefined && sim.t >= ac.awaitingSince) {
       const w = sim.t - ac.awaitingSince;
-      if (w > 15) out.push({ key: `call:${ac.cs}`, cs: ac.cs, text: `${ac.cs} has been calling for ${Math.round(w)} s. Tap the phone button to answer it.`, urgency: 50 + w });
+      if (w > 15) out.push({ key: `call:${ac.cs}`, cs: ac.cs, text: `${ac.cs} has been calling for ${Math.round(w)} s. Answer it: a quick Roger (R) or Standby (SB) buys you time.`, urgency: 50 + w });
     }
     if (ac.state !== 'assumed' || ac.radioFail) continue;
     if (ac.kind === 'arr') {

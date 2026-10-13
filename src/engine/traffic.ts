@@ -113,6 +113,19 @@ export const SHIFT_CURVE = {
   arr: [[0, 6], [0.15, 6], [0.2, 24], [0.5, 24], [0.8, 4], [1, 2]] as [number, number][],
   dep: [[0, 2], [0.15, 1], [0.5, 0], [0.8, 20], [1, 10]] as [number, number][],
 };
+/** Longest warm-up before the bank starts, seconds: the first bank arrivals call within about 4 minutes. */
+export const WARMUP_MAX_S = 240;
+/** Shift phases for a traffic window of `windowS` seconds: a warm-up of at most 4 minutes, then the bank. */
+export function shiftPhases(windowS: number): { name: Phase; from: number; to: number }[] {
+  const w = Math.min(0.15, WARMUP_MAX_S / Math.max(1, windowS));
+  return SHIFT_PHASES.map((p) => (p.name === 'warmup' ? { ...p, to: w } : p.name === 'bank' ? { ...p, from: w } : p));
+}
+/** Arrival rate curve for a traffic window of `windowS` seconds (the warm-up shortened as in shiftPhases). */
+export function shiftArrCurve(windowS: number): [number, number][] {
+  const w = shiftPhases(windowS)[0].to;
+  const ramp = Math.min(0.05, 120 / Math.max(1, windowS));
+  return [[0, 6], [w, 6], [w + ramp, 24], [0.5, 24], [0.8, 4], [1, 2]];
+}
 /** Piecewise-linear interpolation of a [x, y] curve. */
 export function curveAt(curve: [number, number][], x: number): number {
   if (x <= curve[0][0]) return curve[0][1];
@@ -346,7 +359,7 @@ function playCard(card: DeckCard, t: number, c: DeckCtx) {
 export function drawDeck(c: DeckCtx, windowS: number): { card: DeckCard; t: number; phase: Phase }[] {
   const played: { card: DeckCard; t: number; phase: Phase }[] = [];
   const used = new Set<DeckCard>();
-  for (const ph of SHIFT_PHASES) {
+  for (const ph of shiftPhases(windowS)) {
     const a = ph.from * windowS + 60, b = ph.to * windowS - 30;
     if (b <= a) continue;
     const n = c.rng.int(1, 2);
@@ -379,14 +392,15 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
   const spawns: SpawnSpec[] = [];
   const W = Math.max(10, o.durationMin - 15) * 60; // traffic window
   const shift = o.template === 'shift';
+  const arrCurve = shiftArrCurve(W);
 
-  const arrRate = (t: number) => (shift ? curveAt(SHIFT_CURVE.arr, t / W) : tpl.arrPerHr);
+  const arrRate = (t: number) => (shift ? curveAt(arrCurve, t / W) : tpl.arrPerHr);
   const depRate = (t: number) => (shift ? curveAt(SHIFT_CURVE.dep, t / W) : tpl.depPerHr);
   const arrT = poissonTimes(rng, W, arrRate, shift ? 24 : tpl.arrPerHr);
   const depT = poissonTimes(rng, W, depRate, shift ? 20 : tpl.depPerHr).filter((t) => t >= 60);
   if (!arrT.length || arrT[0] > 2) arrT.unshift(2);
   else arrT[0] = 2;
-  const bankEnd = 0.5 * W, bankStart = 0.15 * W;
+  const bankEnd = 0.5 * W, bankStart = shiftPhases(W)[1].from * W;
   for (const t of arrT) {
     const inBank = shift && t >= bankStart && t < bankEnd;
     const pax = !inBank && rng.chance(tpl.paxShare);
@@ -439,6 +453,16 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
   separateHandovers(pack, spawns);
   spaceDepartures(spawns);
   hotStart(spawns.filter((s) => s.kind === 'arr'));
+  // The session lasts exactly what the player chose: arrivals appear early enough to land
+  // (20 minutes before the end), everything else at least 10 minutes before it.
+  const endS = o.durationMin * 60;
+  const lastArr = Math.max(8 * 60, endS - 20 * 60), lastOther = Math.max(10 * 60, endS - 10 * 60);
+  for (let i = spawns.length - 1; i >= 0; i--) {
+    const s = spawns[i];
+    if (s.t > 2 && s.t > (s.kind === 'arr' ? lastArr : lastOther)) spawns.splice(i, 1);
+  }
+  for (let i = events.length - 1; i >= 0; i--) if (events[i].t >= endS) events.splice(i, 1);
+  for (let i = objectives.length - 1; i >= 0; i--) if (!spawns.some((s) => s.cs === objectives[i].cs)) objectives.splice(i, 1);
   events.sort((a, b) => a.t - b.t);
   spawns.sort((a, b) => a.t - b.t);
   objectives.push(...emergencyObjectives(spawns));
@@ -455,7 +479,7 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
   if (o.military >= 2 && !shift) parts.push('Military traffic crossing the area.');
 
   return {
-    id: 'free', title: `Free play · ${tpl.title}`, desc: 'Generated session', seed, durationMin: durationFor(spawns), startUtc: tpl.start, metar,
+    id: 'free', title: `Free play · ${tpl.title}`, desc: 'Generated session', seed, durationMin: o.durationMin, startUtc: tpl.start, metar,
     runway: rwy, spawns, events, storms, readbackErr: [0, 0.02, 0.04, 0.06, 0.08, 0.1][o.difficulty], confusion: o.difficulty >= 4, freePlay: true,
     briefing: parts.join(' '), objectives: objectives.length ? objectives : undefined,
   };

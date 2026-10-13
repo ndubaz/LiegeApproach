@@ -241,7 +241,7 @@ describe('lessons fly the way the coach says', () => {
     let hintSeen = false;
     const { sim } = walk(L('descent'), {
       step: (f) => chip(f, 'TAY4EK', 'Descend FL070'),
-      rest: (f) => lead(f, 'TAY4EK', 'ALHUV1B · 2500 · ILS 22L'),
+      rest: (f) => lead(f, 'TAY4EK', 'ALHUV1B · 3000 · ILS 22L'),
       fix: (f) => { pick(f, 'QTR8152', { k: 'lvl', lvl: { ft: 2500 } }); expect(transmit(f).warnings).toEqual([]); },
       tayTwr: { when: (f) => !!f.sim.find('TAY4EK')?.app?.locCap && !f.sim.readbackPending('TAY4EK'), do: (f) => chip(f, 'TAY4EK', '160 to 4') },
       land: { when: (f) => !!f.sim.find('QTR8152')?.app?.locCap && !f.sim.readbackPending('QTR8152'), do: (f) => chip(f, 'QTR8152', '160 to 4') },
@@ -312,7 +312,7 @@ describe('lessons fly the way the coach says', () => {
 
   it('7 transitions and the hold, and three for one runway', () => {
     const { sim } = walk(L('transitions'), {
-      trans: (f) => lead(f, 'AZG7321', 'ALHUV1A · 2500 · ILS 22L'),
+      trans: (f) => lead(f, 'AZG7321', 'ALHUV1A · 3000 · ILS 22L'),
       hold: (f) => { pick(f, 'QTR8152', { k: 'hold', fix: 'ALHUV' }); transmit(f); },
       stack: (f) => { pick(f, 'QTR8152', { k: 'lvl', lvl: { ft: 5000 } }); expect(transmit(f).warnings).toEqual([]); },
       release: (f) => lead(f, 'QTR8152', 'Leave hold'),
@@ -352,7 +352,7 @@ describe('lessons fly the way the coach says', () => {
       card: { when: (f) => !!f.sim.releases.find((r) => r.cs === 'CHG7302' && r.state === 'pending'), do: (f) => { const fdx = f.sim.find('FDX5203')!; expect(fdx.app && f.sim.dthr(fdx) < 14, 'After FDX5203 is on offer').toBeTruthy(); say(f, 'CHG7302', [{ k: 'rel', after: 'FDX5203' }]); } },
       fdx: { when: (f) => chips(f.sim, 'FDX5203').some((s) => s.label === 'Tower'), do: (f) => chip(f, 'FDX5203', 'Tower') },
       answer: (f) => { pick(f, 'CHG7302', { k: 'lvl', lvl: { fl: 60 } }); transmit(f); },
-      climb: { when: (f) => { const a = f.sim.find('CHG7302')!, z = f.sim.find('AZG7321'); return !z || (dist(a.p, z.p) > 6 && alongTrack(z.p, a.p, a.trk) < 0); }, do: (f) => chip(f, 'CHG7302', 'Climb FL090') },
+      climb: { when: (f) => { const a = f.sim.find('CHG7302')!, z = f.sim.find('AZG7321'); if (f.sim.readbackPending('CHG7302')) return false; return !z || (dist(a.p, z.p) > 6 && alongTrack(z.p, a.p, a.trk) < 0); }, do: (f) => chip(f, 'CHG7302', 'Climb FL090') },
       bru: { when: (f) => chips(f.sim, 'CHG7302').some((s) => s.label === 'Brussels'), do: (f) => chip(f, 'CHG7302', 'Brussels') },
     });
     expect(sim.events.filter((e) => ['los', 'stca', 'exit_unxfr', 'release_delay', 'airspace'].includes(e.kind))).toEqual([]);
@@ -377,9 +377,9 @@ describe('lessons fly the way the coach says', () => {
     const { sim } = walk(L('safety'), {
       clear: (f) => chip(f, 'ETH3721', 'Descend FL060'),
       negative: (f) => lead(f, 'ETH3721', 'Negative · FL060'),
-      approach: (f) => lead(f, 'ETH3721', 'ALHUV1A · 2500 · ILS 22L'),
+      approach: (f) => lead(f, 'ETH3721', 'ALHUV1A · 3000 · ILS 22L'),
       card: (f) => f.select('CLX7HK'),
-      priority: (f) => lead(f, 'CLX7HK', 'ALHUV1B · 2500 · ILS 22L'),
+      priority: (f) => lead(f, 'CLX7HK', 'Direct LIBVA'),
       ethTwr: { when: (f) => !!f.sim.find('ETH3721')?.app?.locCap && !f.sim.readbackPending('ETH3721'), do: (f) => chip(f, 'ETH3721', '160 to 4') },
       land: { when: (f) => !!f.sim.find('CLX7HK')?.app?.locCap && !f.sim.readbackPending('CLX7HK'), do: (f) => chip(f, 'CLX7HK', '160 to 4') },
     }, { answers: { spot: 1 } });
