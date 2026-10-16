@@ -17,6 +17,8 @@ import { GhostViewer, downloadCanvas, downloadText, renderPoster, type GhostData
 import { Attract } from './attract';
 import { SKIN } from './scope';
 import { GLOSSARY, GLOSSARY_GROUPS } from './glossary';
+import type { Radio } from './audio';
+import { VOICE_MODELS, neuralSupported } from '../voice/neural';
 import { LESSONS, tutorialDone, tutorialResults } from './tutorial';
 import type { Pack } from '../pack/load';
 
@@ -36,6 +38,8 @@ export interface MenuHandlers {
   startDrill?(id: DrillId): void;
   settings: Settings;
   liveMetar(): Promise<string | undefined>;
+  /** The radio, for the voice download and the sample call. */
+  radio?: Radio;
 }
 
 const shell = (inner: string, back = true, cls = '') => `
@@ -465,6 +469,9 @@ export function renderSettings(root: HTMLElement, hd: MenuHandlers) {
     <div class="form">
       ${tog('voice', 'Pilot voices', 'Spoken readbacks at 1× speed')}
       ${tog('speakAtc', 'Speak my clearances too')}
+      ${tog('speakIcom', 'Speak intercom lines', 'Tower, Brussels and the military on the landline')}
+      ${radio('voiceEngine', 'Voice engine', [['neural', 'Radio voices (download once)'], ['browser', 'This device’s voices']])}
+      ${hd.radio ? voicePanelHtml(hd.radio, s) : ''}
       ${tog('quickMode', 'Quick mode', 'Each picker choice transmits at once')}
       ${tog('trainingWheels', 'Training wheels', 'Warnings block the transmission')}
       ${tog('leftHanded', 'Left-handed layout')}
@@ -481,6 +488,7 @@ export function renderSettings(root: HTMLElement, hd: MenuHandlers) {
     ${savePanelHtml()}
   `);
   wireSavePanel(root, hd, () => renderSettings(root, hd));
+  if (hd.radio) wireVoicePanel(root, hd.radio, s);
   root.querySelectorAll<HTMLButtonElement>('[data-pedal]').forEach((b) => b.addEventListener('click', async () => {
     if (b.dataset.pedal === 'clear') { s.pedal = null; saveSettings(s); renderSettings(root, hd); return; }
     const msg = root.querySelector('[data-e="pedalMsg"]'); if (msg) msg.textContent = ' Press the pedal now (Escape to cancel)…';
@@ -503,6 +511,7 @@ export function renderSettings(root: HTMLElement, hd: MenuHandlers) {
     const v = inp.type === 'checkbox' ? inp.checked : inp.type === 'range' ? Number(inp.value) : (['radarRefresh', 'speedVectorMin'].includes(k) ? Number(inp.value) : inp.value);
     (s as any)[k] = v;
     saveSettings(s);
+    if (k === 'voiceEngine' && hd.radio) { hd.radio.engine = s.voiceEngine; renderSettings(root, hd); }
   }));
 }
 
@@ -598,6 +607,53 @@ export function renderDrills(root: HTMLElement, hd: MenuHandlers) {
     <div class="dr-grid">${DRILLS.map((d, i) => card(i, d.id)).join('')}</div>
   `, true, 'drills');
   root.querySelectorAll<HTMLButtonElement>('[data-drill]').forEach((b) => b.addEventListener('click', () => hd.startDrill?.(b.dataset.drill as DrillId)));
+}
+
+// ===========================================================================
+// Radio voices: download status, sample call, remove
+const VOICE_TOTAL_MB = Object.values(VOICE_MODELS).reduce((a, m) => a + m.mb, 0) + 4;
+function voiceStatus(r: Radio, s: Settings): string {
+  if (s.voiceEngine === 'browser') return 'Using this device’s voices. Radio voices sound like a real frequency: accents from 15 countries, VHF radio sound, hiss on weak signals.';
+  if (!neuralSupported()) return 'This browser cannot run the radio voices, so the device’s voices are used.';
+  const n = r.neural;
+  if (n.state === 'off') return `Not downloaded yet: about ${Math.round(VOICE_TOTAL_MB)} MB, once . It starts when you open a session, or tap Download now.`;
+  if (n.state === 'loading') return `Downloading ${Math.round(n.fraction * 100)} % of ${Math.round(VOICE_TOTAL_MB)} MB. Device voices fill in until it finishes.`;
+  if (n.state === 'error') return `Download failed (${[...n.failed.values()][0]}). Device voices are used. Tap Download now to retry.`;
+  const t = n.timings.length ? ` A call takes about ${(n.timings.reduce((a, b) => a + b, 0) / n.timings.length / 1000).toFixed(1)} s to prepare on this device.` : '';
+  return `Ready: ${n.ready.size} voice sets stored in this browser.${t}`;
+}
+function voicePanelHtml(r: Radio, s: Settings): string {
+  return `<fieldset class="voice-panel"><legend>Radio voices</legend>
+    <p class="dim" data-e="vstatus">${voiceStatus(r, s)}</p>
+    <div class="sf-actions">
+      ${s.voiceEngine === 'neural' && neuralSupported() && r.neural.state !== 'ready' ? '<button class="sf-btn" type="button" data-v="dl">Download now</button>' : ''}
+      <button class="sf-btn" type="button" data-v="sample">Play a sample call</button>
+      ${s.voiceEngine === 'neural' && neuralSupported() ? '<button class="sf-btn" type="button" data-v="rm">Remove download</button>' : ''}
+    </div>
+    <p class="dim small">Voices: Piper models trained on VCTK (Edinburgh, CC BY), L2-ARCTIC (Texas A&amp;M, CC BY-NC) and Thorsten Müller’s German voice (CC0); phonemes by espeak-ng (GPL-3). Generated on this device; nothing is sent anywhere.</p></fieldset>`;
+}
+const SAMPLES: [string, string][] = [
+  ['QTR8125', 'Liège Approach, Qatari eight one two five, flight level niner five descending flight level eight zero, information Lima'],
+  ['FDX5240', 'Liège Approach, FedEx five two four zero, passing two thousand three hundred feet climbing flight level six zero, L N O niner Sierra'],
+  ['BCS5AB', 'descend flight level niner zero, reduce speed to two two zero knots, Eurotrans five Alfa Bravo'],
+  ['ABR3JW', 'Contract three Juliett Whiskey, request direct Al-hoov'],
+  ['TAY4EK', 'cleared I L S approach runway two two left, Quality four Echo Kilo'],
+];
+let sampleN = 0;
+function wireVoicePanel(root: HTMLElement, r: Radio, s: Settings) {
+  const st = root.querySelector<HTMLElement>('[data-e="vstatus"]');
+  const refresh = () => { if (st?.isConnected) st.textContent = voiceStatus(r, s); else r.neural.onChange = undefined; };
+  r.neural.onChange = refresh;
+  root.querySelector('[data-v="dl"]')?.addEventListener('click', () => { r.unlock(); r.engine = 'neural'; r.loadVoices(); refresh(); });
+  root.querySelector('[data-v="sample"]')?.addEventListener('click', () => {
+    r.unlock(); r.engine = s.voiceEngine; r.enabled = true;
+    const [cs, line] = SAMPLES[sampleN++ % SAMPLES.length];
+    r.speak(line, cs, { kind: 'rt', signal: 0.45 + (sampleN % 3) * 0.25 });
+  });
+  root.querySelector('[data-v="rm"]')?.addEventListener('click', async () => {
+    try { await caches.delete('lgg-voices-v1'); } catch { /* no cache storage */ }
+    if (st) st.textContent = 'Removed from this browser. The models stay in memory until you reload the page.';
+  });
 }
 
 // ===========================================================================

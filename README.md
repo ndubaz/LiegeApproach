@@ -7,6 +7,7 @@ Not a training device. Flights are fictional. Some airspace is approximate (list
 ## What is in 1.0
 
 - **A full working position.** On a wide screen (1400 px and up) the console lays out like a real sector: strip bay on the left (offered by Brussels, landing sequence you reorder by dragging, hold stack, departures), the radar in the middle, and AMAN, coordination, comms and a monitor with a large transmit key on the right. iPad gets the same panels as tabs; the phone keeps a drawer.
+- **Radio voices.** Pilots and the other units speak with neural voices generated on the device and played through a simulated VHF radio: band-limited speech, carrier hiss that grows with distance, fading on weak signals, squelch tails. Each airline gets the accents its crews plausibly have (Indian and Arab voices for Qatar, American for FedEx, Irish for ASL Ireland, German for German operators), and every flight keeps its voice for the shift. The models download once (about 60 MB) and run offline; see `docs/VOICES.md`.
 - **Voice and push to talk.** Hold Space, a foot pedal (learned in Settings) or the mic button, say the clearance, let go. If the recognizer is sure it sends; otherwise the shorthand waits in the command line for Enter. A correction key takes back a clearance within three seconds.
 - **Coordination like the real room.** Brussels passes estimates and asks for early transfers, Tower requests departure releases, the military asks to cross, and intercom keys light up for TWR, BRU, MIL, BEEK, MUAC and the supervisor. A safety-net list shows STCA, loss of separation, Mode S level mismatch, MSAW and cleared-level deviations.
 - **Orders in one tap.** Suggestion chips, heading dial and drag, level and speed ladders, radial menu, Roger and Standby, typed shorthand with live preview, ICAO phraseology in the transcript.
@@ -51,6 +52,7 @@ Keep the repository **private**: the location pack contains transcribed AIP data
 
 Notes:
 
+- The voice models live in `public/voices/` (about 20 MB each) and are fetched by the voice worker on first use, not precached by the service worker. `vercel.json` sends cross-origin isolation headers (COOP/COEP) so the voice engine can use several CPU cores; anything loaded from another origin would now need CORS or CORP headers.
 - `api/metar.ts` is the only serverless function. It fetches the live EBLG METAR for the "Live METAR" weather option. Everything else is static.
 - Every response sends `X-Robots-Tag: noindex`. Treat the URL as private as well.
 - The service worker (`sw.js`) is served with `no-cache`, so installed copies pick up new versions on the next launch. Hashed assets are cached for a year.

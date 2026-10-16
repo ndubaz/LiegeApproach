@@ -65,6 +65,8 @@ export class Sim implements PilotWorld {
   releases: ReleaseReq[] = [];
   radarRefresh = 4;
   onTx: ((tx: Tx) => void)[] = [];
+  /** Called when a pilot call is scheduled (before it starts), so the UI can prepare its audio. Read-only. */
+  onQueue: ((tx: Pick<Tx, 'from' | 'cs' | 'text' | 'speech'>) => void)[] = [];
   /** Callsigns whose next level or heading readback will be wrong (tutorial). */
   forceWrong = new Set<string>();
   onEvent: ((e: SimEvent) => void)[] = [];
@@ -904,6 +906,7 @@ export class Sim implements PilotWorld {
     // readbacks go ahead of initial calls, but stay in the order the clearances were given
     if (priority) { let i = 0; while (i < this.queue.length && this.queue[i].priority) i++; this.queue.splice(i, 0, entry); }
     else this.queue.push(entry);
+    for (const f of this.onQueue) f(tx);
     return entry;
   }
   private lastBlocked = -999;

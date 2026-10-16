@@ -16,6 +16,10 @@ export default defineConfig(({ mode }) => {
   }
   return {
     define: { __SINGLE__: false },
+    worker: { format: 'es' },
+    // cross-origin isolation lets the voice engine use several CPU cores (same headers as vercel.json)
+    server: { headers: { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' } },
+    preview: { headers: { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' } },
     plugins: [
       VitePWA({
         registerType: 'autoUpdate',
@@ -34,7 +38,8 @@ export default defineConfig(({ mode }) => {
             { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
           ],
         },
-        workbox: { globPatterns: ['**/*.{js,css,html,svg,png,woff2}'], navigateFallbackDenylist: [/^\/api\//] },
+        // voice models and the 14 MB inference runtime are fetched on demand and kept by the voice worker, not precached
+        workbox: { globPatterns: ['**/*.{js,css,html,svg,png,woff2}'], globIgnores: ['voices/**', '**/ort-wasm*', '**/piper_phonemize*'], navigateFallbackDenylist: [/^\/api\//, /^\/voices\//] },
       }),
     ],
   };

@@ -17,6 +17,9 @@ import type { Scenario } from './engine/types';
 import type { Clearance } from './engine/clearance';
 import { Game, type GameOpts } from './ui/game';
 import { Radio } from './ui/audio';
+import { Transmission, phrases } from './voice/radio-fx';
+import { spokenText } from './voice/speech-text';
+import { castFor } from './voice/casting';
 import { careerNow, loadSettings, nextDrillVariant, recordCheckride, saveDrillResult, saveRecord } from './store';
 import {
   debriefData, renderBriefing, renderCareer, renderChallenges, renderDebrief, renderDrills, renderFree, renderHelp, renderHome, renderRecords, renderSettings, renderTutorial,
@@ -52,6 +55,7 @@ async function liveMetar(): Promise<string | undefined> {
 const handlers: MenuHandlers & { startLesson(i: number): void } = {
   pack,
   settings,
+  radio,
   startLesson: (i: number) => lesson(i),
   liveMetar,
   startChallenge: (sc) => brief(sc, 'challenges'),
@@ -214,4 +218,4 @@ app.addEventListener('click', (e) => {
 
 document.fonts?.ready.then(() => game?.scope.draw(performance.now()));
 go('home');
-(window as any).__lgg = { pack, get game() { return game; }, play, brief, autoControl, lesson, LESSONS, CHALLENGES, lastScenario: () => lastScenario, go, handlers, dev: { drillSolver, drillById, chipControl } };
+(window as any).__lgg = { pack, radio, get game() { return game; }, play, brief, autoControl, lesson, LESSONS, CHALLENGES, lastScenario: () => lastScenario, go, handlers, dev: { drillSolver, drillById, chipControl, voice: { Transmission, phrases, spokenText, castFor } } };

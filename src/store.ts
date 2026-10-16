@@ -24,12 +24,14 @@ export interface Settings {
   pttKey: string;          // KeyboardEvent.code held to talk ('' = off); pause then moves to P
   pedal: { kind: 'key'; code: string } | { kind: 'pad'; button: number; pad?: string } | null; // foot pedal binding
   voiceLang: 'en-GB' | 'en-US';
+  voiceEngine: 'neural' | 'browser'; // neural radio voices (downloaded once) or the device's voices
+  speakIcom: boolean;      // speak intercom lines from Tower, Brussels and the others
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   voice: true, speakAtc: false, speechRate: 1.08, radarRefresh: 4, quickMode: false, trainingWheels: false,
   leftHanded: false, labelSize: 'M', brightness: 'night', unlockAll: false, speedVectorMin: 1, showMva: false, showProcedures: true, hints: true,
-  pttKey: 'Space', pedal: null, voiceLang: 'en-GB',
+  pttKey: 'Space', pedal: null, voiceLang: 'en-GB', voiceEngine: 'neural', speakIcom: true,
 };
 
 const get = <T>(k: string, d: T): T => {

@@ -87,6 +87,9 @@ export class Game {
     this.radio = radio;
     this.radio.enabled = settings.voice;
     this.radio.rate = settings.speechRate;
+    this.radio.engine = settings.voiceEngine ?? 'neural';
+    // the radio voices download in the background on the first session (not on a data-saver connection)
+    if (settings.voice && !(navigator as any).connection?.saveData) this.radio.loadVoices();
     this.mic = new Mic({ lang: settings.voiceLang ?? 'en-GB', radio: this.radio });
     this.sim = new Sim(pack, sc, { radarRefresh: settings.radarRefresh });
     opts.onSim?.(this.sim);
@@ -116,6 +119,7 @@ export class Game {
       newCaller: () => { this.radio.ping(); this.interrupt(); },
     });
     this.sim.onTx.push((tx) => this.onTx(tx));
+    this.sim.onQueue.push((tx) => { if (this.speed === 1 && tx.from === 'PILOT') this.radio.prepare(tx.speech, tx.cs); });
     for (const tx of this.sim.log.slice(-12)) this.appendComms(tx);
     this.ro = new ResizeObserver(() => this.scope.resize());
     this.ro.observe(canvas);
@@ -840,10 +844,15 @@ export class Game {
     this.els.ticker.innerHTML = `<b>${esc(who)}</b> ${esc(tx.text)}`;
     this.els.ticker.className = `ticker mono ${tx.from.toLowerCase()} ${icom ? 'ic' : ''} ${tx.emergency ? 'emer' : ''}`;
     if (tx.blocked) { this.radio.blocked(); }
-    else if (icom) { if (tx.from !== 'ATC') { this.radio.intercom(); this.interrupt(); } }
+    else if (icom) {
+      if (tx.from !== 'ATC') {
+        this.radio.intercom(); this.interrupt();
+        if (this.speed === 1 && this.settings.speakIcom !== false) this.radio.speak(tx.speech || tx.text, tx.from, { kind: 'icom' });
+      }
+    }
     else if (this.speed === 1) {
-      if (tx.from === 'PILOT') this.radio.speak(tx.speech, tx.cs);
-      else if (tx.from === 'ATC' && this.settings.speakAtc) this.radio.speak(tx.speech, 'ATC', true);
+      if (tx.from === 'PILOT') this.radio.speak(tx.speech, tx.cs, { kind: 'rt', signal: this.signalOf(tx.cs) });
+      else if (tx.from === 'ATC' && this.settings.speakAtc) this.radio.speak(tx.speech, 'ATC', { kind: 'atc' });
     }
     if (tx.emergency) this.interrupt();
     if (tx.from === 'SYS') { this.toast(tx.text); this.interrupt(); }
@@ -852,6 +861,15 @@ export class Game {
       light.classList.add('busy');
       window.setTimeout(() => light.classList.remove('busy'), Math.max(600, ((tx.t1 - tx.t0) * 1000) / Math.max(1, this.speed)));
     }
+  }
+  /** Received signal strength, 0..1: falls off with distance and below the radio horizon. */
+  private signalOf(cs: string): number {
+    const a = this.sim.find(cs);
+    if (!a) return 0.8;
+    const d = Math.hypot(a.p.x, a.p.y);
+    const horizon = 1.23 * (Math.sqrt(Math.max(a.alt, 100)) + Math.sqrt(150)); // NM, aircraft and antenna heights in ft
+    const s = 1 - d / 75 - Math.max(0, d / horizon - 0.7) * 1.2;
+    return Math.max(0.1, Math.min(1, s));
   }
   private appendComms(tx: Tx) {
     const c = this.els.comms;

@@ -1,8 +1,27 @@
 import { hashStr } from '../engine/rng';
+import { NeuralVoices, neuralSupported, type ModelId } from '../voice/neural';
+import { castFor, groupsFor, type Group } from '../voice/casting';
+import { spokenText } from '../voice/speech-text';
+import { Transmission, phrases, type FxKind } from '../voice/radio-fx';
 
-// Radio audio: pilot voices via the browser's speech synthesis, framed by a
-// squelch burst and carrier click from WebAudio. Speech synthesis cannot be
-// routed through WebAudio, so the "radio" sound comes from the framing noise.
+// Radio audio. Pilot voices come from neural models run in a worker (src/voice) and are
+// played through a VHF radio chain in WebAudio; until the models are downloaded, or where
+// they cannot run, the browser's speech synthesis stands in, framed by a squelch burst and
+// carrier click (speech synthesis cannot be routed through WebAudio).
+
+export type VoiceEngine = 'neural' | 'browser';
+export interface SpeakOpts { kind?: FxKind; signal?: number }
+
+/** Novelty and effect voices some systems list as English. */
+const NOVELTY = /\b(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Deranged|Good News|Hysterical|Jester|Organ|Pipe Organ|Princess|Superstar|Trinoids|Whisper|Wobble|Zarvox|Junior|Ralph|Fred|Kathy|Grandma|Grandpa|Rocko|Shelley|Flo|Eddy|Reed|Sandy)\b/i;
+const GROUP_LANG: Partial<Record<Group, string[]>> = {
+  us: ['en-US'], ca: ['en-CA', 'en-US'], uk: ['en-GB'], scot: ['en-GB'], ie: ['en-IE', 'en-GB'], in: ['en-IN'], au: ['en-AU'], sa: ['en-ZA'],
+};
+const voiceScore = (v: SpeechSynthesisVoice) => (/natural|neural|online|premium|enhanced/i.test(v.name) ? 3 : 0) + (/google|siri|microsoft/i.test(v.name) ? 1 : 0) + (v.localService ? 0 : 0.5);
+
+type Part = Promise<{ pcm: Float32Array; sr: number } | undefined>;
+interface Job { parts: Part[]; drive: number; made: number }
+interface Lane { queue: { job: Job; at: number; kind: FxKind; signal: number; pan: number }[]; busyUntil: number; pumping: boolean; playing: Transmission[] }
 
 export class Radio {
   private ctx?: AudioContext;
@@ -14,10 +33,14 @@ export class Radio {
   sfx = true;
   /** Master volume for sound effects, 0..1. */
   volume = 1;
+  /** Neural radio voices when downloaded, else the browser's voices. */
+  engine: VoiceEngine = 'neural';
+  readonly neural = new NeuralVoices();
+  private lanes: Record<'rt' | 'icom', Lane> = { rt: { queue: [], busyUntil: 0, pumping: false, playing: [] }, icom: { queue: [], busyUntil: 0, pumping: false, playing: [] } };
 
   constructor() {
     if (typeof speechSynthesis !== 'undefined') {
-      const load = () => { this.voices = speechSynthesis.getVoices().filter((v) => v.lang.toLowerCase().startsWith('en')); };
+      const load = () => { this.voices = speechSynthesis.getVoices().filter((v) => v.lang.toLowerCase().startsWith('en') && !NOVELTY.test(v.name)).sort((a, b) => voiceScore(b) - voiceScore(a)); };
       load();
       speechSynthesis.onvoiceschanged = load;
     }
@@ -108,18 +131,94 @@ export class Radio {
     this.tone(440, 0, 0.13, 0.05, 'square');
     this.tone(554, 0.16, 0.13, 0.05, 'square');
   }
-  speak(text: string, who: string, atc = false) {
-    if (!this.enabled || typeof speechSynthesis === 'undefined' || !text) return;
+  /** Download the neural voice models (each only once). */
+  loadVoices(ids: ModelId[] = ['vctk', 'l2', 'de']) { if (this.engine === 'neural' && neuralSupported()) this.neural.load(ids); }
+  /** Neural voices are downloaded and will be used. */
+  get neuralOn() { return this.engine === 'neural' && this.neural.ready.size > 0; }
+
+  private prepared = new Map<string, Job>();
+  /** How long the last few neural calls waited before sound (ms), for the settings readout and tests. */
+  readonly startLag: number[] = [];
+  /** Start synthesizing a call the sim has scheduled, so it is ready when the pilot keys the mic. */
+  prepare(text: string, who: string) {
+    if (!this.enabled || !this.neuralOn || !text) return;
+    const key = who + '|' + text;
+    if (this.prepared.has(key)) return;
+    const job = this.makeJob(spokenText(text), who);
+    if (job) this.prepared.set(key, job);
+    const now = performance.now();
+    for (const [k, j] of this.prepared) if (now - j.made > 60_000) this.prepared.delete(k);
+  }
+  private makeJob(said: string, who: string): Job | undefined {
+    const cast = castFor(who, this.neural.ready);
+    if (!cast) return undefined;
+    const sp = cast.speaker;
+    const parts = phrases(said).map((t) => this.neural.synth({ model: sp.model, sid: sp.sid, text: t, espeak: sp.espeak, accent: sp.accent, length: cast.length / this.rate }).then((r) => r, () => undefined));
+    return { parts, drive: cast.drive, made: performance.now() };
+  }
+
+  speak(text: string, who: string, opts: boolean | SpeakOpts = false) {
+    const o: SpeakOpts = typeof opts === 'boolean' ? { kind: opts ? 'atc' : 'rt' } : opts;
+    const kind = o.kind ?? 'rt';
+    if (!this.enabled || !text) return;
+    const said = spokenText(text);
+    if (this.neuralOn && this.ctx) {
+      const key = who + '|' + text;
+      const job = this.prepared.get(key) ?? this.makeJob(said, who);
+      this.prepared.delete(key);
+      if (job) {
+        const lane = this.lanes[kind === 'icom' ? 'icom' : 'rt'];
+        lane.queue.push({ job, at: performance.now(), kind, signal: o.signal ?? 0.8, pan: kind === 'icom' ? -0.35 : 0 });
+        void this.pump(lane);
+        return;
+      }
+    }
+    this.speakBrowser(said, who, kind);
+  }
+  private async pump(lane: Lane) {
+    if (lane.pumping) return;
+    lane.pumping = true;
+    try {
+      while (lane.queue.length) {
+        const it = lane.queue.shift()!;
+        const first = await it.job.parts[0];
+        const ctx = this.ctx;
+        // a transmission that waited too long (slow phone, or the clock was paused) is old news
+        if (!first || !ctx || performance.now() - it.at > 9000 || !this.enabled) continue;
+        this.startLag.push(Math.round(performance.now() - it.at)); if (this.startLag.length > 8) this.startLag.shift();
+        const tx = new Transmission(ctx, ctx.destination, { kind: it.kind, signal: it.signal, drive: it.job.drive, pan: it.pan }, 1, Math.max(ctx.currentTime + 0.02, lane.busyUntil));
+        lane.playing.push(tx);
+        tx.add(first.pcm, first.sr);
+        for (const part of it.job.parts.slice(1)) { const r = await part; if (r && !tx.closed) tx.add(r.pcm, r.sr); }
+        const end = tx.close();
+        lane.busyUntil = end + 0.25;
+        // hold the lane until this one is nearly done, so later calls queue behind it
+        await new Promise((ok) => setTimeout(ok, Math.max(0, (end - ctx.currentTime - 0.3) * 1000)));
+        lane.playing = lane.playing.filter((x) => x.end > ctx.currentTime);
+      }
+    } finally { lane.pumping = false; }
+  }
+  private speakBrowser(text: string, who: string, kind: FxKind) {
+    if (typeof speechSynthesis === 'undefined') return;
     const u = new SpeechSynthesisUtterance(text);
     const h = hashStr(who);
-    if (this.voices.length) u.voice = atc ? this.voices[0] : this.voices[h % this.voices.length];
-    u.rate = this.rate * (atc ? 1.05 : 0.95 + ((h >> 3) % 20) / 100);
-    u.pitch = atc ? 1 : 0.8 + ((h >> 7) % 40) / 100;
-    u.volume = 0.95;
-    if (!atc) { u.onstart = () => this.click(); u.onend = () => this.squelch(); }
+    if (this.voices.length) {
+      const langs = groupsFor(who).flatMap((g) => GROUP_LANG[g] ?? []);
+      const match = this.voices.filter((v) => langs.some((l) => v.lang.replace('_', '-').startsWith(l)));
+      const pool = match.length ? match : this.voices;
+      // the best voices first: a pilot gets one of the top three of their accent
+      u.voice = kind === 'atc' ? (this.voices.find((v) => /en-GB/i.test(v.lang)) ?? this.voices[0]) : pool[h % Math.min(3, pool.length)];
+    }
+    u.rate = this.rate * (kind === 'atc' ? 1.05 : 0.95 + ((h >>> 3) % 20) / 100);
+    u.pitch = kind === 'atc' ? 1 : 0.85 + ((h >>> 7) % 30) / 100;
+    u.volume = kind === 'icom' ? 0.8 : 0.95;
+    if (kind === 'rt') { u.onstart = () => this.click(); u.onend = () => this.squelch(); }
     speechSynthesis.speak(u);
   }
-  cancel() { if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel(); }
+  cancel() {
+    if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel();
+    for (const lane of Object.values(this.lanes)) { lane.queue.length = 0; for (const p of lane.playing) p.stop(); lane.playing = []; lane.busyUntil = 0; }
+  }
 }
 
 // ---------------- speech recognition ----------------
