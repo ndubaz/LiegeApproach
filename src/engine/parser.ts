@@ -30,6 +30,8 @@ export interface ParseCtx {
   transitions: Set<string>;
   /** STAR names, to check `STAR KOK7D` (any NAME9X accepted when absent). */
   stars?: Set<string>;
+  /** The airport's stack fix, for a bare HOLD (ALHUV when absent). */
+  holdFix?: string;
 }
 
 /** Items the parser understands before the engine does. When `Item` gains these kinds, merge `ext` into `items`. */
@@ -46,16 +48,65 @@ export interface ParseResult {
   correction?: boolean;
 }
 
+/**
+ * Callsigns on frequency that a partial token could mean, best first. Tiers, in order: the whole callsign;
+ * a prefix of it (QTR8 → QTR8125); the whole digit part (8125); the end of the callsign (4EK → TAY4EK, 201 → CHG201);
+ * the start of the digit part (81 → QTR8125); anywhere in the digit part (12 → QTR8125). Within a tier the shorter
+ * callsign wins. A token of one character matches nothing.
+ */
+export function matchCallsigns(tok: string, callsigns: string[]): string[] {
+  const t = tok.toUpperCase().trim();
+  if (t.length < 2 || !/^[A-Z0-9]+$/.test(t)) return [];
+  const tail = (c: string) => c.replace(/^[A-Z]+/, '');
+  const tiers: ((c: string) => boolean)[] = [
+    (c) => c === t,
+    (c) => c.startsWith(t),
+    (c) => tail(c) === t,
+    (c) => c.endsWith(t),
+    (c) => tail(c).startsWith(t),
+    (c) => tail(c).includes(t),
+  ];
+  const out: string[] = [];
+  for (const f of tiers) for (const c of [...callsigns].sort((a, b) => a.length - b.length)) if (f(c) && !out.includes(c)) out.push(c);
+  return out;
+}
+
+/** The one callsign a partial token means, or undefined when none or more than one fits at the best tier. */
 export function resolveCallsign(tok: string, callsigns: string[]): string | undefined {
   const t = tok.toUpperCase();
   const exact = callsigns.find((c) => c === t);
   if (exact) return exact;
   if (t.length < 2) return undefined;
-  const pre = callsigns.filter((c) => c.startsWith(t));
-  if (pre.length === 1) return pre[0];
-  const numeric = /^\d+[A-Z]?$/.test(t) ? callsigns.filter((c) => c.replace(/^[A-Z]+/, '') === t) : [];
-  if (numeric.length === 1) return numeric[0];
+  const tail = (c: string) => c.replace(/^[A-Z]+/, '');
+  const tiers: ((c: string) => boolean)[] = [(c) => c.startsWith(t), (c) => tail(c) === t, (c) => c.endsWith(t), (c) => tail(c).startsWith(t), (c) => tail(c).includes(t)];
+  for (const f of tiers) {
+    const m = callsigns.filter(f);
+    if (m.length === 1) return m[0];
+    if (m.length > 1) return undefined;
+  }
   return undefined;
+}
+
+/**
+ * The fix a typed token means: exact; the only fix starting with it (LIB → LIBVA); otherwise the one fix that sounds
+ * close enough (GILO → GILOM, ALHUF → ALHUV) when it is clearly the best. Tokens shorter than two letters match nothing.
+ */
+export function resolveFix(tok: string, fixes: Set<string> | string[]): string | undefined {
+  const all = fixes instanceof Set ? [...fixes] : fixes;
+  const t = tok.toUpperCase();
+  if (all.includes(t)) return t;
+  if (t.length < 2 || !/^[A-Z][A-Z0-9]*$/.test(t)) return undefined;
+  const pre = all.filter((f) => f.startsWith(t));
+  if (pre.length === 1) return pre[0];
+  if (pre.length > 1) return undefined;
+  if (t.length < 3) return undefined;
+  let best: { f: string; s: number } | undefined, second = 0;
+  for (const f of all) {
+    if (/^LG\d/.test(f)) continue; // waypoints like LG008 are never meant by a word
+    const s = sim(t.toLowerCase(), f.toLowerCase());
+    if (!best || s > best.s) { second = best?.s ?? 0; best = { f, s }; } else if (s > second) second = s;
+  }
+  return best && best.s >= 0.6 && best.s - second >= 0.1 ? best.f : undefined;
 }
 
 export function parseShorthand(input: string, ctx: ParseCtx): ParseResult {
@@ -93,15 +144,18 @@ export function parseShorthand(input: string, ctx: ParseCtx): ParseResult {
     else if (t === 'SRES') items.push({ k: 'spdres' });
     else if (t === 'DCT' || t === 'DIR') {
       const f = toks[++i];
-      if (f && ctx.fixes.has(f)) items.push({ k: 'dct', fix: f }); else errors.push(`Unknown fix ${f ?? ''}`);
+      const fx = f ? resolveFix(f, ctx.fixes) : undefined;
+      if (fx) items.push({ k: 'dct', fix: fx }); else errors.push(`Unknown fix ${f ?? ''}`);
     } else if (t.startsWith('>')) {
       const f = t.slice(1);
-      if (ctx.fixes.has(f)) items.push({ k: 'dct', fix: f }); else errors.push(`Unknown fix ${f}`);
+      const fx = resolveFix(f, ctx.fixes);
+      if (fx) items.push({ k: 'dct', fix: fx }); else errors.push(`Unknown fix ${f}`);
     } else if ((m = t.match(/^(ILS|RNP|VIS)(\d{2}[LRC]?)?$/))) {
       items.push({ k: 'app', app: m[1] as 'ILS' | 'RNP' | 'VIS', rwy: m[2] ?? ctx.runway });
     } else if (t === 'HOLD' || t === 'HLD') {
       const f = toks[i + 1];
-      if (f && ctx.fixes.has(f)) { items.push({ k: 'hold', fix: f }); i++; } else items.push({ k: 'hold', fix: 'ALHUV' });
+      const fx = f && !isCommand(f, ctx) && !/^\d/.test(f) ? resolveFix(f, ctx.fixes) : undefined;
+      if (fx) { items.push({ k: 'hold', fix: fx }); i++; } else items.push({ k: 'hold', fix: ctx.holdFix ?? 'ALHUV' });
     } else if (ctx.transitions.has(t)) items.push({ k: 'trans', name: t });
     else if (t === 'RON' || t === 'OWN') items.push({ k: 'ron' });
     else if (t === 'TWR' || t === 'BRU' || t === 'MUAC' || t === 'BEEK' || t === 'MIL') items.push({ k: 'xfr', unit: t });
