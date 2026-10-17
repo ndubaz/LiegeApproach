@@ -156,6 +156,10 @@ export interface PackSpec {
   reservedAreasName?: string;
   /** Places and towns for the video map and the briefing (lat/lon via fixes of kind 'town'). */
   country?: 'BE' | 'DE' | 'NL' | 'FR';
+  /** Night flight restriction as published (AD 2.20), local clock times "HH:MM"; the sim starves demand between them. */
+  curfew?: { fromLocal: string; toLocal: string; note?: string };
+  /** Segregated parallel operations (AD 2.22): which runway lands and which departs when both are in use, per direction. */
+  parallelOps?: { arrivals: string; departures: string; note?: string }[];
 }
 
 export interface UnitSpec {
@@ -172,7 +176,11 @@ export interface UnitSpec {
   voices?: string[];
 }
 
-export interface OperatorSpec { op: string; types: string[]; w: number; kind?: 'arr' | 'dep' | 'both'; telephony?: string }
+export interface OperatorSpec {
+  op: string; types: string[]; w: number; kind?: 'arr' | 'dep' | 'both'; telephony?: string;
+  /** accent groups of this operator's crews when the engine's casting table has none (voice casting) */
+  voices?: string[];
+}
 export interface TrafficSpec {
   /** operators and the fleet they fly here, with weights, by period of the day */
   cargo: OperatorSpec[];
@@ -187,4 +195,8 @@ export interface TrafficSpec {
   gaPrefixes?: string[];
   /** military callsigns that cross or use the field */
   military?: OperatorSpec[];
+  /** arrival STARs and their share of the inbound flow (replaces the engine's Liège STAR tables) */
+  arrStars?: { name: string; w: number }[];
+  /** departure SIDs per runway id and their share of the outbound flow */
+  depSids?: Record<string, { name: string; w: number }[]>;
 }
