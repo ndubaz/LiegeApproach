@@ -1,7 +1,7 @@
 import type { Pack, Level } from '../pack/load';
 import { Sim, type CmdEntry } from '../engine/sim';
 import type { Aircraft, ReleaseReq, Scenario, Tx } from '../engine/types';
-import { itemChip, levelText, mergeItem, sortItems, type Clearance, type Item } from '../engine/clearance';
+import { itemChip, levelText, mergeItem, sortItems, unitName, type Clearance, type Item } from '../engine/clearance';
 import { parseShorthand, parseVoiceAlternatives } from '../engine/parser';
 import { landingOrder } from '../engine/sequence';
 import { createPtt, type PttController } from './ptt';
@@ -13,11 +13,12 @@ import { hints, type Hint } from '../engine/hints';
 import { remainNm } from '../engine/autopilot';
 import { norm360, dist, bearing } from '../geo';
 import { Scope, type QuickOption, type RadialKey } from './scope';
+import { SKIN_NAMES, type SkinName } from './skins';
 import { Mic, Radio } from './audio';
-import { GLOSSARY } from './glossary';
-import { saveSettings, type Settings } from '../store';
+import { glossaryFor } from './glossary';
+import { LEVEL_FILTERS, levelFilterId, saveSettings, type Settings } from '../store';
 import { Attention } from './commands/attention';
-import { Halo, stackFixOf } from './commands/halo';
+import { Halo } from './commands/halo';
 import { Readback } from './commands/readback';
 import { Staging } from './commands/staging';
 import { Cmdline } from './commands/cmdline';
@@ -99,9 +100,12 @@ export class Game {
   cmdline!: Cmdline;
   /** the next-call chips on offer for the selected aircraft */
   suggestions: Suggestion[] = [];
+  /** the glossary for this airport's pack (the centre's name, the stack fix, the reserved areas) */
+  gloss: Record<string, string>;
 
   constructor(public pack: Pack, public sc: Scenario, public settings: Settings, mount: HTMLElement, radio: Radio, public opts: GameOpts) {
     this.radio = radio;
+    this.gloss = glossaryFor(pack);
     this.radio.enabled = settings.voice;
     this.radio.rate = settings.speechRate;
     this.radio.engine = settings.voiceEngine ?? 'neural';
@@ -128,13 +132,17 @@ export class Game {
       field: (cs, f, at) => { this.select(cs); this.openPicker(f === 'lvl' ? 'lvl' : f === 'spd' ? 'spd' : f === 'hdg' ? 'hdg' : f === 'app' ? 'app' : 'more', at); },
       longPress: (cs) => { this.select(cs); this.openPicker('more'); },
       emptyTap: () => this.closePicker(),
-      onQuick: (cs, it) => this.quick(cs, [it]),
+      // the scope's own ladder and drag sends get the two-second undo too (only when the clearance went out)
+      onQuick: (cs, it) => { const n = this.sim.cmdLog.length; this.quick(cs, [it]); if (this.sim.cmdLog.length > n) this.armUndo(cs, itemChip(it)); },
       stage: (cs, it) => { this.select(cs); this.addItem(it, false); },
       radial: (cs, key, at) => this.onRadial(cs, key, at),
       levelOptions: (cs) => this.levelOptions(cs),
       speedOptions: (cs) => this.speedOptions(cs),
       newCaller: () => { this.radio.ping(); this.interrupt(); },
+      rangeChanged: (nm) => this.onRange(nm),
+      replayDone: () => this.toast('Replay done', 1200),
     });
+    this.applyScopeOpts();
     this.sim.onTx.push((tx) => this.onTx(tx));
     this.sim.onQueue.push((tx) => { if (this.speed === 1 && tx.from === 'PILOT') this.radio.prepare(tx.speech, tx.cs); });
     this.buildCommands();
@@ -187,6 +195,9 @@ export class Game {
   // ---------------- DOM ----------------
   private build(): HTMLElement {
     const root = h('div', `game ${this.settings.leftHanded ? 'lefty' : ''} ${this.settings.brightness}`);
+    const meta = this.pack.meta, sim = this.sim;
+    const freq = esc(meta.appFreq);
+    const sample = this.sampleCallsign();
     root.innerHTML = `
       <header class="topbar">
         <button class="tb-btn" data-a="menu" aria-label="Menu">☰</button>
@@ -194,8 +205,8 @@ export class Game {
         <div class="tag" data-e="atis">ATIS -</div>
         <div class="tag" data-e="rwy">RWY --</div>
         <div class="tag warn" data-e="lvp" hidden>LVP</div>
-        <div class="tag tb-wide" data-e="tqnh">QNH</div><div class="tag tb-wide" data-e="ttl">TL</div><div class="tag tb-wide" data-e="twind">WIND</div><div class="tag tb-wide warn" data-e="ttsa" hidden></div>
-        <div class="tx" data-e="tx" title="Frequency in use"><span></span>119.280</div>
+        <div class="tag tb-wide" data-e="tqnh">QNH</div><div class="tag tb-wide" data-e="ttl">TL</div><div class="tag tb-wide" data-e="twind">WIND</div><div class="tag tb-wide warn" data-e="ttsa" hidden></div><div class="tag tb-wide" data-e="trange" title="Range shown, NM, and the ring step">RNG</div>
+        <div class="tx" data-e="tx" title="${esc(meta.appCallsign)} ${freq}"><span></span>${freq}</div>
         <div class="stats mono" data-e="stats" title="Landed · sequence chain · delay"></div>
         <div class="grow"></div>
         <button class="tb-btn callers" data-a="next" data-e="callers" title="Who needs you next (Tab)">NEXT</button>
@@ -221,7 +232,7 @@ export class Game {
             <section class="panel strips" data-p="strips"><h3>Strips</h3><div class="strip-list" data-e="strips"></div></section>
           </div>
           <section class="panel coord" data-p="coord"><h3>Coordination <small>intercom</small></h3><div data-e="coord"></div></section>
-          <section class="panel comms" data-p="comms"><h3>Comms <span class="dim">119.280 · intercom</span></h3><div class="comms-log" data-e="comms"></div></section>
+          <section class="panel comms" data-p="comms"><h3>Comms <span class="dim">${freq} · intercom</span></h3><div class="comms-log" data-e="comms"></div></section>
         </aside>
       </main>
       <footer class="bar" data-e="bar">
@@ -242,16 +253,16 @@ export class Game {
         <div class="stq" data-e="stq" hidden></div>
         <div class="bar-grid" data-e="grid">
           <button data-p="hdg">HDG</button><button data-p="lvl">LVL</button><button data-p="spd">SPD</button><button data-p="dct">DCT</button><button data-a="app" data-e="appBtn" class="wide-only">ILS</button>
-          <button data-p="trans" class="wide-only">TRANS</button><button data-a="hold" class="wide-only">HOLD</button><button data-a="twr" class="wide-only">TWR</button><button data-a="bru" class="wide-only">BRU</button><button data-p="more">MORE</button>
+          <button data-p="trans" class="wide-only">TRANS</button><button data-a="hold" class="wide-only">HOLD</button><button data-a="twr" class="wide-only" title="${esc(unitName(sim.twr.id, sim.units).text)}">${esc(sim.twr.id)}</button><button data-a="bru" class="wide-only" title="${esc(unitName(sim.acc.id, sim.units).text)}">${esc(sim.acc.id)}</button><button data-p="more">MORE</button>
           <button class="send" data-a="send" data-e="send">TRANSMIT</button>
         </div>
         <div class="mon" data-e="mon">
           <button class="send big" data-a="send">TRANSMIT</button>
           <button class="corr" data-a="corr" data-e="corr" hidden>CORRECTION · disregard</button>
-          <div class="rx"><span class="led" data-e="rxled"></span><span class="mono">119.280</span><span class="vu" data-e="vu"><i></i><i></i><i></i><i></i><i></i></span><span class="ptt-k mono" data-e="pttk"></span></div>
+          <div class="rx"><span class="led" data-e="rxled"></span><span class="mono">${freq}</span><span class="vu" data-e="vu"><i></i><i></i><i></i><i></i><i></i></span><span class="ptt-k mono" data-e="pttk"></span></div>
           <div class="last mono" data-e="last"></div>
         </div>
-        <form class="cmd" data-e="cmdForm"><input data-e="cmd" class="mono" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Type: DHK7 L250 D40 S210 ILS · CHG7302 REL · Tab next caller · ↑↓ level ←→ heading"></form>
+        <form class="cmd" data-e="cmdForm"><input data-e="cmd" class="mono" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Type: ${esc(sample)} L250 D40 S210 ILS · ${esc(sample)} REL · Tab next caller · ↑↓ level ←→ heading"></form>
       </footer>
       <div class="picker" data-e="picker" hidden></div>
     `;
@@ -332,8 +343,52 @@ export class Game {
   }
   /** Two-second undo for a clearance just sent (Backspace, or the Undo button on the scope). */
   armUndo(cs: string, label: string) { this.halo.armUndo(cs, label); }
-  /** The airport's stack fix (ALHUV at Liège). */
-  stackFix() { return stackFixOf(this.sim); }
+  /** The airport's stack fix (ALHUV at Liège, BIKMU at Düsseldorf); for the selected arrival, the stack it is heading for. */
+  stackFix() { const ac = this.cs ? this.sim.find(this.cs) : undefined; return ac && ac.kind === 'arr' ? this.sim.stackFixOf(ac) : this.sim.stackFix; }
+  /** The fixes a controller names most: the stacks, the IF and FAF of the runway in use, the STAR and transition entry fixes. */
+  keyFixes(): string[] {
+    const sim = this.sim, rw = sim.rwy;
+    const out = new Set<string>([...sim.stackFixes(), rw.ifFix, rw.faf]);
+    for (const t of sim.pack.transitions) if (t.runways.includes(sim.runway) && t.legs[0]) out.add(t.legs[0].fix);
+    for (const st of sim.pack.stars) { if (st.legs[0]) out.add(st.legs[0].fix); const last = st.legs[st.legs.length - 1]; if (last) out.add(last.fix); }
+    return [...out].filter((f) => sim.pack.fixes.has(f));
+  }
+  /** Published holds that are not the stack: the extra places to park an aircraft. */
+  otherHolds(): string[] {
+    const stacks = this.sim.stackFixes();
+    return [...new Set(this.sim.pack.holds.map((h) => h.fix))].filter((f) => !stacks.includes(f) && this.sim.pack.fixes.has(f));
+  }
+  /** A callsign of the kind this airport sees, for the typed-line hint. */
+  private sampleCallsign() {
+    const t = this.pack.spec.traffic;
+    const op = (t?.cargo?.[0] ?? t?.pax?.[0])?.op ?? 'QTR';
+    return `${op}${String(100 + (this.sc.seed % 900))}`;
+  }
+  /** The console and scope skin: the class on the root (CSS tokens) and the scope's own colours. */
+  setSkin(name: SkinName) {
+    this.settings.brightness = name;
+    for (const n of SKIN_NAMES) this.root.classList.toggle(n.id, n.id === name);
+    this.scope.opts.skin = name;
+    this.scope.resize();
+  }
+  /** Mirror the saved scope options onto the scope (at game start and after every change). */
+  applyScopeOpts() {
+    const s = this.settings, o = this.scope.opts;
+    o.skin = (SKIN_NAMES.some((n) => n.id === s.brightness) ? s.brightness : 'night') as SkinName;
+    o.ringStep = s.ringStep ?? 5;
+    o.levelFilter = s.levelFilter ?? undefined;
+    o.sweep = !!s.sweep;
+    o.trailLen = Math.max(0, Math.min(7, s.trailLen ?? 5));
+    o.smooth = s.smooth !== false;
+    this.scope.resize();
+    this.onRange(this.rangeNm());
+  }
+  private rangeNm() { return Math.round(Math.min(this.scope.w, this.scope.h) / (2 * this.scope.scale)); }
+  /** The range tag and the zoom presets follow the scope's range. */
+  private onRange(nm: number) {
+    if (this.els.trange) this.els.trange.textContent = `RNG ${nm} · ${this.scope.opts.ringStep}`;
+    this.root.querySelectorAll<HTMLElement>('[data-z^="r"]').forEach((b) => b.classList.toggle('on', Number(b.dataset.z!.slice(1)) === nm));
+  }
 
   private onClick(e: Event) {
     const t = (e.target as HTMLElement).closest('button, .strip, [data-pick]') as HTMLElement | null;
@@ -374,8 +429,8 @@ export class Game {
       case 'kbd': { const on = this.root.classList.toggle('kbd'); if (on) (this.els.cmd as HTMLInputElement).focus(); break; }
       case 'app': if (ac) this.addItem({ k: 'app', app: 'ILS', rwy: this.sim.runway }); else this.toast('Select an aircraft first'); break;
       case 'hold': if (ac) this.addItem({ k: 'hold', fix: this.stackFix() }); else this.toast('Select an aircraft first'); break;
-      case 'twr': if (ac) this.addItem({ k: 'xfr', unit: 'TWR' }); else this.toast('Select an aircraft first'); break;
-      case 'bru': if (ac) this.addItem({ k: 'xfr', unit: 'BRU' }); else this.toast('Select an aircraft first'); break;
+      case 'twr': if (ac) this.addItem({ k: 'xfr', unit: this.sim.twr.id }); else this.toast('Select an aircraft first'); break;
+      case 'bru': if (ac) this.addItem({ k: 'xfr', unit: this.sim.acc.id }); else this.toast('Select an aircraft first'); break;
       case 'chip': { const i = Number(t.dataset.i); this.items.splice(i, 1); this.renderBar(); break; }
       case 'hint-go': if (this.hint?.cs) { this.select(this.hint.cs, true); this.scope.focus(this.sim.find(this.hint.cs)?.p ?? this.scope.center); } break;
       case 'hint-x': if (this.hint) { this.hintMuted.add(this.hint.key); this.hint = undefined; this.renderHint(); } break;
@@ -490,7 +545,7 @@ export class Game {
     return {
       callsigns: [...this.sim.aircraft.filter((a) => !a.remove).map((a) => a.cs), ...this.sim.releases.filter((r) => r.state !== 'airborne').map((r) => r.cs), ...this.sim.coordReqs.filter((r) => r.state === 'pending').map((r) => r.cs)], selected: this.cs, runway: this.sim.runway, tl: this.sim.tl,
       fixes: new Set([...this.sim.pack.fixes.keys()]), transitions: new Set(this.sim.pack.transitions.map((t) => t.name)),
-      stars: new Set(this.sim.pack.stars.map((t) => t.name)), holdFix: this.stackFix(),
+      stars: new Set(this.sim.pack.stars.map((t) => t.name)), holdFix: this.stackFix(), units: this.sim.units,
     };
   }
   previewCmd() {
@@ -602,7 +657,7 @@ export class Game {
       case 'DCT': this.openPicker('dct', at); break;
       case 'ILS': this.addItem({ k: 'app', app: 'ILS', rwy: this.sim.runway }); break;
       case 'HOLD': this.addItem({ k: 'hold', fix: this.stackFix() }); break;
-      case 'TWR': this.addItem({ k: 'xfr', unit: ac.kind === 'dep' ? 'BRU' : 'TWR' }); break;
+      case 'TWR': this.addItem({ k: 'xfr', unit: ac.kind === 'dep' ? this.sim.acc.id : this.sim.twr.id }); break;
       default: this.openPicker('more', at);
     }
   }
@@ -678,8 +733,8 @@ export class Game {
           for (const f of onRoute.slice(0, 6)) { const p = sim.pack.fixes.get(f)!.p; opt(`DCT ${f}`, f, 'special', `${p3(norm360(bearing(ac!.p, p) - sim.pack.meta.magVar))}° ${dist(ac!.p, p).toFixed(0)} NM`); }
         }
         rows.push('<div class="sub">Nearby</div>');
-        const key = ['ALHUV', 'LIBVA', 'L22LF', 'RERTI', 'IPLAN', 'GILOM', 'LNO', 'NIK', 'CIV', 'KOK', 'GESLO', 'RUDIX', 'GIREL'];
-        const fx = this.scope.visibleFixes().filter((f) => (f.kind !== 'vfr' || ac!.rules === 'VFR') && !onRoute.includes(f.id) && (key.includes(f.id) || f.kind !== 'fix' || !/^LG0/.test(f.id)))
+        const key = this.keyFixes();
+        const fx = this.scope.visibleFixes().filter((f) => (f.kind !== 'vfr' || ac!.rules === 'VFR') && !onRoute.includes(f.id) && (key.includes(f.id) || f.kind !== 'fix' || !/^[A-Z]{2}\d{3}$/.test(f.id)))
           .map((f) => ({ f, d: dist(ac!.p, f.p) })).filter((x) => x.d > 1.5 && x.d < 50).sort((a, b) => a.d - b.d).slice(0, 14);
         for (const { f, d } of fx) opt(`DCT ${f.id}`, f.id, '', `${p3(norm360(bearing(ac!.p, f.p) - sim.pack.meta.magVar))}° ${d.toFixed(0)} NM`);
         break;
@@ -696,7 +751,7 @@ export class Game {
           rows.push('<div class="sub span">Common</div>');
           opt(`T ${(this.sim.transitionsFor(sim.runway)[0]?.name) ?? ''}`, 'TRANS…', 'special');
           opt(`ILS ${sim.runway}`, `ILS ${sim.runway}`, 'special'); opt(`HOLD ${this.stackFix()}`, `Hold ${this.stackFix()}`, 'special');
-          opt('XTWR', 'Tower 118.130', 'special'); opt('XBRU', 'Brussels', 'special'); opt('XMIL', 'Military', 'special');
+          for (const u of [sim.twr, sim.acc, sim.mil]) opt(`X${u.id}`, unitName(u.id, sim.units).text, 'special');
           rows.push('<div class="sub span">Other</div>');
         }
         for (const [id, r] of sim.pack.runways) {
@@ -704,9 +759,11 @@ export class Game {
         }
         opt(`RNP ${sim.runway}`, `RNP ${sim.runway}`); opt(`VIS ${sim.runway}`, `Visual ${sim.runway}`);
         if (kind === 'more') {
-          opt('RON', 'Own navigation'); opt('HOLD GIREL', 'Hold GIREL'); opt('HOLD GSY', 'Hold GSY');
+          opt('RON', 'Own navigation');
+          for (const f of this.otherHolds().slice(0, 3)) opt(`HOLD ${f}`, `Hold ${f}`);
           opt('SMIN', 'Min clean speed'); opt('SRES', 'Own speed'); opt('BRK', 'Cancel approach'); opt('ATIS', 'ATIS current');
-          opt('MUAC', 'Maastricht'); opt('BEEK', 'Beek'); opt('SQ7000', 'Squawk 7000');
+          for (const u of Object.values(sim.units)) if (![sim.twr.id, sim.acc.id, sim.mil.id, sim.sup.id].includes(u.id)) opt(`X${u.id}`, u.label === u.id ? unitName(u.id, sim.units).text : `${u.id} · ${u.label}`);
+          opt('SQ7000', 'Squawk 7000');
         }
         break;
       }
@@ -723,7 +780,14 @@ export class Game {
         opt('#proc', `${this.settings.showProcedures ? 'Hide' : 'Show'} procedures`);
         opt('#vec', `Speed vector ${this.settings.speedVectorMin} min (change)`);
         opt('#voice', `Pilot voices ${this.radio.enabled ? 'on' : 'off'}`);
-        opt('#bright', `Display: ${this.settings.brightness === 'night' ? 'night' : 'day'} (change)`);
+        rows.push('<div class="sub">Scope</div>');
+        opt('#bright', `Skin: ${SKIN_NAMES.find((n) => n.id === this.settings.brightness)?.label.toLowerCase() ?? 'night'} (change)`);
+        opt('#rings', `Range rings every ${this.scope.opts.ringStep} NM (change)`);
+        opt('#lfilt', `Level filter: ${LEVEL_FILTERS.find((f) => f.id === levelFilterId(this.settings.levelFilter))?.label.toLowerCase() ?? 'off'} (change)`);
+        opt('#sweep', `Sweep line ${this.settings.sweep ? 'on' : 'off'}`);
+        opt('#trail', `History dots: ${this.settings.trailLen} plots (change)`);
+        opt('#smooth', `Smooth motion ${this.settings.smooth !== false ? 'on' : 'off'}`);
+        if (this.cs && this.sim.find(this.cs)) opt('#replay', `Replay ${this.cs}'s last minute`);
         opt('#quit', 'Quit without debrief');
         break;
       }
@@ -817,9 +881,15 @@ export class Game {
         case '#proc': this.settings.showProcedures = !this.settings.showProcedures; break;
         case '#vec': this.settings.speedVectorMin = (this.settings.speedVectorMin % 3 + 1) as 1 | 2 | 3; break;
         case '#voice': this.radio.enabled = !this.radio.enabled; if (!this.radio.enabled) this.radio.cancel(); break;
-        case '#bright': this.settings.brightness = this.settings.brightness === 'night' ? 'day' : 'night'; this.root.classList.toggle('day'); this.root.classList.toggle('night'); break;
+        case '#bright': { const i = SKIN_NAMES.findIndex((n) => n.id === this.settings.brightness); this.setSkin(SKIN_NAMES[(i + 1) % SKIN_NAMES.length].id); break; }
+        case '#rings': this.scope.cycleRingStep(); this.settings.ringStep = this.scope.opts.ringStep; this.onRange(this.rangeNm()); break;
+        case '#lfilt': { const i = LEVEL_FILTERS.findIndex((f) => f.id === levelFilterId(this.settings.levelFilter)); this.settings.levelFilter = LEVEL_FILTERS[(i + 1) % LEVEL_FILTERS.length].band; this.applyScopeOpts(); break; }
+        case '#sweep': this.settings.sweep = !this.settings.sweep; this.applyScopeOpts(); break;
+        case '#trail': this.settings.trailLen = [0, 3, 5, 7][([0, 3, 5, 7].indexOf(this.settings.trailLen ?? 5) + 1) % 4]; this.applyScopeOpts(); break;
+        case '#smooth': this.settings.smooth = this.settings.smooth === false; this.applyScopeOpts(); break;
+        case '#replay': if (this.cs) { this.scope.startReplay(this.cs); this.toast(`${this.cs}: the last minute, replayed in four seconds.`, 2500); } break;
       }
-      if (/^#(hints|mva|proc|vec|bright)$/.test(key)) saveSettings(this.settings);
+      if (/^#(hints|mva|proc|vec|bright|rings|lfilt|sweep|trail|smooth)$/.test(key)) saveSettings(this.settings);
       return;
     }
     let it: Item | undefined;
@@ -838,8 +908,7 @@ export class Game {
     else if (key === 'BRK') it = { k: 'brk' };
     else if (key === 'ATIS') it = { k: 'atis' };
     else if ((m = key.match(/^HOLD (\w+)$/))) it = { k: 'hold', fix: m[1] };
-    else if ((m = key.match(/^X(TWR|BRU|MIL)$/))) it = { k: 'xfr', unit: m[1] as any };
-    else if (key === 'MUAC' || key === 'BEEK') it = { k: 'xfr', unit: key };
+    else if ((m = key.match(/^X([A-Z]+)$/)) && this.sim.units[m[1]]) it = { k: 'xfr', unit: m[1] };
     else if ((m = key.match(/^SQ(\d{4})$/))) it = { k: 'sqk', code: m[1] };
     if (key.startsWith('T ') && this.els.picker.dataset.kind === 'more') { this.openPicker('trans'); return; }
     if (it) this.addItem(it);
@@ -978,6 +1047,7 @@ export class Game {
   /** Glossary sheet. With a term: that term; without: the searchable list. */
   explain(term?: string) {
     const pk = this.els.picker;
+    const GLOSSARY = this.gloss;
     const terms = Object.keys(GLOSSARY).sort();
     const body = term && GLOSSARY[term]
       ? `<div class="gl-one"><b>${esc(term)}</b><p>${esc(GLOSSARY[term])}</p></div>`
@@ -1007,7 +1077,7 @@ export class Game {
     el.hidden = !x;
     if (!x) return;
     el.className = `hint ${x.key.startsWith('stca') ? 'urgent' : ''}`;
-    el.innerHTML = `<span class="hint-who">SUP</span><span class="hint-t">${esc(x.text)}</span>${x.term && GLOSSARY[x.term] ? `<button data-gloss="${esc(x.term)}" class="hint-why">why?</button>` : ''}${x.cs ? `<button data-a="hint-go" class="hint-go">${esc(x.cs)}</button>` : ''}<button data-a="hint-x" class="hint-x" aria-label="Dismiss">✕</button>`;
+    el.innerHTML = `<span class="hint-who">SUP</span><span class="hint-t">${esc(x.text)}</span>${x.term && this.gloss[x.term] ? `<button data-gloss="${esc(x.term)}" class="hint-why">why?</button>` : ''}${x.cs ? `<button data-a="hint-go" class="hint-go">${esc(x.cs)}</button>` : ''}<button data-a="hint-x" class="hint-x" aria-label="Dismiss">✕</button>`;
   }
 
   // ---------------- intercom: release requests and military coordination ----------------
@@ -1150,7 +1220,7 @@ export class Game {
   private stateText(ac: Aircraft) {
     if (ac.awaitingSince !== undefined && this.sim.t >= ac.awaitingSince) return `calling ${Math.round(this.sim.t - ac.awaitingSince)} s`;
     if (ac.state === 'inbound') return 'handoff offered';
-    if (ac.state === 'transferred') return `with ${ac.xfrUnit === 'TWR' ? 'Tower' : ac.xfrUnit}`;
+    if (ac.state === 'transferred') return `with ${ac.xfrUnit === this.sim.twr.id ? 'Tower' : (this.sim.units[ac.xfrUnit ?? '']?.say ?? ac.xfrUnit)}`;
     if (ac.radioFail) return 'NORDO 7600';
     const now = levelText(this.sim.levelFor(Math.round(ac.alt / 100) * 100));
     const to = levelText(ac.cflSys ?? ac.cleared);
@@ -1162,12 +1232,12 @@ export class Game {
   private renderPanels() {
     const sim = this.sim;
     this.els.clock.textContent = `${sim.utc()}Z`;
-    this.els.atis.textContent = `ATIS ${sim.atis}`;
+    this.els.atis.textContent = `ATIS ${sim.atis}`; this.els.atis.title = sim.atisText();
     this.els.rwy.textContent = `RWY ${sim.runway}`;
     this.els.lvp.hidden = !sim.lvp;
     this.els.tqnh.textContent = `QNH ${sim.qnh}`; this.els.ttl.textContent = `TL FL${String(sim.tl).padStart(3, '0')}`;
     this.els.twind.textContent = `WIND ${String(Math.round(((sim.weather.windDir - sim.pack.meta.magVar + 360) % 360) / 10) * 10).padStart(3, '0')}/${sim.weather.windKt}`;
-    const tsa = [...sim.tsaOn][0] ?? [...sim.tsaPending.keys()][0]; this.els.ttsa.hidden = !tsa; if (tsa) this.els.ttsa.textContent = `${tsa} ${sim.tsaOn.has(tsa) ? 'ACTIVE' : 'SOON'}`;
+    const tsa = [...sim.tsaOn][0] ?? [...sim.tsaPending.keys()][0]; this.els.ttsa.hidden = !tsa; if (tsa) { this.els.ttsa.textContent = `${tsa} ${sim.tsaOn.has(tsa) ? 'ACTIVE' : 'SOON'}`; this.els.ttsa.title = `${sim.areasName} ${tsa}`; }
     const callers = this.waiting();
     const n = this.attention?.rows.length ?? callers.length;
     this.els.callers.textContent = window.innerWidth < 600 ? `☎ ${n}` : `NEXT ${n || ''}`.trim();
@@ -1197,7 +1267,7 @@ export class Game {
           <dt>QNH · TL</dt><dd class="mono">${w.qnh} · FL${String(sim.tl).padStart(3, '0')}</dd>
           <dt>Runway</dt><dd class="mono">${sim.runway}${sim.ilsOut.has(sim.runway) ? ' <span class="bad">ILS U/S</span>' : ''}</dd>
           ${sim.lvp ? `<dt>LVP</dt><dd class="bad">in force</dd>` : ''}
-          ${tsas.length ? `<dt>TSA</dt><dd class="warn">${tsas.join(', ')} active</dd>` : ''}
+          ${tsas.length ? `<dt>${esc(sim.areasName)}</dt><dd class="warn">${esc(tsas.join(', '))} active</dd>` : ''}
           ${sim.flows.length ? `<dt>Flow</dt><dd class="warn">${sim.flows.map((f) => `${f.exitFix} ${f.mit} NM MIT`).join(', ')}</dd>` : ''}
           <dt>Traffic</dt><dd class="mono">${sim.landings.length} landed · ${arr} inbound · ${sim.releases.filter((r) => r.state === 'pending').length} to release</dd>
           <dt>Left</dt><dd class="mono">${Math.floor(remain / 60)}:${String(Math.floor(remain % 60)).padStart(2, '0')}</dd>
@@ -1280,10 +1350,10 @@ export class Game {
     this.stripSig = sig;
     const bay = (title: string, n: number | string, body: string, cls = '') => body ? `<div class="bayh ${cls}"><span>${title}</span><b class="mono">${n}</b></div>${body}` : '';
     this.els.strips.innerHTML =
-      bay('Offered by Brussels', offered.length + est.length,
+      bay(`Offered by ${esc(sim.acc.say)}`, offered.length + est.length,
         est.map((e) => `<div class="strip-pend est mono"><span class="bay">E</span><b>${esc(e.cs)}</b><i>${esc(e.type)} ${esc(e.star)} · ${esc(e.fix)} ${sim.utc(e.t).slice(3, 5)}</i><em>${esc(levelText(e.xfl).replace(' ft', ''))}${e.revised ? ' rev' : ''}</em></div>`).join('') + offered.map((a) => this.stripHtml(a)).join(''), 'offered') +
       bay('Landing sequence <small>drag to reorder</small>', seq.length, `<div class="seq" data-e2="seq">${seq.map((a) => this.stripHtml(a, 'data-seq="1"')).join('')}</div>`, 'seqh') +
-      bay(`Hold ${hold[0]?.hold?.fix ?? 'ALHUV'}`, hold.length, hold.sort((a, b) => a.tgtAlt - b.tgtAlt).map((a) => this.stripHtml(a)).join(''), 'holdh') +
+      bay(`Hold ${esc(hold[0]?.hold?.fix ?? sim.stackFix)}`, hold.length, hold.sort((a, b) => a.tgtAlt - b.tgtAlt).map((a) => this.stripHtml(a)).join(''), 'holdh') +
       bay('Departures', deps.length + pend.length, pend.map((r) => `<button class="strip-pend mono" data-relsel="${esc(r.cs)}"><span class="bay">⏸</span><b>${esc(r.cs)}</b><i>${esc(r.type)} ${esc(r.sid)}</i><em>${r.state === 'held' ? 'held' : 'release?'}</em></button>`).join('') + deps.map((a) => this.stripHtml(a)).join(''), 'deph') +
       bay('Other traffic', other.length, other.map((a) => this.stripHtml(a)).join('')) +
       bay('Transferred', xfr.length, xfr.map((a) => this.stripHtml(a)).join(''), 'xfrh') ||
@@ -1342,7 +1412,7 @@ export class Game {
     this.coordSig = sig; this.netSig = netSig;
     const key = (u: string, sub: string) => `<button class="ikey ${lit[u] ? 'lit' : ''}" data-ikey="${u}"><b>${u}</b><small>${sub}</small></button>`;
     const brus = reqs.map((r) => `<div class="ic-card bru"><div class="ic-h"><span class="ic-from">${sim.acc.id} ⇄</span><b class="mono">${esc(r.cs)}</b><span class="ic-t mono" data-tx="${r.expireT}">${mmss(r.expireT - sim.t)}</span></div><div class="ic-s">Early transfer at ${esc(levelText(r.level))}?</div><div class="ic-b"><button data-rel="${esc(r.cs)}" data-v="bruok" class="ok">Approve</button><button data-rel="${esc(r.cs)}" data-v="bruno">As coordinated</button></div></div>`).join('');
-    const tsas = [...sim.tsaPending].map(([n, t]) => `<div class="net mil"><span>TSA</span><b>${esc(n)}</b><em>live ${sim.utc(t).slice(0, 5)}Z</em></div>`).join('');
+    const tsas = [...sim.tsaPending].map(([n, t]) => `<div class="net mil"><span>${esc(sim.areasName)}</span><b>${esc(n)}</b><em>live ${sim.utc(t).slice(0, 5)}Z</em></div>`).join('');
     const netRows = nets.map((n) => {
       if (n.kind === 'STCA' || n.kind === 'LOS') return `<button class="net red" data-cs="${n.a}"><span>${n.kind}</span><b>${n.a} / ${n.b}</b><em>${n.nm.toFixed(1)} NM ${Math.round(n.vertFt / 100) * 100} ft${n.kind === 'STCA' ? ` · ${mmss(n.tCpa)}` : ''}</em></button>`;
       if (n.kind === 'SFL') return `<button class="net amb" data-cs="${n.cs}"><span>MODE S</span><b>${n.cs}</b><em>sel ${esc(levelText(n.sfl).replace(' ft', ''))} ≠ ${esc(levelText(n.cfl).replace(' ft', ''))}</em></button>`;

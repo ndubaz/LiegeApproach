@@ -113,6 +113,9 @@ table.rec th { color: var(--faint); font-weight: 500; font-size: 12.5px; text-tr
   padding-top: env(safe-area-inset-top); user-select: none; -webkit-user-select: none;
 }
 .game.day { --bg: #18242e; --panel: #1d2b36; --panel2: #23343f; --line: #2d4050; --ink: #f0f5f8; --dim: #a9bcc8; }
+/* The amber skin: the console chrome warms to match the one-phosphor scope; selection stays the pale cream the scope uses. */
+.game.amber { --bg: #0f0a04; --bg2: #150e05; --panel: #1a1207; --panel2: #221809; --line: #3a2a10; --line2: #4e3915; --ink: #ffe3a8; --dim: #c9a467; --faint: #8a6f3c; --accent: #ffcf5c; --accent-ink: #1a1203; --scope-bg: #0d0802; }
+.tag.on { color: var(--accent); border-color: var(--accent); }
 .topbar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--line); background: var(--bg2); min-height: 46px; min-width: 0; }
 .tb-btn { min-width: 40px; height: 34px; border: 1px solid var(--line2); border-radius: var(--r); padding: 0 10px; font: 600 14px var(--ui); letter-spacing: 0.05em; }
 .clock { font-size: 15px; font-weight: 600; letter-spacing: 0.03em; padding: 0 4px; }
@@ -353,7 +356,8 @@ button.strip:not(.aman-item) {
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
 @media (max-width: 899px) {
   .home { display: flex; flex-direction: column; }
-  .home-scope { position: relative; height: 46vh; flex: none; }
+  /* the Scope adds the `scope` class to its canvas (2.0), so this must outrank `canvas.scope` above */
+  .home canvas.home-scope { position: relative; inset: auto; height: 46vh; flex: none; }
   .home-shade { height: 46vh; background: linear-gradient(180deg, rgba(11, 17, 23, 0.1) 40%, rgba(11, 17, 23, 1) 100%); }
   .home-main { min-height: 0; margin-top: -92px; justify-content: flex-start; padding-top: 0; gap: 22px; }
   .home-id h1 { font-size: clamp(54px, 15vw, 84px); margin-bottom: 12px; }

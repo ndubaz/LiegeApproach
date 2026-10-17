@@ -12,8 +12,8 @@ import { dist, norm360 } from '../../geo';
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
 const vib = (p: number | number[]) => { try { navigator.vibrate?.(p); } catch { /* unsupported */ } };
 const lvlKey = (l: { fl?: number; ft?: number }) => (l.fl !== undefined ? `F${String(l.fl).padStart(3, '0')}` : `A${l.ft}`);
-/** The airport's stack fix: from the pack when the 2.0 field is set, Liège's ALHUV otherwise. */
-export const stackFixOf = (sim: Sim): string => { const p = sim.pack as any; return (p.stackFix as string | undefined) ?? (p.meta?.stackFix as string | undefined) ?? 'ALHUV'; };
+/** The airport's stack fix (the pack's; for an arrival, the stack it is heading for). */
+export const stackFixOf = (sim: Sim, ac?: Aircraft): string => (ac && ac.kind === 'arr' ? sim.stackFixOf(ac) : sim.stackFix);
 
 export interface HaloHost {
   sim: Sim;
@@ -102,13 +102,14 @@ export class Halo {
     if (k === 'more') {
       if (v === 'ils') return { k: 'app', app: sim.rwy.ils && !sim.ilsOut.has(sim.runway) ? 'ILS' : 'RNP', rwy: sim.runway };
       if (v === 'hold') return { k: 'hold', fix: this.holdFix() };
-      if (v === 'twr') return { k: 'xfr', unit: 'TWR' };
-      if (v === 'bru') return { k: 'xfr', unit: 'BRU' };
-      if (v === 'mil') return { k: 'xfr', unit: 'MIL' };
+      // the keys keep their 1.0 names (twr, bru, mil); the unit ids come from the pack (TWR, BRU or ACC, MIL)
+      if (v === 'twr') return { k: 'xfr', unit: sim.twr.id };
+      if (v === 'bru') return { k: 'xfr', unit: sim.acc.id };
+      if (v === 'mil') return { k: 'xfr', unit: sim.mil.id };
     }
     return undefined;
   }
-  private holdFix() { return stackFixOf(this.g.sim); }
+  private holdFix() { return stackFixOf(this.g.sim, this.g.cs ? this.g.sim.find(this.g.cs) : undefined); }
 
   // ---------- undo: the real correction, within its window ----------
   private showUndo(cs: string, it: Item) { this.armUndo(cs, itemChip(it)); }
@@ -207,18 +208,18 @@ export class Halo {
       const cls = `${ac.spdAssigned === v ? 'cleared' : ''} ${o?.warn || !o ? 'below' : ''} ${stagedSpd?.k === 'spd' && (stagedSpd as any).spd === v && !(stagedSpd as any).until ? 'staged' : ''}`;
       return `<button class="hl ${cls}" data-halo="spd" data-v="S${v}" title="${esc(o?.warn ?? `${v} kt`)}">${v}</button>`;
     }).join('');
-    // fixes: on its route first, then the final approach fix and the stack, nearest first; never the LG0xx waypoints
+    // fixes: on its route first, then the intermediate fix and the stack, nearest first; never the LG0xx / DL4xx waypoints
     const seen = new Set<string>();
     const fixes: { id: string; d: number }[] = [];
-    const push = (id?: string) => { if (id && sim.pack.fixes.has(id) && !seen.has(id) && !/^LG0/.test(id)) { seen.add(id); fixes.push({ id, d: dist(ac.p, sim.fixP(id)) }); } };
+    const push = (id?: string) => { if (id && sim.pack.fixes.has(id) && !seen.has(id) && !/^[A-Z]{2}\d{3}$/.test(id)) { seen.add(id); fixes.push({ id, d: dist(ac.p, sim.fixP(id)) }); } };
     for (const l of ac.route) push(l.fix);
-    push(sim.rwy.ifFix); push(this.holdFix());
+    push(sim.rwy.ifFix); push(stackFixOf(sim, ac));
     for (const h of sim.pack.holds) push(h.fix);
     const fixHtml = fixes.filter((f) => f.d > 1).slice(0, 4).map((f) => `<button class="hf ${ac.route[0]?.fix === f.id ? 'next' : ''}" data-halo="fix" data-v="${esc(f.id)}" title="Direct ${esc(f.id)}, ${f.d.toFixed(0)} NM">${esc(f.id)}</button>`).join('');
     const dep = ac.kind === 'dep' || ac.kind === 'mil' || ac.kind === 'ovf';
     const moreHtml = dep
-      ? `<button class="hm" data-halo="more" data-v="${ac.kind === 'mil' ? 'mil' : 'bru'}">${ac.kind === 'mil' ? 'MIL' : 'BRU'}</button>`
-      : `<button class="hm ${ac.app ? 'cleared' : ''}" data-halo="more" data-v="ils">${sim.rwy.ils && !sim.ilsOut.has(sim.runway) ? 'ILS' : 'RNP'}</button><button class="hm ${ac.mode === 'HOLD' ? 'cleared' : ''} ${g.items.some((i) => i.k === 'hold') ? 'staged' : ''}" data-halo="more" data-v="hold">HOLD</button><button class="hm" data-halo="more" data-v="twr">TWR</button>`;
+      ? `<button class="hm" data-halo="more" data-v="${ac.kind === 'mil' ? 'mil' : 'bru'}" title="${esc(ac.kind === 'mil' ? sim.mil.callsign : sim.acc.callsign)}">${esc(ac.kind === 'mil' ? sim.mil.id : sim.acc.id)}</button>`
+      : `<button class="hm ${ac.app ? 'cleared' : ''}" data-halo="more" data-v="ils">${sim.rwy.ils && !sim.ilsOut.has(sim.runway) ? 'ILS' : 'RNP'}</button><button class="hm ${ac.mode === 'HOLD' ? 'cleared' : ''} ${g.items.some((i) => i.k === 'hold') ? 'staged' : ''}" data-halo="more" data-v="hold">HOLD</button><button class="hm" data-halo="more" data-v="twr" title="${esc(sim.twr.callsign)}">${esc(sim.twr.id)}</button>`;
     this.el.innerHTML = `<div class="halo-ring" aria-hidden="true"><i></i></div><div class="halo-lvl">${lvlHtml}</div><div class="halo-spd">${spdHtml}</div><div class="halo-fix">${fixHtml}</div><div class="halo-more">${moreHtml}</div>`;
   }
   destroy() { clearTimeout(this.lp); clearTimeout(this.undoTimer); this.el.remove(); this.undoEl.remove(); }

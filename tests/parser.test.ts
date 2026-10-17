@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { matchCallsigns, parseShorthand, resolveCallsign, resolveFix, voiceToShorthand } from '../src/engine/parser';
+import { matchCallsigns, parseShorthand, parseVoice, resolveCallsign, resolveFix, voiceToShorthand } from '../src/engine/parser';
+import { unitTable } from '../src/engine/clearance';
+import { loadPackById } from '../src/pack/index';
 const ctx = { callsigns: ['DHK7', 'QTR8125', 'QTR8152', 'CHG201'], runway: '22L', tl: 55, fixes: new Set(['LIBVA', 'ALHUV', 'GIKLI']), transitions: new Set(['ALHUV1A']) };
 describe('shorthand', () => {
   it('parses a three-part clearance', () => {
@@ -91,5 +93,25 @@ describe('voice', () => {
       .toBe('DHK7 L250 A40 S210');
     expect(voiceToShorthand('Qatari eight one two five descend to flight level six zero', tels, [])).toBe('QTR8125 FL060');
     expect(voiceToShorthand('Qatari 8125 cleared ILS approach runway two two left', tels, [])).toBe('QTR8125 ILS22L');
+  });
+});
+describe('a Düsseldorf context (2.0): units and the hold fix come from the pack', () => {
+  const eddl = loadPackById('EDDL');
+  const dus = { callsigns: ['ETD398', 'EWG12AB', 'DLH4KM'], runway: '23L', tl: 70, fixes: new Set(['BIKMU', 'DOMUX', 'HALME']), transitions: new Set<string>(), holdFix: 'BIKMU', units: unitTable(eddl) };
+  it('ETD398 LANGEN hands the aircraft to the centre (ACC)', () => {
+    expect(parseShorthand('ETD398 LANGEN', dus)).toEqual({ cs: 'ETD398', items: [{ k: 'xfr', unit: 'ACC' }], errors: [] });
+    expect(parseShorthand('ETD398 ACC', dus).items).toEqual([{ k: 'xfr', unit: 'ACC' }]);
+    expect(parseShorthand('ETD398 TOWER', dus).items).toEqual([{ k: 'xfr', unit: 'TWR' }]);
+    expect(parseShorthand('ETD398 FRISBEE', dus).items).toEqual([{ k: 'xfr', unit: 'MIL' }]);
+    expect(parseShorthand('ETD398 BRU', dus).errors).toEqual(['Unknown: BRU']);
+  });
+  it('a bare HOLD goes to BIKMU, and the voice path names the same fix', () => {
+    expect(parseShorthand('ETD398 hold', dus).items).toEqual([{ k: 'hold', fix: 'BIKMU' }]);
+    const v = parseVoice('Etihad three nine eight hold', { ...dus, tels: { ETD398: 'Etihad three nine eight' } });
+    expect(v.shorthand).toBe('ETD398 HOLD');
+    expect(v.unsure).toContain('hold: no fix heard, using BIKMU');
+    expect(v.parse.items).toEqual([{ k: 'hold', fix: 'BIKMU' }]);
+    const x = parseVoice('Etihad three nine eight contact Langen Radar one one nine decimal one one zero', { ...dus, tels: { ETD398: 'Etihad three nine eight' } });
+    expect(x.shorthand).toBe('ETD398 ACC');
   });
 });

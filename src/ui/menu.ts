@@ -1,22 +1,24 @@
 import { createPtt } from './ptt';
 import './menu.css';
-import { CHALLENGES, TIER_NAMES, unlockedTiers } from '../engine/scenarios';
+import { CHALLENGES, TIER_NAMES, challengesFor, unlockedTiers } from '../engine/scenarios';
 import type { Aircraft, Comp, Scenario, SimEvent } from '../engine/types';
-import { dailyShift, utcPlus, type FreePlayOpts } from '../engine/traffic';
+import { dailyShift, templatesOf, utcPlus, type FreePlayOpts } from '../engine/traffic';
 import { COMPS, COMP_NAMES, COMP_PLAIN, GRADE_NAMES, type Grade, type Result } from '../engine/assess';
 import { Sim } from '../engine/sim';
-import { windComponents } from '../engine/weather';
+import { parseMetar, presetMetar, selectConfig, windComponents } from '../engine/weather';
 import { PERF, wakeMinNm, type Recat } from '../engine/perf';
 import {
-  RANKS, applySave, bestGrade, careerNow, currentSummary, dailyStatus, exportSave, loadBest, loadCareer, loadDrills, loadLogbook, loadRecords, loadSettings,
+  LEVEL_FILTERS, RANKS, applySave, bestGrade, careerNow, currentSummary, dailyStatus, exportSave, levelFilterId, loadBest, loadCareer, loadDrills, loadLogbook, loadRecords, loadSettings,
   passedChallenges, saveFileName, saveSettings, storageAvailable, validateSave, type DrillRecord, type SaveFile, type Settings,
 } from '../store';
-import { CHECKRIDES, RANK_LONG, checkrideById, type CheckrideDef, type CheckrideVerdict, type TrackLog } from '../engine/career';
-import { DRILLS, drillById, parseDrillScenario, type DrillId, type DrillVerdict } from '../engine/drills';
+import { RANK_LONG, checkrideById, checkridesFor, type CheckrideDef, type CheckrideVerdict, type TrackLog } from '../engine/career';
+import { drillById, drillsFor, parseDrillScenario, type DrillId, type DrillVerdict } from '../engine/drills';
+import { unitByRole, unitTable } from '../engine/clearance';
+import { SKIN_NAMES } from './skins';
 import { GhostViewer, downloadCanvas, downloadText, renderPoster, type GhostData, type PosterMeta } from './poster';
 import { Attract } from './attract';
 import { SKIN } from './scope';
-import { GLOSSARY, GLOSSARY_GROUPS } from './glossary';
+import { GLOSSARY_GROUPS, glossaryFor } from './glossary';
 import type { Radio } from './audio';
 import { VOICE_MODELS, neuralSupported } from '../voice/neural';
 import { LESSONS, tutorialDone, tutorialResults } from './tutorial';
@@ -40,6 +42,50 @@ export interface MenuHandlers {
   liveMetar(): Promise<string | undefined>;
   /** The radio, for the voice download and the sample call. */
   radio?: Radio;
+  /** 2.0: the airports on offer and the switch (the home page and Settings show them when present). */
+  airports?: { icao: string; name: string; callsign: string; country?: string }[];
+  setAirport?(icao: string, screen?: string): void;
+  /** 2.0: the challenges written for the airport in use. */
+  challenges?(): Scenario[];
+}
+
+// ---------------------------------------------------------------------------
+// Airport identity on the home page and the briefing. Liège keeps its 1.0 words; another airport gets its own,
+// or a line written from its pack.
+interface HomeCopy { sub: string; fine: string; shift: string }
+const HOME_COPY: Record<string, HomeCopy> = {
+  EBLG: {
+    sub: 'Work the approach radar at Liège Airport. Real Belgian AIP procedures, freighters around the clock, military traffic in the next sector.',
+    fine: 'Not a training device. Procedures from the Belgian AIP; some airspace is approximate. Flights are fictional.',
+    shift: 'A real Liège night: a quiet warm-up, the inbound bank, then the departure push and a tail. Random events along the way.',
+  },
+  EDDL: {
+    sub: 'Work the arrival radar at Düsseldorf as Langen Radar. Real German AIP procedures, Eurowings and Condor waves onto the parallel runways, the Rhine below you and Köln next door.',
+    fine: 'Not a training device. Procedures from the German AIP; some airspace is approximate. Flights are fictional.',
+    shift: 'A real Düsseldorf day: the morning wave builds from six, the field stays full until the evening, and the curfew empties it. Random events along the way.',
+  },
+};
+const COUNTRY_NAME: Record<string, string> = { BE: 'Belgian', DE: 'German', NL: 'Dutch', FR: 'French' };
+function homeCopy(pack: Pack): HomeCopy {
+  const own = HOME_COPY[pack.meta.icao];
+  if (own) return own;
+  const c = COUNTRY_NAME[pack.spec.country ?? ''] ?? 'national';
+  return {
+    sub: `Work the approach radar at ${pack.meta.name} as ${pack.meta.appCallsign}. Real ${c} AIP procedures.`,
+    fine: `Not a training device. Procedures from the ${c} AIP; some airspace is approximate. Flights are fictional.`,
+    shift: `A real ${pack.meta.name} shift: the traffic follows the airport's own day. Random events along the way.`,
+  };
+}
+/** The centre's short name on the landline ("Brussels", "Langen"). */
+const centreOf = (pack: Pack) => unitByRole(unitTable(pack), 'acc')?.say ?? 'the centre';
+/** The airport switch on the home page: one tab per pack, the active one lit. */
+function airportSwitch(hd: MenuHandlers): string {
+  const list = hd.airports ?? [];
+  if (list.length < 2) return '';
+  return `<nav class="ap-switch" aria-label="Airport">${list.map((a) => `<button class="ap ${a.icao === hd.pack.meta.icao ? 'on' : ''}" data-ap="${esc(a.icao)}" aria-pressed="${a.icao === hd.pack.meta.icao}"><span class="mono">${esc(a.icao)}</span><b>${esc(a.name)}</b></button>`).join('')}</nav>`;
+}
+function wireAirportSwitch(root: HTMLElement, hd: MenuHandlers) {
+  root.querySelectorAll<HTMLButtonElement>('[data-ap]').forEach((b) => b.addEventListener('click', () => { if (b.dataset.ap !== hd.pack.meta.icao) hd.setAirport?.(b.dataset.ap!); }));
 }
 
 const shell = (inner: string, back = true, cls = '') => `
@@ -61,6 +107,8 @@ export function stopAttract() { attract?.destroy(); attract = undefined; }
 // Home: live attract radar behind a strip bay
 export function renderHome(root: HTMLElement, hd: MenuHandlers) {
   stopAttract();
+  const pack = hd.pack, icao = pack.meta.icao, copy = homeCopy(pack);
+  const liege = icao === 'EBLG';
   const recs = loadRecords();
   const passed = passedChallenges();
   const tut = tutorialDone();
@@ -70,9 +118,14 @@ export function renderHome(root: HTMLElement, hd: MenuHandlers) {
   const career = careerNow();
   const rank = career;
   const drills = loadDrills();
+  const DRILLS = drillsFor(icao);
+  const CHALLENGES = hd.challenges?.() ?? challengesFor(icao);
+  const rides = checkridesFor(icao);
   const drillsPlayed = DRILLS.filter((d) => drills[d.id]?.passes).length;
   const prom = career.promotion;
-  const cLine = !prom ? 'Top of the ladder. You run the room.' : prom.ready ? `Checkride for ${prom.to} is ready to book` : prom.retakeIn ? `Retake for ${prom.to} after ${prom.retakeIn} more shift${prom.retakeIn > 1 ? 's' : ''}` : `Next: ${prom.to}. ${prom.reqs.filter((r) => r.ok).length} of ${prom.reqs.length} requirements met`;
+  const cLine = !rides.length ? `No checkrides at ${pack.meta.name} yet: the logbook still counts your shifts here` : !prom ? 'Top of the ladder. You run the room.' : prom.ready ? `Checkride for ${prom.to} is ready to book` : prom.retakeIn ? `Retake for ${prom.to} after ${prom.retakeIn} more shift${prom.retakeIn > 1 ? 's' : ''}` : `Next: ${prom.to}. ${prom.reqs.filter((r) => r.ok).length} of ${prom.reqs.length} requirements met`;
+  const tpl = templatesOf(pack);
+  const callsignLine = pack.meta.appCallsign === `${pack.meta.name} Approach` ? '' : `<span class="home-call">${esc(pack.meta.appCallsign)}</span>`;
   const strip = (go: string, kind: string, code: string, name: string, line: string, stat: string, statLabel: string, extra = '') => `
     <button class="bay-strip ${kind} ${extra}" data-go="${go}">
       <span class="bs-bay mono">${code}</span>
@@ -81,35 +134,37 @@ export function renderHome(root: HTMLElement, hd: MenuHandlers) {
     </button>`;
   const dLine = daily.today
     ? `Today: ${GRADE_NAMES[daily.today.grade].toLowerCase()}, ${daily.today.landed} landed. Same traffic for everyone.`
-    : `${now.getDate()} ${MONTHS[now.getMonth()]}. Twenty-five minutes of cargo night, the same for everyone today.`;
+    : `${now.getDate()} ${MONTHS[now.getMonth()]}. Twenty-five minutes of ${liege ? 'cargo night' : `the ${pack.meta.name} day`}, the same for everyone today.`;
   root.innerHTML = `
   <div class="home">
     <canvas class="home-scope" aria-hidden="true"></canvas>
     <div class="home-shade"></div>
     <main class="home-main">
       <header class="home-id">
-        <p class="home-freq mono">119.280 <span class="home-rank">${rank.name}</span></p>
-        <h1>Liège<br>Approach</h1>
-        <p class="home-sub">Work the approach radar at Liège Airport. Real Belgian AIP procedures, freighters around the clock, military traffic in the next sector.</p>
+        ${airportSwitch(hd)}
+        <p class="home-freq mono">${esc(pack.meta.appFreq)} ${callsignLine}<span class="home-rank">${rank.name}</span></p>
+        <h1>${esc(pack.meta.name)}<br>Approach</h1>
+        <p class="home-sub">${esc(copy.sub)}</p>
         <p class="home-live mono" data-e="live"></p>
       </header>
       <nav class="bay" aria-label="Main menu">
-        ${strip('tutorial', 'tut', 'T', 'Learn the position', 'Eleven short lessons with exams, from the scope to the full position', `${tut.size}/${LESSONS.length}`, 'lessons', firstTime ? 'start' : '')}
+        ${strip('tutorial', 'tut', 'T', liege ? 'Learn the position' : 'Liège lessons', liege ? 'Eleven short lessons with exams, from the scope to the full position' : 'The lessons run at Liège for now; what they teach works here too', `${tut.size}/${LESSONS.length}`, 'lessons', firstTime ? 'start' : '')}
         ${strip('daily', 'day', 'D', 'Daily shift', dLine, String(daily.streak), daily.streak === 1 ? 'day streak' : 'day streak', daily.today ? 'played' : '')}
-        ${strip('free', 'arr', 'F', 'Free play', 'Cargo night shift or your own mix of hour, weather and military activity', '∞', 'sessions')}
-        ${strip('challenges', 'dep', 'C', 'Challenges', `${CHALLENGES.length} scripted scenarios, one freighter to a compound emergency`, `${passed.size}/${CHALLENGES.length}`, 'passed')}
+        ${strip('free', 'arr', 'F', 'Free play', `${tpl.shift.title} or your own mix of hour, weather and military activity`, '∞', 'sessions')}
+        ${strip('challenges', 'dep', 'C', 'Challenges', CHALLENGES.length ? `${CHALLENGES.length} scripted scenarios, ${liege ? 'one freighter to a compound emergency' : 'from a first arrival to the abnormal'}` : `No scripted scenarios at ${pack.meta.name} yet; free play and the daily shift run from the pack`, CHALLENGES.length ? `${passed.size}/${CHALLENGES.length}` : '0', 'passed')}
         ${strip('career', 'car', 'K', 'Career', cLine, rank.name, 'rank', prom?.ready ? 'ready' : '')}
-        ${strip('drills', 'drl', 'X', 'Drills', 'Two-minute exercises: intercept, wake gap, conflict, descent, release', `${drillsPlayed}/${DRILLS.length}`, 'passed')}
+        ${strip('drills', 'drl', 'X', 'Drills', DRILLS.length ? `Two-minute exercises: ${DRILLS.map((d) => d.title.toLowerCase()).slice(0, 5).join(', ')}` : `No drills at ${pack.meta.name} yet`, `${drillsPlayed}/${DRILLS.length}`, 'passed')}
         <div class="bay-row three">
           <button class="bay-strip mini rec" data-go="records"><span class="bs-bay mono">L</span><span class="bs-body"><b>Logbook</b><span>${recs.length} session${recs.length === 1 ? '' : 's'}, save file</span></span></button>
           <button class="bay-strip mini help" data-go="help"><span class="bs-bay mono">?</span><span class="bs-body"><b>Help</b><span>Controls and glossary</span></span></button>
           <button class="bay-strip mini set" data-go="settings"><span class="bs-bay mono">S</span><span class="bs-body"><b>Settings</b><span>Voices, labels, input</span></span></button>
         </div>
       </nav>
-      <p class="fine">Not a training device. Procedures from the Belgian AIP; some airspace is approximate. Flights are fictional.</p>
+      <p class="fine">${esc(copy.fine)}</p>
     </main>
     <aside class="home-radio mono" data-e="radio" aria-live="off"></aside>
   </div>`;
+  wireAirportSwitch(root, hd);
   const canvas = root.querySelector<HTMLCanvasElement>('.home-scope')!;
   const live = root.querySelector('[data-e="live"]')!;
   const radio = root.querySelector('[data-e="radio"]')!;
@@ -118,7 +173,7 @@ export function renderHome(root: HTMLElement, hd: MenuHandlers) {
     const upd = () => {
       if (!attract) return;
       const sim = attract.sim, w = sim.weather;
-      live.innerHTML = [`${sim.utc().slice(0, 5)}Z`, `RWY ${sim.runway}`, `WIND ${String(Math.round((w.windDir - 2) / 10) * 10).padStart(3, '0')}/${w.windKt}`, `QNH ${w.qnh}`, `${sim.aircraft.filter((a) => a.state === 'assumed').length} ON FREQ`].map((x) => `<span>${x}</span>`).join('');
+      live.innerHTML = [`${sim.utc().slice(0, 5)}Z`, `RWY ${sim.runway}`, `WIND ${String(Math.round(((w.windDir - pack.meta.magVar + 360) % 360) / 10) * 10).padStart(3, '0')}/${w.windKt}`, `QNH ${w.qnh}`, `${sim.aircraft.filter((a) => a.state === 'assumed').length} ON FREQ`].map((x) => `<span>${x}</span>`).join('');
     };
     upd();
     const iv = window.setInterval(() => { if (!attract) { clearInterval(iv); return; } upd(); }, 1000);
@@ -126,7 +181,7 @@ export function renderHome(root: HTMLElement, hd: MenuHandlers) {
       if (tx.from === 'SYS' || !tx.text || tx.channel === 'icom') return;
       const row = document.createElement('div');
       row.className = `hr ${tx.from === 'ATC' ? 'atc' : ''}`;
-      row.innerHTML = `<span>${sim.utc(tx.t0).slice(0, 5)}</span><b>${tx.from === 'ATC' ? 'APP' : esc(tx.cs)}</b><em>${esc(tx.text.replace(/^Liège Approach, /, ''))}</em>`;
+      row.innerHTML = `<span>${sim.utc(tx.t0).slice(0, 5)}</span><b>${tx.from === 'ATC' ? 'APP' : esc(tx.cs)}</b><em>${esc(tx.text.startsWith(`${pack.meta.appCallsign}, `) ? tx.text.slice(pack.meta.appCallsign.length + 2) : tx.text)}</em>`;
       radio.appendChild(row);
       while (radio.children.length > 4) radio.firstChild!.remove();
     };
@@ -145,8 +200,10 @@ export function renderTutorial(root: HTMLElement, hd: MenuHandlers & { startLess
     if (done.has(l.id)) return `<b class="mono">✓</b><small>${l.exam ? 'exam to do' : 'done'}</small>`;
     return `<b class="mono">${l.minutes}</b><small>min</small>`;
   };
+  const liege = hd.pack.meta.icao === 'EBLG';
   root.innerHTML = shell(`
-    <h2>Learn the position</h2>
+    <h2>${liege ? 'Learn the position' : 'Liège lessons'}</h2>
+    ${liege ? '' : `<p class="lede">The lessons are set at Liège for now: starting one switches the console to Liège, and the home page brings you back to ${esc(hd.pack.meta.name)}. What they teach (the scope, levels, vectors, the ILS, handoffs, releases) works the same way here.</p>`}
     <p class="lede">Eleven lessons in the real sim. The coach pauses the clock, points at the control or aircraft to use, and waits until you have done it. Each lesson ends with a short exam with no coach: pass it to earn up to three stars. Take them in order the first time.</p>
     ${passedN ? `<p class="tut-sum mono">${passedN} of ${LESSONS.length} exams passed · ${starsN} of ${LESSONS.length * 3} stars</p>` : ''}
     <ol class="lessons">
@@ -162,27 +219,34 @@ export function renderTutorial(root: HTMLElement, hd: MenuHandlers & { startLess
 // ===========================================================================
 // Free play setup
 export function renderFree(root: HTMLElement, hd: MenuHandlers) {
+  const pack = hd.pack, copy = homeCopy(pack), tpl = templatesOf(pack);
+  const liege = pack.meta.icao === 'EBLG';
+  // the runway each preset weather puts in use, as the engine will pick it
+  const rwyOf = (kind: 'good' | 'windy-ne' | 'lvp' | 'storms') => { try { return selectConfig(pack, parseMetar(presetMetar(pack, kind))).land; } catch { return ''; } };
+  const tplLine = (t: { arrPerHr: number; paxShare: number; start: string }, note = '') => `${t.arrPerHr} arr/h${note || (t.paxShare >= 0.5 ? ', passengers' : t.paxShare > 0 ? ', some passengers' : '')}, from ${t.start}Z`;
+  const wind = (kind: 'windy-ne') => { try { const w = parseMetar(presetMetar(pack, kind)); return compass(w.windDir).replace(/-/, ' '); } catch { return 'NE'; } };
+  const areas = pack.reservedAreasName;
   root.innerHTML = shell(`
     <h2>Free play</h2>
     <form class="form" data-e="free">
       <fieldset class="tpl"><legend>Shift</legend>
-        <label class="wide"><input type="radio" name="template" value="shift" checked><span><b>Cargo night shift</b><small>A real Liège night: a quiet warm-up, the inbound bank, then the departure push and a tail. Random events along the way.</small></span></label>
-        <label><input type="radio" name="template" value="night"><span>Night bank<small>18 arr/h, steady</small></span></label>
-        <label><input type="radio" name="template" value="day"><span>Daytime mix<small>11 arr/h, some passengers</small></span></label>
-        <label><input type="radio" name="template" value="quiet"><span>Quiet hour<small>6 arr/h</small></span></label>
+        <label class="wide"><input type="radio" name="template" value="shift" checked><span><b>${esc(tpl.shift.title)}</b><small>${esc(copy.shift)}</small></span></label>
+        <label><input type="radio" name="template" value="night"><span>${esc(tpl.night.title)}<small>${esc(tplLine(tpl.night, liege ? '18 arr/h, steady' : ''))}</small></span></label>
+        <label><input type="radio" name="template" value="day"><span>${esc(tpl.day.title)}<small>${esc(tplLine(tpl.day))}</small></span></label>
+        <label><input type="radio" name="template" value="quiet"><span>${esc(tpl.quiet.title)}<small>${esc(tplLine(tpl.quiet))}</small></span></label>
       </fieldset>
       <fieldset><legend>Weather</legend>
-        <label><input type="radio" name="weather" value="good" checked><span>Good, 22L</span></label>
-        <label><input type="radio" name="weather" value="windy-ne"><span>Gusty NE, 04R</span></label>
+        <label><input type="radio" name="weather" value="good" checked><span>Good, ${esc(rwyOf('good'))}</span></label>
+        <label><input type="radio" name="weather" value="windy-ne"><span>Gusty ${esc(wind('windy-ne'))}, ${esc(rwyOf('windy-ne'))}</span></label>
         <label><input type="radio" name="weather" value="lvp"><span>Fog, LVP</span></label>
         <label><input type="radio" name="weather" value="storms"><span>Thunderstorms</span></label>
-        <label><input type="radio" name="weather" value="live"><span>Live METAR<small>needs a connection</small></span></label>
+        <label><input type="radio" name="weather" value="live"><span>Live ${esc(pack.meta.icao)} METAR<small>needs a connection</small></span></label>
       </fieldset>
-      <fieldset data-e="mil"><legend>Military and transient traffic <small>(the night shift draws its own)</small></legend>
+      <fieldset data-e="mil"><legend>Military and transient traffic <small>(the ${esc(tpl.shift.title.toLowerCase())} draws its own)</small></legend>
         <label><input type="radio" name="military" value="0"><span>None</span></label>
         <label><input type="radio" name="military" value="1" checked><span>Light<small>VFR crosser, HEMS</small></span></label>
-        <label><input type="radio" name="military" value="2"><span>Busy<small>+ fighters, E-3A, TSA</small></span></label>
-        <label><input type="radio" name="military" value="3"><span>Heavy<small>+ C-17, flight check, A400M</small></span></label>
+        <label><input type="radio" name="military" value="2"><span>Busy<small>+ fighters, ${liege ? 'E-3A, ' : ''}${esc(areas)}</small></span></label>
+        <label><input type="radio" name="military" value="3"><span>Heavy<small>+ ${liege ? 'C-17, flight check, A400M' : 'transports, flight check'}</small></span></label>
       </fieldset>
       <fieldset><legend>Session</legend>
         <label><input type="radio" name="duration" value="30"><span>30 min</span></label>
@@ -211,7 +275,7 @@ export function renderFree(root: HTMLElement, hd: MenuHandlers) {
     };
     if (o.weather === 'live') {
       const st = root.querySelector('[data-e="status"]')!;
-      st.textContent = 'Fetching the current Liège METAR…';
+      st.textContent = `Fetching the current ${pack.meta.icao} METAR…`;
       o.liveMetar = await hd.liveMetar();
       if (!o.liveMetar) { st.textContent = 'No live METAR available here; using good weather instead.'; o.weather = 'good'; await new Promise((r) => setTimeout(r, 1200)); }
     }
@@ -233,7 +297,8 @@ export function renderBriefing(root: HTMLElement, pack: Pack, sc: Scenario, hd: 
   let sim: Sim | undefined;
   try { sim = new Sim(pack, sc); } catch { /* briefing still works from the scenario alone */ }
   const w = sim?.weather;
-  const rwyId = sim?.runway ?? sc.runway ?? '22L';
+  const rwyId = sim?.runway ?? sc.runway ?? pack.runwayConfigs[0]?.land ?? pack.preferredRunways[0];
+  const centre = centreOf(pack);
   const rwy = pack.runways.get(rwyId);
   const kind = hd.kind ?? (sc.id.startsWith('daily-') ? 'daily' : sc.id.startsWith('checkride-') ? 'checkride' : sc.id.startsWith('drill-') ? 'drill' : sc.freePlay ? 'free' : 'challenge');
   const ride = kind === 'checkride' ? checkrideById(sc.id) : undefined;
@@ -273,7 +338,7 @@ export function renderBriefing(root: HTMLElement, pack: Pack, sc: Scenario, hd: 
     const ha = (v / peak) * 38, hdp = (bd[i] / peak) * 38;
     return `<rect x="${i * 10 + 1}" y="${40 - ha}" width="8" height="${ha}" class="a"/><rect x="${i * 10 + 1}" y="${40 - ha - hdp}" width="8" height="${hdp}" class="d"/>`;
   }).join('')}</svg>`;
-  const planned = sc.events.filter((e) => e.kind === 'tsa' && e.on || e.kind === 'flow').map((e) => e.kind === 'tsa' ? `${(e as any).name} active from ${utcPlus(sc.startUtc, e.t)}` : `Brussels flow from ${utcPlus(sc.startUtc, e.t)}: ${(e as any).mit} NM in trail via ${(e as any).exitFix}`);
+  const planned = sc.events.filter((e) => e.kind === 'tsa' && e.on || e.kind === 'flow').map((e) => e.kind === 'tsa' ? `${(e as any).name} active from ${utcPlus(sc.startUtc, e.t)}` : `${centre} flow from ${utcPlus(sc.startUtc, e.t)}: ${(e as any).mit} NM in trail via ${(e as any).exitFix}`);
 
   // ---- criteria
   const pc = sc.pass;
@@ -282,7 +347,7 @@ export function renderBriefing(root: HTMLElement, pack: Pack, sc: Scenario, hd: 
     crit.push('Pass the safety gate');
     if (pc.minLanded !== undefined) crit.push(`Land at least ${pc.minLanded}`);
     if (pc.allArrivalsHandled) crit.push('Land every arrival');
-    if (pc.minDeparturesHandled !== undefined) crit.push(`Hand at least ${pc.minDeparturesHandled} departures to Brussels`);
+    if (pc.minDeparturesHandled !== undefined) crit.push(`Hand at least ${pc.minDeparturesHandled} departures to ${centre}`);
     if (pc.maxHoldMinPerArrival !== undefined) crit.push(`Under ${pc.maxHoldMinPerArrival} min holding per arrival on average`);
     if (pc.noMissedReadbacks) crit.push('Catch every wrong readback');
     if (pc.noTsa) crit.push('Nobody inside an active military area');
@@ -297,7 +362,7 @@ export function renderBriefing(root: HTMLElement, pack: Pack, sc: Scenario, hd: 
   root.innerHTML = shell(`
     <article class="sheet" aria-label="Position handover">
       <header class="sh-head">
-        <div class="sh-org mono">EBLG APP · 119.280<br><span>POSITION HANDOVER</span></div>
+        <div class="sh-org mono">${esc(pack.meta.icao)} APP · ${esc(pack.meta.appFreq)}<br><span>POSITION HANDOVER</span></div>
         <div class="sh-no mono">No. ${serial}<br><span>${sc.startUtc}Z</span></div>
       </header>
       <p class="sh-kind mono">${esc(kindName)}</p>
@@ -382,10 +447,17 @@ const compass = (deg: number) => ['north', 'north-east', 'east', 'south-east', '
 // ===========================================================================
 // Challenges
 export function renderChallenges(root: HTMLElement, hd: MenuHandlers) {
+  const pack = hd.pack;
+  const CHALLENGES = hd.challenges?.() ?? challengesFor(pack.meta.icao);
   const passed = passedChallenges();
-  const tiers = unlockedTiers(passed, hd.settings.unlockAll);
+  const tiers = unlockedTiers(passed, hd.settings.unlockAll, CHALLENGES);
   const best = loadBest();
   const recs = loadRecords();
+  const tierName = (t: number) => (TIER_NAMES[t] ?? '').replace(/^Liège\b/, pack.meta.name);
+  if (!CHALLENGES.length) {
+    root.innerHTML = shell(`<h2>Challenges</h2><p class="lede">No scripted challenges at ${esc(pack.meta.name)} yet. Free play and the daily shift run here from the pack, and the logbook counts them.</p><p class="lede"><button class="link" data-go="free">Free play ›</button></p>`);
+    return;
+  }
   const html = [1, 2, 3, 4].map((t) => {
     const open = tiers.has(t);
     const list = CHALLENGES.filter((c) => c.tier === t);
@@ -399,7 +471,8 @@ export function renderChallenges(root: HTMLElement, hd: MenuHandlers) {
     }).join('');
     const prev = CHALLENGES.filter((c) => c.tier === t - 1);
     const need = t > 1 ? `Pass every Tier ${t - 1} challenge to unlock (${prev.filter((c) => passed.has(c.id)).length}/${prev.length})` : '';
-    return `<section class="tier ${open ? '' : 'locked'}"><h3><span>Tier ${t}</span> ${TIER_NAMES[t]} <small class="mono">${done}/${list.length}</small>${open ? '' : ` <small>· ${need}</small>`}</h3><div class="ch-grid">${cards}</div></section>`;
+    if (!list.length) return '';
+    return `<section class="tier ${open ? '' : 'locked'}"><h3><span>Tier ${t}</span> ${esc(tierName(t))} <small class="mono">${done}/${list.length}</small>${open ? '' : ` <small>· ${need}</small>`}</h3><div class="ch-grid">${cards}</div></section>`;
   }).join('');
   root.innerHTML = shell(`<h2>Challenges</h2><p class="lede ch-key">${(['pass', 'good', 'rated'] as Grade[]).map((g) => `${gradeChip(g)} ${GRADE_NAMES[g]}`).join('<span class="sep"></span>')}</p>${html}`);
   root.querySelectorAll<HTMLButtonElement>('[data-ch]').forEach((b) => b.addEventListener('click', () => hd.startChallenge(CHALLENGES.find((c) => c.id === b.dataset.ch)!)));
@@ -408,6 +481,8 @@ export function renderChallenges(root: HTMLElement, hd: MenuHandlers) {
 // ===========================================================================
 // Records: the controller logbook
 export function renderRecords(root: HTMLElement, hd: MenuHandlers) {
+  const pack = hd.pack;
+  const CHALLENGES = hd.challenges?.() ?? challengesFor(pack.meta.icao);
   const recs = loadRecords();
   const log = loadLogbook();
   const best = loadBest();
@@ -428,10 +503,10 @@ export function renderRecords(root: HTMLElement, hd: MenuHandlers) {
   const ch = CHALLENGES.find((c) => c.id === sugg);
   const evIcon: Record<string, string> = { emergency: '7700', rated: 'R', good: 'G', chain: 'SEQ', rank: '★' };
   const daily = dailyStatus();
-  const tierTable = [1, 2, 3, 4].map((t) => `<div class="lb-tier"><h4><span class="mono">T${t}</span> ${TIER_NAMES[t]}</h4>${CHALLENGES.filter((c) => c.tier === t).map((c) => `<div class="lb-ch ${best[c.id] ? '' : 'none'}"><span>${esc(c.title)}</span>${best[c.id] ? gradeChip(best[c.id]) : '<i class="gmark empty"></i>'}</div>`).join('')}</div>`).join('');
+  const tierTable = [1, 2, 3, 4].filter((t) => CHALLENGES.some((c) => c.tier === t)).map((t) => `<div class="lb-tier"><h4><span class="mono">T${t}</span> ${esc((TIER_NAMES[t] ?? '').replace(/^Liège\b/, pack.meta.name))}</h4>${CHALLENGES.filter((c) => c.tier === t).map((c) => `<div class="lb-ch ${best[c.id] ? '' : 'none'}"><span>${esc(c.title)}</span>${best[c.id] ? gradeChip(best[c.id]) : '<i class="gmark empty"></i>'}</div>`).join('')}</div>`).join('');
 
   root.innerHTML = shell(`
-    <h2>Controller logbook</h2>
+    <h2>Controller logbook <small class="h-ap mono">${esc(pack.meta.icao)}</small></h2>
     <section class="lb-rank">
       <div class="lb-badge"><small>Rank</small><b>${rank.name}</b></div>
       <ol class="lb-ladder">${ladder}</ol>
@@ -446,7 +521,7 @@ export function renderRecords(root: HTMLElement, hd: MenuHandlers) {
       ${stat(String(daily.best), 'longest daily streak')}
     </section>
     <div class="lb-cols">
-      <section class="panel"><h3>Best grade per challenge</h3><div class="lb-tiers">${tierTable}</div></section>
+      <section class="panel"><h3>Best grade per challenge</h3>${tierTable ? `<div class="lb-tiers">${tierTable}</div>` : `<p class="lede">No scripted challenges at ${esc(pack.meta.name)} yet.</p>`}</section>
       <section class="panel"><h3>Notable</h3>${log.events.length ? `<ul class="lb-events">${[...log.events].reverse().slice(0, 14).map((e) => `<li class="ev-${e.kind}"><span class="mono">${evIcon[e.kind]}</span><div>${esc(e.text)}<small class="mono">${e.date.slice(0, 10)}</small></div></li>`).join('')}</ul>` : '<p class="lede">Emergencies you bring home, rated sessions and promotions appear here.</p>'}</section>
     </div>
     ${recs.length ? `
@@ -464,12 +539,15 @@ export function renderSettings(root: HTMLElement, hd: MenuHandlers) {
   const s = hd.settings;
   const tog = (k: keyof Settings, label: string, note = '') => `<label class="toggle"><input type="checkbox" data-k="${k}" ${s[k] ? 'checked' : ''}><span>${label}${note ? `<small>${note}</small>` : ''}</span></label>`;
   const radio = (k: keyof Settings, label: string, opts: [string, string][]) => `<fieldset><legend>${label}</legend>${opts.map(([v, l]) => `<label><input type="radio" name="${k}" data-k="${k}" value="${v}" ${String(s[k]) === v ? 'checked' : ''}><span>${l}</span></label>`).join('')}</fieldset>`;
+  const aps = hd.airports ?? [];
+  const lf = levelFilterId(s.levelFilter);
   root.innerHTML = shell(`
     <h2>Settings</h2>
     <div class="form">
+      ${aps.length > 1 ? `<fieldset><legend>Airport</legend>${aps.map((a) => `<label><input type="radio" name="airport" data-ap="${esc(a.icao)}" value="${esc(a.icao)}" ${a.icao === hd.pack.meta.icao ? 'checked' : ''}><span>${esc(a.name)}<small>${esc(a.icao)} · ${esc(a.callsign)}</small></span></label>`).join('')}</fieldset>` : ''}
       ${tog('voice', 'Pilot voices', 'Spoken readbacks at 1× speed')}
       ${tog('speakAtc', 'Speak my clearances too')}
-      ${tog('speakIcom', 'Speak intercom lines', 'Tower, Brussels and the military on the landline')}
+      ${tog('speakIcom', 'Speak intercom lines', `Tower, ${esc(centreOf(hd.pack))} and the military on the landline`)}
       ${radio('voiceEngine', 'Voice engine', [['neural', 'Radio voices (download once)'], ['browser', 'This device’s voices']])}
       ${hd.radio ? voicePanelHtml(hd.radio, s) : ''}
       ${tog('quickMode', 'Quick mode', 'Each picker choice transmits at once')}
@@ -478,8 +556,13 @@ export function renderSettings(root: HTMLElement, hd: MenuHandlers) {
       ${tog('unlockAll', 'Unlock all challenges')}
       ${radio('labelSize', 'Label size', [['S', 'Small'], ['M', 'Medium'], ['L', 'Large']])}
       ${radio('radarRefresh', 'Radar update', [['4', '4 s (realistic)'], ['1', '1 s (smooth)']])}
-      ${radio('brightness', 'Console brightness', [['night', 'Night'], ['day', 'Day']])}
+      ${radio('brightness', 'Scope skin', SKIN_NAMES.map((n) => [n.id, `${n.label}<small>${esc(n.blurb)}</small>`] as [string, string]))}
       ${radio('speedVectorMin', 'Speed vector', [['1', '1 min'], ['2', '2 min'], ['3', '3 min']])}
+      ${radio('ringStep', 'Range rings', [['5', 'Every 5 NM'], ['10', 'Every 10 NM'], ['20', 'Every 20 NM']])}
+      <fieldset><legend>Level filter <small>traffic outside the band is dimmed; the selected aircraft, callers and conflicts always show</small></legend>${LEVEL_FILTERS.map((f) => `<label><input type="radio" name="levelFilter" data-lf="${f.id}" value="${f.id}" ${f.id === lf ? 'checked' : ''}><span>${esc(f.label)}</span></label>`).join('')}</fieldset>
+      ${radio('trailLen', 'History dots', [['0', 'None'], ['3', '3 plots'], ['5', '5 plots'], ['7', '7 plots']])}
+      ${tog('smooth', 'Smooth motion', 'The symbol moves between radar plots; the latest plot stays as a faint ghost')}
+      ${tog('sweep', 'Sweep line', 'One turn per radar update. Off under reduced motion.')}
       <fieldset><legend>Voice speed</legend><input type="range" min="0.8" max="1.4" step="0.02" data-k="speechRate" value="${s.speechRate}"></fieldset>
       ${radio('pttKey', 'Push-to-talk key <small>hold to speak a clearance; Shift+Space pauses</small>', [['Space', 'Space bar'], ['Backquote', '` key'], ['ControlRight', 'Right Ctrl'], ['', 'Off']])}
       ${radio('voiceLang', 'Speech recognition accent', [['en-GB', 'English (UK)'], ['en-US', 'English (US)']])}
@@ -488,7 +571,7 @@ export function renderSettings(root: HTMLElement, hd: MenuHandlers) {
     ${savePanelHtml()}
   `);
   wireSavePanel(root, hd, () => renderSettings(root, hd));
-  if (hd.radio) wireVoicePanel(root, hd.radio, s);
+  if (hd.radio) wireVoicePanel(root, hd.radio, s, hd.pack);
   root.querySelectorAll<HTMLButtonElement>('[data-pedal]').forEach((b) => b.addEventListener('click', async () => {
     if (b.dataset.pedal === 'clear') { s.pedal = null; saveSettings(s); renderSettings(root, hd); return; }
     const msg = root.querySelector('[data-e="pedalMsg"]'); if (msg) msg.textContent = ' Press the pedal now (Escape to cancel)…';
@@ -508,11 +591,13 @@ export function renderSettings(root: HTMLElement, hd: MenuHandlers) {
   }));
   root.querySelectorAll<HTMLInputElement>('[data-k]').forEach((inp) => inp.addEventListener('change', () => {
     const k = inp.dataset.k as keyof Settings;
-    const v = inp.type === 'checkbox' ? inp.checked : inp.type === 'range' ? Number(inp.value) : (['radarRefresh', 'speedVectorMin'].includes(k) ? Number(inp.value) : inp.value);
+    const v = inp.type === 'checkbox' ? inp.checked : inp.type === 'range' ? Number(inp.value) : (['radarRefresh', 'speedVectorMin', 'ringStep', 'trailLen'].includes(k) ? Number(inp.value) : inp.value);
     (s as any)[k] = v;
     saveSettings(s);
     if (k === 'voiceEngine' && hd.radio) { hd.radio.engine = s.voiceEngine; renderSettings(root, hd); }
   }));
+  root.querySelectorAll<HTMLInputElement>('[data-lf]').forEach((inp) => inp.addEventListener('change', () => { s.levelFilter = LEVEL_FILTERS.find((f) => f.id === inp.dataset.lf)?.band ?? null; saveSettings(s); }));
+  root.querySelectorAll<HTMLInputElement>('input[data-ap]').forEach((inp) => inp.addEventListener('change', () => { if (inp.checked && inp.dataset.ap !== hd.pack.meta.icao) hd.setAirport?.(inp.dataset.ap!, 'settings'); }));
 }
 
 // ===========================================================================
@@ -521,6 +606,8 @@ const SHORT: Record<string, string> = { Student: 'Learning the position', OJT: '
 const fmtDate = (iso?: string) => { if (!iso) return ''; const d = new Date(iso); return isNaN(+d) ? '' : `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`; };
 
 export function renderCareer(root: HTMLElement, hd: MenuHandlers) {
+  const pack = hd.pack;
+  const rides = checkridesFor(pack.meta.icao);
   const st = careerNow();
   const car = loadCareer();
   const log = loadLogbook();
@@ -532,7 +619,7 @@ export function renderCareer(root: HTMLElement, hd: MenuHandlers) {
     const tries = car.checkrides.filter((c) => c.id === def.id && !c.credited);
     const lock = !p ? '' : !p.reqs.every((r) => r.ok) ? 'Meet every requirement above to book it.' : p.retakeIn ? `Retake after ${p.retakeIn} more logged shift${p.retakeIn > 1 ? 's' : ''}.` : '';
     return `<article class="cr-slip ${p?.ready ? 'ready' : ''}">
-      <header class="mono"><span>EBLG APP · CHECKRIDE</span><span>${tries.length ? `ATTEMPT ${tries.length + 1}` : 'FIRST ATTEMPT'}</span></header>
+      <header class="mono"><span>${esc(pack.meta.icao)} APP · CHECKRIDE</span><span>${tries.length ? `ATTEMPT ${tries.length + 1}` : 'FIRST ATTEMPT'}</span></header>
       <h4>${esc(def.title)}</h4>
       <p>${esc(def.brief)}</p>
       <ul class="cr-slip-list"><li>Pass the safety gate</li><li>Graded ${GRADE_NAMES[def.minGrade]} or better</li><li>Handle the examiner's surprises. The script is hidden.</li></ul>
@@ -542,7 +629,7 @@ export function renderCareer(root: HTMLElement, hd: MenuHandlers) {
   };
   const ladder = RANKS.map((r, i) => {
     const cls = i < st.index ? 'done' : i === st.index ? 'now' : i === st.index + 1 ? 'next' : 'later';
-    const when = i === 0 ? '' : i <= st.index ? (car.checkrides.find((c) => c.id === CHECKRIDES[i - 1].id && c.pass)?.credited ? 'carried over' : fmtDate(st.promotedOn[i])) : '';
+    const when = i === 0 ? '' : i <= st.index ? (car.checkrides.find((c) => c.id === rides[i - 1]?.id && c.pass)?.credited ? 'carried over' : fmtDate(st.promotedOn[i])) : '';
     return `<li class="cr-step ${cls}">
       <div class="cr-rail"><i>${i < st.index ? '✓' : i === st.index ? '●' : ''}</i></div>
       <div class="cr-body">
@@ -555,7 +642,8 @@ export function renderCareer(root: HTMLElement, hd: MenuHandlers) {
     </li>`;
   }).join('');
   root.innerHTML = shell(`
-    <h2>Career</h2>
+    <h2>Career <small class="h-ap mono">${esc(pack.meta.icao)}</small></h2>
+    ${rides.length ? '' : `<p class="lede cr-none">There are no checkrides at ${esc(pack.meta.name)} yet, so the ladder stops at ${esc(st.name)} here. Your shifts and hours are logged all the same, and the Liège ladder keeps its own progress.</p>`}
     <p class="lede">From student to supervisor. Each promotion needs logged shifts at a minimum grade, a few challenges, and then a checkride with an examiner behind you. A logged shift is any free play or daily shift of 15 minutes or more.</p>
     <section class="cr-head">
       <div class="lb-badge"><small>Rank</small><b>${st.name}</b></div>
@@ -569,8 +657,8 @@ export function renderCareer(root: HTMLElement, hd: MenuHandlers) {
         </dl>
       </div>
     </section>
-    <ol class="cr-ladder">${ladder}</ol>
-    ${!p ? '<p class="lede">Top of the ladder. Keep the logbook going; the drills and daily shift are always there.</p>' : ''}
+    ${rides.length ? `<ol class="cr-ladder">${ladder}</ol>` : ''}
+    ${!p && rides.length ? '<p class="lede">Top of the ladder. Keep the logbook going; the drills and daily shift are always there.</p>' : ''}
   `, true, 'career');
   root.querySelector('[data-ride="go"]')?.addEventListener('click', () => p && hd.startCheckride?.(p.checkride));
 }
@@ -585,12 +673,13 @@ const DRILL_ICON: Record<DrillId, string> = {
   release: '<path d="M18 30 L44 30" class="hl"/><circle cx="8" cy="22" r="2.5"/><circle cx="40" cy="12" r="2.5"/><path d="M24 30 L34 22" /><path d="M31 21 L34 22 L33 25"/>',
 };
 export function renderDrills(root: HTMLElement, hd: MenuHandlers) {
+  const DRILLS = drillsFor(hd.pack.meta.icao);
   const recs = loadDrills();
   const card = (i: number, id: DrillId) => {
     const d = drillById(id)!;
     const r: DrillRecord | undefined = recs[id];
     return `<article class="dr-card ${r?.passes ? 'passed' : ''}">
-      <header><svg viewBox="0 0 48 36" aria-hidden="true">${DRILL_ICON[id]}</svg><div><span class="mono">DRILL ${String(i + 1).padStart(2, '0')}</span><b>${esc(d.title)}</b></div></header>
+      <header><svg viewBox="0 0 48 36" aria-hidden="true">${DRILL_ICON[id] ?? ''}</svg><div><span class="mono">DRILL ${String(i + 1).padStart(2, '0')}</span><b>${esc(d.title)}</b></div></header>
       <p>${esc(d.summary)}</p>
       <p class="dr-goal"><span class="mono">PASS</span>${esc(d.goal)}</p>
       <dl class="dr-best">
@@ -604,7 +693,7 @@ export function renderDrills(root: HTMLElement, hd: MenuHandlers) {
   root.innerHTML = shell(`
     <h2>Drills</h2>
     <p class="lede">Two-minute exercises, one skill each. Every attempt is a new variation and the drill ends itself as soon as it can be judged. Fast-forward is fine: the score does not care.</p>
-    <div class="dr-grid">${DRILLS.map((d, i) => card(i, d.id)).join('')}</div>
+    ${DRILLS.length ? `<div class="dr-grid">${DRILLS.map((d, i) => card(i, d.id)).join('')}</div>` : `<p class="lede">No drills at ${esc(hd.pack.meta.name)} yet. The Liège drills teach the same skills; switch airport on the home page to fly them.</p>`}
   `, true, 'drills');
   root.querySelectorAll<HTMLButtonElement>('[data-drill]').forEach((b) => b.addEventListener('click', () => hd.startDrill?.(b.dataset.drill as DrillId)));
 }
@@ -632,22 +721,45 @@ function voicePanelHtml(r: Radio, s: Settings): string {
     </div>
     <p class="dim small">Voices: Piper models trained on VCTK (Edinburgh, CC BY), L2-ARCTIC (Texas A&amp;M, CC BY-NC) and Thorsten Müller’s German voice (CC0); phonemes by espeak-ng (GPL-3). Generated on this device; nothing is sent anywhere.</p></fieldset>`;
 }
-const SAMPLES: [string, string][] = [
-  ['QTR8125', 'Liège Approach, Qatari eight one two five, flight level niner five descending flight level eight zero, information Lima'],
-  ['FDX5240', 'Liège Approach, FedEx five two four zero, passing two thousand three hundred feet climbing flight level six zero, L N O niner Sierra'],
-  ['BCS5AB', 'descend flight level niner zero, reduce speed to two two zero knots, Eurotrans five Alfa Bravo'],
-  ['ABR3JW', 'Contract three Juliett Whiskey, request direct Al-hoov'],
-  ['TAY4EK', 'cleared I L S approach runway two two left, Quality four Echo Kilo'],
-];
+const SAMPLES: Record<string, [string, string][]> = {
+  EBLG: [
+    ['QTR8125', 'Liège Approach, Qatari eight one two five, flight level niner five descending flight level eight zero, information Lima'],
+    ['FDX5240', 'Liège Approach, FedEx five two four zero, passing two thousand three hundred feet climbing flight level six zero, L N O niner Sierra'],
+    ['BCS5AB', 'descend flight level niner zero, reduce speed to two two zero knots, Eurotrans five Alfa Bravo'],
+    ['ABR3JW', 'Contract three Juliett Whiskey, request direct Al-hoov'],
+    ['TAY4EK', 'cleared I L S approach runway two two left, Quality four Echo Kilo'],
+  ],
+  EDDL: [
+    ['EWG2LK', 'Langen Radar, Eurowings two Lima Kilo, flight level one one zero descending flight level eight zero, information Kilo'],
+    ['DLH4KM', 'Langen Radar, Lufthansa four Kilo Mike, passing three thousand feet climbing flight level seven zero, MODRU two Tango'],
+    ['CFG71B', 'descend flight level niner zero, reduce speed to two two zero knots, Condor seven one Bravo'],
+    ['UAE57', 'Emirates five seven heavy, request direct Bik-moo'],
+    ['THY1839', 'cleared I L S approach runway two three left, Turkish one eight three niner'],
+  ],
+};
+/** Sample calls for the voice panel: the airport's own, or ones written from its pack. */
+function samplesFor(pack: Pack): [string, string][] {
+  const own = SAMPLES[pack.meta.icao];
+  if (own) return own;
+  const ops = [...(pack.spec.traffic?.pax ?? []), ...(pack.spec.traffic?.cargo ?? [])];
+  const cs = (i: number) => `${ops[i % Math.max(1, ops.length)]?.op ?? 'QTR'}${100 + i * 37}`;
+  const land = pack.runwayConfigs[0]?.land ?? pack.preferredRunways[0];
+  return [
+    [cs(1), `${pack.meta.appCallsign}, flight level one one zero descending flight level eight zero, information Kilo`],
+    [cs(2), 'descend flight level niner zero, reduce speed to two two zero knots'],
+    [cs(3), `cleared I L S approach runway ${land.split('').join(' ').replace('L', 'left').replace('R', 'right')}`],
+  ];
+}
 let sampleN = 0;
-function wireVoicePanel(root: HTMLElement, r: Radio, s: Settings) {
+function wireVoicePanel(root: HTMLElement, r: Radio, s: Settings, pack: Pack) {
   const st = root.querySelector<HTMLElement>('[data-e="vstatus"]');
   const refresh = () => { if (st?.isConnected) st.textContent = voiceStatus(r, s); else r.neural.onChange = undefined; };
   r.neural.onChange = refresh;
   root.querySelector('[data-v="dl"]')?.addEventListener('click', () => { r.unlock(); r.engine = 'neural'; r.loadVoices(); refresh(); });
   root.querySelector('[data-v="sample"]')?.addEventListener('click', () => {
     r.unlock(); r.engine = s.voiceEngine; r.enabled = true;
-    const [cs, line] = SAMPLES[sampleN++ % SAMPLES.length];
+    const list = samplesFor(pack);
+    const [cs, line] = list[sampleN++ % list.length];
     r.speak(line, cs, { kind: 'rt', signal: 0.45 + (sampleN % 3) * 0.25 });
   });
   root.querySelector('[data-v="rm"]')?.addEventListener('click', async () => {
@@ -712,19 +824,42 @@ function wireSavePanel(root: HTMLElement, hd: MenuHandlers, rerender: () => void
 
 // ===========================================================================
 // Help: controls, shorthand, label anatomy, colours, glossary
-export function renderHelp(root: HTMLElement) {
+/** The one-paragraph airport summary at the foot of the wake table. */
+function airportParagraph(pack?: Pack): string {
+  if (!pack || pack.meta.icao === 'EBLG') return 'Liège in one paragraph: every STAR ends at ALHUV, right over the 22L threshold. X-series STARs feed runway 22, D-series loop south through RUDIX for runway 04. RNAV transitions (ALHUV1A to 1Z) lead to the intermediate fix at 2,500 ft (22) or 3,000 ft (04). Departures climb to FL060 and must go to Brussels before they leave the 40 NM sector.';
+  if (pack.meta.icao === 'EDDL') return 'Düsseldorf in one paragraph: you are Langen Radar on 128.555, feeding the parallel runways; the northern one (23R or 05L) lands and the southern one (23L or 05R) departs when both are in use. Arrivals come in over BIKMU, DOMUX, HALME and PISAP and the stack forms at BIKMU; the coded RNAV transitions lead from there to the intermediate fix 4 NM outside the final approach fix. Departures call Langen on 121.355 passing 2,000 ft, climb to FL100 and go to the Bottrop sector before they leave the 40 NM sector. The field is shut to scheduled traffic 22:00 to 06:00 local, and ED-R 111 Jülich is the military area next door.';
+  const units = unitTable(pack), acc = unitByRole(units, 'acc');
+  const lvl = pack.depXfl as { fl?: number; ft?: number };
+  const xfl = lvl.fl !== undefined ? `FL${String(lvl.fl).padStart(3, '0')}` : `${thousands(lvl.ft ?? 0)} ft`;
+  return `${pack.meta.name} in one paragraph: you are ${pack.meta.appCallsign} on ${pack.meta.appFreq}. The arrivals gather at ${pack.stackFix}, where the transitions to the intermediate fix start. Departures climb to ${xfl} and go to ${acc?.say ?? 'the centre'} before they leave the ${pack.meta.sectorRadiusNm} NM sector. The ${pack.reservedAreasName} areas are the military airspace you coordinate with.`;
+}
+
+export function renderHelp(root: HTMLElement, pack?: Pack) {
   const sk = SKIN.night;
+  const GLOSSARY = glossaryFor(pack);
+  const units = pack ? unitTable(pack) : undefined;
+  const twr = units ? unitByRole(units, 'tower') : undefined, acc = units ? unitByRole(units, 'acc') : undefined, mil = units ? unitByRole(units, 'military') : undefined;
+  const stack = pack?.stackFix ?? 'ALHUV';
+  const trans = pack?.transitions[0]?.name ?? 'ALHUV1A';
+  const rwy = pack ? (pack.runwayConfigs[0]?.land ?? pack.preferredRunways[0]) : '22L';
+  const fix = pack ? (pack.transitions[0]?.legs[1]?.fix ?? stack) : 'LIBVA';
+  const unitKeys = `${twr?.id ?? 'TWR'} · ${acc?.id ?? 'BRU'} · ${mil?.id ?? 'MIL'}`;
+  const unitNames = `Hand off to ${twr?.callsign ?? 'Tower'} · ${acc?.callsign ?? 'Brussels'} · ${mil?.callsign ?? 'military control'}`;
+  const areasName = pack?.reservedAreasName ?? 'TSA';
   const controls: [string, string, string, string][] = [
-    ['Select an aircraft', 'Tap its track, label, strip or AMAN entry', 'Click', '<kbd>Tab</kbd> next pilot waiting · type the callsign'],
+    ['Select an aircraft', 'Tap its track, label, strip, AMAN entry or attention row', 'Click', '<kbd>Tab</kbd> walks the attention queue · type the callsign, or just its digits'],
     ['Heading', 'Drag from the aircraft and lift', 'Drag, or wheel over the label', '<span class="mono">H250 L250 R250</span>'],
-    ['Direct to a fix', 'Drag from the aircraft and lift on the fix', 'Drag onto the fix', '<span class="mono">DCT LIBVA</span> · <span class="mono">&gt;LIBVA</span>'],
+    ['Direct to a fix', 'Drag from the aircraft and lift on the fix', 'Drag onto the fix', `<span class="mono">DCT ${esc(fix)}</span> · <span class="mono">&gt;${esc(fix.slice(0, 3).toLowerCase())}</span>`],
     ['Level', 'Tap the level line of the label', 'Click it, or wheel', '<span class="mono">D40 C80 A30 FL070</span>'],
     ['Speed', 'Tap the speed line', 'Click it, or wheel', '<span class="mono">S210 S160/4 SMIN SRES</span>'],
-    ['Approach and transitions', 'Tap the bottom line', 'Click it', '<span class="mono">ILS RNP22L ALHUV1A HOLD</span>'],
+    ['Approach and transitions', 'Tap the bottom line', 'Click it', `<span class="mono">ILS RNP${esc(rwy)} ${esc(trans)} HOLD</span>`],
     ['More orders', 'Long-press a track', 'Long-press', '<span class="mono">RON SQ4521</span>'],
     ['Transmit', 'SEND', 'SEND', '<kbd>Enter</kbd>'],
     ['Clear the bar', '×', '×', '<kbd>Esc</kbd>'],
-    ['Pause', '❚❚', '❚❚', '<kbd>Space</kbd>'],
+    ['Pause', '❚❚', '❚❚', '<kbd>Shift</kbd>+<kbd>Space</kbd> (Space is push to talk)'],
+    ['Undo the last send', 'Undo chip', 'Undo chip', '<kbd>Backspace</kbd>, within two seconds'],
+    ['Queue a clearance', 'Q', 'Q', '<kbd>Q</kbd>, then <kbd>Enter</kbd> sends the first queued'],
+    ['Replay the last minute', 'MORE', 'MORE', 'MORE · Replay'],
     ['Zoom and pan', 'Pinch, drag empty scope', 'Wheel on empty scope, drag', '+ − ◎ buttons'],
     ['Measure', 'RBL, then two points', 'RBL, then two points', ''],
   ];
@@ -732,10 +867,10 @@ export function renderHelp(root: HTMLElement) {
     ['H250 · L250 · R250', 'Heading 250, shortest way / turn left / turn right'],
     ['D40 · C80 · A30 · FL070', 'Descend 4,000 ft · climb FL080 · altitude 3,000 ft · flight level 70. Below the transition level numbers are feet.'],
     ['S210 · S160/4 · SMIN · SRES', 'Speed 210 kt · 160 kt until 4 NM · minimum clean speed · resume normal speed'],
-    ['DCT LIBVA · >LIBVA', 'Direct to a fix'],
-    ['ALHUV1A · ILS · RNP22L · VIS22L', 'Transition · ILS on the runway in use · RNP or visual approach'],
-    ['HOLD · HOLD ALHUV', 'Hold at the published fix (give an expected time)'],
-    ['TWR · BRU · MIL', 'Hand off to Tower · Brussels · military control'],
+    [`DCT ${fix} · >${fix.slice(0, 3).toLowerCase()}`, 'Direct to a fix; a short start of the name is enough when it fits one fix'],
+    [`${trans} · ILS · RNP${rwy} · VIS${rwy}`, 'Transition · ILS on the runway in use · RNP or visual approach'],
+    [`HOLD · HOLD ${stack}`, 'Hold at the stack fix (give an expected time)'],
+    [unitKeys, unitNames],
     ['Y · N', 'Approve or refuse a pilot request'],
     ['BRK H040 A30', 'Cancel the approach clearance (break off), with a heading and altitude'],
     ['ATIS', '"Information X now current, QNH …": answer a pilot with an old ATIS'],
@@ -756,7 +891,7 @@ export function renderHelp(root: HTMLElement) {
     [sk.select, 'Cyan', 'Selected aircraft, and values you assigned'],
     [sk.warn, 'Amber', 'Something needs a look: a wrong readback, a request, a Mode S mismatch'],
     [sk.urgent, 'Red', 'Safety net or emergency: STCA, MSAW, CLAM, 7700, 7600'],
-    [sk.tsaOn, 'Amber outline', 'Active military area (TSA)'],
+    [sk.tsaOn, 'Amber outline', `Active military area (${areasName})`],
   ];
   const nav = [['controls', 'Controls'], ['shorthand', 'Typed orders'], ['label', 'The label'], ['colours', 'Colours'], ['wake', 'Wake'], ['glossary', 'Glossary']];
   root.innerHTML = shell(`
@@ -774,7 +909,8 @@ export function renderHelp(root: HTMLElement) {
       <div class="hp-scroll"><table class="hp-table"><thead><tr><th></th><th>Touch</th><th>Mouse</th><th>Keyboard</th></tr></thead><tbody>
         ${controls.map(([a, t, m, k]) => `<tr><th>${a}</th><td data-l="Touch"><span>${t}</span></td><td data-l="Mouse"><span>${m}</span></td><td data-l="Keys"><span>${k || '-'}</span></td></tr>`).join('')}
       </tbody></table></div>
-      <p class="lede">Pilots read back every instruction. Some get it wrong on purpose: re-issue the item within 30 seconds to correct them. A flashing box around a callsign means that pilot is waiting for you.</p>
+      <p class="lede">Pilots read back every instruction. Some get it wrong on purpose: the readback card above the composer turns amber and carries the correction; re-issue the item within 30 seconds. A flashing box around a callsign means that pilot is waiting for you; the NEXT button lists everyone who does, most urgent first.</p>
+      <p class="lede">On the radar, the selected aircraft wears a halo: a ladder of levels on one side, speeds on the other, the fixes that make sense and the ILS, HOLD and handoff keys. One tap sends; a long press stages it for a longer clearance; Backspace or the Undo chip takes a send back within two seconds.</p>
     </section>
 
     <section class="hp-sec" id="hp-shorthand">
@@ -790,7 +926,7 @@ export function renderHelp(root: HTMLElement) {
           <div><b>QTR8125</b> <i class="dim">B</i> <i class="red">CLAM</i></div>
           <div>070↓ <i class="cy">040</i> <i class="amb">≠050</i></div>
           <div>24 <i class="cy">S210 H250</i></div>
-          <div>LOC22L D8.4</div>
+          <div>LOC${esc(rwy)} D8.4</div>
         </div>
         <ol class="hp-callouts">
           <li><b>Line 1</b> callsign, RECAT-EU wake category for heavies, then any alert: <span class="mono red">CLAM</span>, <span class="mono red">MSAW</span>, <span class="mono red">7700</span>, <span class="mono">REQ</span> for a pilot request.</li>
@@ -809,7 +945,7 @@ export function renderHelp(root: HTMLElement) {
     <section class="hp-sec" id="hp-wake">
       <h3>RECAT-EU wake minima on final <small>NM; never less than 3</small></h3>
       ${wakeTable}
-      <p class="lede">Liège in one paragraph: every STAR ends at ALHUV, right over the 22L threshold. X-series STARs feed runway 22, D-series loop south through RUDIX for runway 04. RNAV transitions (ALHUV1A to 1Z) lead to the intermediate fix at 2,500 ft (22) or 3,000 ft (04). Departures climb to FL060 and must go to Brussels before they leave the 40 NM sector.</p>
+      <p class="lede">${esc(airportParagraph(pack))}</p>
     </section>
 
     <section class="hp-sec" id="hp-glossary">
@@ -1048,7 +1184,7 @@ function wireDebriefExtra(root: HTMLElement, x: DebriefExtra) {
     root.querySelector('[data-a="poster"]')?.addEventListener('click', async () => {
       const st = root.querySelector<HTMLElement>('[data-e="pstatus"]');
       if (!pc.width || pc.width < 400) paint();
-      const ok = await downloadCanvas(pc, `liege-approach-${x.poster!.meta.dateText.replace(/\s+/g, '-').toLowerCase()}-${x.poster!.meta.seed}.png`);
+      const ok = await downloadCanvas(pc, `${x.pack!.meta.icao.toLowerCase()}-approach-${x.poster!.meta.dateText.replace(/\s+/g, '-').toLowerCase()}-${x.poster!.meta.seed}.png`);
       if (st) st.textContent = ok ? 'Saved.' : 'This browser would not save the image.';
     });
   }

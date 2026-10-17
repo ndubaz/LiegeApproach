@@ -16,7 +16,8 @@ export interface Settings {
   trainingWheels: boolean; // warnings block transmission
   leftHanded: boolean;
   labelSize: 'S' | 'M' | 'L';
-  brightness: 'night' | 'day';
+  /** Console and scope skin (2.0: amber joins night and day). */
+  brightness: 'night' | 'day' | 'amber';
   unlockAll: boolean;
   speedVectorMin: 1 | 2 | 3;
   showMva: boolean;
@@ -29,13 +30,34 @@ export interface Settings {
   speakIcom: boolean;      // speak intercom lines from Tower, the centre and the others
   /** 2.0: the airport in use (ICAO id of a pack in src/pack/index.ts). */
   airport: string;
+  // ---- 2.0 scope options (mirrored onto scope.opts at game start and on change) ----
+  /** Range-ring spacing, NM. */
+  ringStep: 5 | 10 | 20;
+  /** Level filter in feet: traffic outside the band is dimmed. null: off. */
+  levelFilter: { lo?: number; hi?: number } | null;
+  /** The rotating sweep line (one turn per radar update). */
+  sweep: boolean;
+  /** History dots behind each symbol, 0 to 7 radar plots. */
+  trailLen: number;
+  /** Interpolate the symbol between radar plots. */
+  smooth: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   voice: true, speakAtc: false, speechRate: 1.08, radarRefresh: 4, quickMode: false, trainingWheels: false,
   leftHanded: false, labelSize: 'M', brightness: 'night', unlockAll: false, speedVectorMin: 1, showMva: false, showProcedures: true, hints: true,
   pttKey: 'Space', pedal: null, voiceLang: 'en-GB', voiceEngine: 'neural', speakIcom: true, airport: DEFAULT_PACK,
+  ringStep: 5, levelFilter: null, sweep: false, trailLen: 5, smooth: true,
 };
+
+/** The level-filter presets the settings page and the MORE menu offer (feet). */
+export const LEVEL_FILTERS: { id: string; label: string; band: Settings['levelFilter'] }[] = [
+  { id: 'off', label: 'Off', band: null },
+  { id: 'low', label: 'Below FL100', band: { hi: 10000 } },
+  { id: 'app', label: '1,500 ft to FL070', band: { lo: 1500, hi: 7000 } },
+  { id: 'high', label: 'FL060 and above', band: { lo: 6000 } },
+];
+export const levelFilterId = (b: Settings['levelFilter']) => LEVEL_FILTERS.find((f) => JSON.stringify(f.band ?? null) === JSON.stringify(b ?? null))?.id ?? 'off';
 
 // ---------------------------------------------------------------------------
 // Airport scoping. Records, the career, the daily shift and drill results are kept per airport. Liège keeps the

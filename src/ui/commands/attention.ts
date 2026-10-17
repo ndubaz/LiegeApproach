@@ -83,7 +83,7 @@ export function attentionRows(sim: Sim, max = 6): AttentionRow[] {
   for (const r of sim.coordReqs) {
     if (r.state !== 'pending') continue;
     const adv = coordAdvice(sim, r.cs);
-    add({ key: `bru:${r.cs}`, kind: 'bru', cs: r.cs, urgency: 42 + Math.min(20, (sim.t - r.t) / 5), reason: `Brussels: take it early at ${levelText(r.level)}?`, waitS: sim.t - r.t, action: adv ? { label: adv.ok ? 'Approve' : 'As coordinated', items: adv.items, why: adv.why, icom: true } : undefined });
+    add({ key: `bru:${r.cs}`, kind: 'bru', cs: r.cs, urgency: 42 + Math.min(20, (sim.t - r.t) / 5), reason: `${sim.acc.say}: take it early at ${levelText(r.level)}?`, waitS: sim.t - r.t, action: adv ? { label: adv.ok ? 'Approve' : 'As coordinated', items: adv.items, why: adv.why, icom: true } : undefined });
   }
   // 6. established on the localizer: the handoff to Tower is due
   for (const ac of sim.aircraft) {

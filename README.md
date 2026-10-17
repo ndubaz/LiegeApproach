@@ -1,8 +1,15 @@
 # Liège Approach
 
-An approach and departure radar simulator for Liège (EBLG). It runs as an installable web app on phone, iPad and desktop. You work Liège Approach on 119.280: Belgian AIP procedures, a cargo hub's night banks, Tower release requests on the intercom, military crossings, emergencies, and a debrief graded against the ICAO controller competencies.
+An approach and departure radar simulator for Liège (EBLG) and, since 2.0, Düsseldorf (EDDL). It runs as an installable web app on phone, iPad and desktop. You work Liège Approach on 119.280 or Langen Radar on 128.555: AIP procedures, a cargo hub's night banks or a passenger airport's waves onto parallel runways, Tower release requests on the intercom, military crossings, emergencies, and a debrief graded against the ICAO controller competencies.
 
-Not a training device. Flights are fictional. Some airspace is approximate (listed in `src/pack/eblg.ts`).
+Not a training device. Flights are fictional. Some airspace is approximate (listed in `src/pack/eblg.ts` and `src/pack/eddl.ts`, and reviewed in `docs/REALISM.md` and `docs/REALISM-EDDL.md`).
+
+## What is new in 2.0
+
+- **Two airports on one engine.** Pick Liège or Düsseldorf on the home page (or in Settings). Everything the console says comes from the airport's location pack: the frequency, the callsign, the intercom units (Liège Tower, Brussels Control, the military; Düsseldorf Tower, Langen Radar's Bottrop sector, Frisbee Radar), the stack fix (ALHUV, BIKMU), the reserved areas (TSA, ED-R), the runways in use (Düsseldorf lands on the northern runway and departs on the southern when both are in use), the free-play templates and the weather presets. Records, careers, drills and the daily shift are kept per airport; the logbook is one book with an airport column. The lessons run at Liège for now and are listed as "Liège lessons" when Düsseldorf is selected. `docs/REALISM-EDDL.md` has the Düsseldorf sources and approximations.
+- **A commands module built for the seconds a controller has.** The NEXT button is an attention queue (who needs what next, each row with its one-tap action); the selected aircraft wears a command halo on the scope (a level ladder, a speed ladder, the fixes that make sense, ILS, HOLD and the handoff keys, one tap sends, long press stages, two-second undo); the command line takes partial callsigns and short fix names (`81 >lib d70`); readbacks track inline on a card above the composer; clearances for several aircraft can be queued. Measured before and after in `docs/COMMANDS.md`.
+- **A scope that reads like a modern display.** Three skins (night, day, amber), a weighted video map with terrain, towns, other aerodromes, airspace states and holds as racetracks, a label solver that keeps leaders short, history dots, interpolated motion between radar plots, a level filter, a settable ring step, a sweep line, a cursor readout and a trail replay of the last minute. `docs/GRAPHICS.md` has the critique, the changes and the frame-time measurements. The options live in Settings and under MORE on the console.
+- **Voices for both airports.** Casting reads each pack's units and operators (German crews at Düsseldorf, Dutch and French on the Liège landline), and the sample calls in Settings follow the airport.
 
 ## What is in 1.0
 
@@ -21,7 +28,7 @@ Not a training device. Flights are fictional. Some airspace is approximate (list
 nvm use            # Node 20 (18.18 or newer works)
 npm ci
 npm run dev        # local dev server on http://localhost:5173
-npm test           # 262 tests: procedures, engine, separation, scoring, suggestions, voice, career, every tutorial lesson
+npm test           # 336 tests: both packs, engine, separation, scoring, suggestions, parser, voice, career, scope, commands, every tutorial lesson
 npm run build      # type check + PWA build in dist/ (what Vercel deploys)
 npm run preview    # serve dist/ locally
 ```
@@ -62,22 +69,25 @@ Notes:
 
 ```
 src/
-  pack/        location packs: eblg.ts (data), types.ts (schema), load.ts (projection, compile)
+  pack/        location packs: eblg.ts and eddl.ts (data), types.ts (schema), load.ts (projection, compile), index.ts (the airports on offer)
   engine/      sim.ts (clock, radio and intercom, clearances, releases, monitors)
                pilot.ts (flight model and pilot logic), perf.ts (per-type envelopes, RECAT-EU)
                predict.ts (side-effect-free look-ahead), suggest.ts + sequence.ts (next-call chips, landing slots)
                hints.ts (supervisor hints), traffic.ts (free play, night shift, daily shift)
                scenarios.ts (21 challenges), assess.ts (safety gate, grades, cause chains, competencies)
                parser.ts (shorthand and voice), clearance.ts (phraseology), weather.ts, autopilot.ts (demo and tests)
-  ui/          scope.ts (canvas radar, SKIN colours), game.ts (orders bar, pickers, intercom, panels, loop)
-               menu.ts + menu.css (home, briefing, debrief, logbook, help), tutorial.ts + tutorial.css (lessons, coach)
-               attract.ts (live radar on the home screen), audio.ts, glossary.ts
+  ui/          scope.ts + scope.css (canvas radar), skins.ts (the night, day and amber colour sets), game.ts (orders bar, pickers, intercom, panels, loop)
+               commands/ (attention queue, halo, readback cards, staging, command line)
+               menu.ts + menu.css (home with the airport switch, briefing, debrief, logbook, help), tutorial.ts + tutorial.css (lessons, coach)
+               attract.ts (live radar on the home screen), audio.ts, glossary.ts (pack-aware), poster.ts
+  voice/       radio-fx.ts (the VHF channel), casting.ts (voices by operator and unit), neural.ts, speech-text.ts
 api/metar.ts   live METAR proxy (Vercel function)
 tests/         pack checks, fly-throughs, engine, game, suggestions, prediction, tutorial lessons
 ```
 
 - The sim is deterministic. A seed plus the command log reproduces a session exactly, which is how "Replay from here" works.
-- All scope colours live in `SKIN` in `src/ui/scope.ts`.
+- All scope colours live in `src/ui/skins.ts`, one object per skin with the same keys; `SKIN` is re-exported from `src/ui/scope.ts` for the help page.
+- Settings (`src/store.ts`) carry the scope options (`brightness` is the skin: night, day or amber; `ringStep`, `levelFilter`, `trailLen`, `sweep`, `smooth`) and the airport (`airport`). The console mirrors them onto `scope.opts` at start and after every change.
 - Pilots treat a plain level clearance the ICAO way: it cancels published altitude restrictions, while speed restrictions stay.
 
 ## Adding an airport
@@ -98,6 +108,11 @@ Write a new `PackSpec` (copy `src/pack/eblg.ts`) and register it in `src/pack/in
 | Releases | the Tower card: Release, After, Hold | `CHG7302 REL`, `REL/QTR586`, `RH3` |
 | Typed | ⌨ button | just type: `DHK7 L250 D40 S210 ILS`, then Enter |
 
-Shorthand: `D40` descend 4,000 ft, `C80` climb FL080, `S160/4` 160 kt until 4 NM, `DCT LIBVA`, `ALHUV1A`, `HOLD`, `TWR`, `BRU`, `MIL`, `BRK` cancel approach, `ATIS`, `Y`/`N` for requests. A clearance with a warning needs a second Enter or a second tap on TRANSMIT.
+Shorthand: `D40` descend 4,000 ft, `C80` climb FL080, `S160/4` 160 kt until 4 NM, `DCT LIBVA` or `>lib`, `ALHUV1A`, `HOLD` (the airport's stack fix), `TWR`, `BRU` or `ACC` or the unit's name (`LANGEN`), `MIL`, `BRK` cancel approach, `ATIS`, `Y`/`N` for requests, `Q` queues a clearance, Backspace undoes a send within two seconds. Digits alone pick the aircraft (`81` for QTR8125). A clearance with a warning needs a second Enter or a second tap on TRANSMIT.
+
+## Version notes
+
+- **2.0.0** Two airports (Liège, Düsseldorf), the commands module, the 2.0 scope and skins, pack-driven console text and glossary, per-airport records and careers, scope options in Settings and under MORE. Saved settings from 1.0 load unchanged; records without an airport are Liège's.
+- **1.0.0** The Liège position with radio voices, career, drills, challenges, the daily shift and eleven lessons.
 
 Voice (experimental): hold the mic button and speak standard phraseology. It fills the clearance bar for you to check before sending. It needs a browser with speech recognition (Safari, Chrome).

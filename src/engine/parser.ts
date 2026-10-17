@@ -1,4 +1,4 @@
-import { TELEPHONY, telephony, type Item } from './clearance';
+import { TELEPHONY, UNITS, telephony, type Item, type UnitTable } from './clearance';
 
 // Shorthand grammar (desktop command line, and the target of voice input):
 //   [CALLSIGN] H250 | L250 | R250        heading (shortest / left / right)
@@ -32,6 +32,35 @@ export interface ParseCtx {
   stars?: Set<string>;
   /** The airport's stack fix, for a bare HOLD (ALHUV when absent). */
   holdFix?: string;
+  /** The intercom units of the active pack (ids, callsigns, frequencies). Absent: the engine's active table (Liège until a Sim is built). */
+  units?: UnitTable;
+}
+
+/** The unit table a parse context works with. */
+const unitsOf = (ctx: ParseCtx): UnitTable => ctx.units ?? UNITS;
+const plainWord = (w: string) => w.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z]/g, '');
+const ROLE_ORDER = ['acc', 'tower', 'military', 'upper', 'neighbour', 'ground', 'supervisor'];
+/**
+ * The words that name each unit a controller hands traffic to, best unit first when a word fits several
+ * (Langen Radar is the centre before it is the departure sector): its short name on the landline, the
+ * callsign's words, its key label and its id.
+ */
+export function unitWords(units: UnitTable): [string, string][] {
+  const out: [string, string][] = [];
+  const list = Object.values(units).filter((u) => u.role !== 'supervisor').sort((a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role));
+  for (const u of list) {
+    const words = [u.say, ...u.callsign.split(/\s+/), u.label, u.id].map(plainWord).filter((w) => w.length >= 3 && !['approach', 'control', 'radar', 'centre', 'center'].includes(w));
+    for (const w of words) if (!out.some(([x]) => x === w)) out.push([w, u.id]);
+  }
+  return out;
+}
+/** The unit id a typed token means: its id (TWR, BRU, ACC) or one of its words (LANGEN, TOWER, BRUSSELS). */
+export function unitOfToken(tok: string, units: UnitTable): string | undefined {
+  const t = tok.toUpperCase();
+  if (units[t] && units[t].role !== 'supervisor') return t;
+  const w = plainWord(tok);
+  if (w.length < 3) return undefined;
+  return unitWords(units).find(([x]) => x === w)?.[1];
 }
 
 /** Items the parser understands before the engine does. When `Item` gains these kinds, merge `ext` into `items`. */
@@ -158,7 +187,7 @@ export function parseShorthand(input: string, ctx: ParseCtx): ParseResult {
       if (fx) { items.push({ k: 'hold', fix: fx }); i++; } else items.push({ k: 'hold', fix: ctx.holdFix ?? 'ALHUV' });
     } else if (ctx.transitions.has(t)) items.push({ k: 'trans', name: t });
     else if (t === 'RON' || t === 'OWN') items.push({ k: 'ron' });
-    else if (t === 'TWR' || t === 'BRU' || t === 'MUAC' || t === 'BEEK' || t === 'MIL') items.push({ k: 'xfr', unit: t });
+    else if (unitOfToken(t, unitsOf(ctx))) items.push({ k: 'xfr', unit: unitOfToken(t, unitsOf(ctx))! });
     else if (t === 'BRK' || t === 'BREAK') items.push({ k: 'brk' });
     else if (t === 'ATIS') items.push({ k: 'atis' });
     else if ((m = t.match(/^REL(?:\/([A-Z0-9]+))?$/))) {
@@ -205,7 +234,7 @@ export function parseShorthand(input: string, ctx: ParseCtx): ParseResult {
 }
 
 function isCommand(t: string, ctx: ParseCtx) {
-  return /^(H|HDG|L|R|D|C|A|F|FL|S)\d/.test(t) || ['SMIN', 'SRES', 'DCT', 'ILS', 'RNP', 'VIS', 'HOLD', 'RON', 'TWR', 'BRU', 'MUAC', 'BEEK', 'MIL', 'Y', 'N', 'BRK', 'ATIS', 'REL', 'RH', 'R', 'ROG', 'ROGER', 'SB', 'STBY', 'STANDBY', 'SA', 'CORR', 'STAR'].includes(t) || ctx.transitions.has(t) || !!ctx.stars?.has(t);
+  return /^(H|HDG|L|R|D|C|A|F|FL|S)\d/.test(t) || ['SMIN', 'SRES', 'DCT', 'ILS', 'RNP', 'VIS', 'HOLD', 'RON', 'Y', 'N', 'BRK', 'ATIS', 'REL', 'RH', 'R', 'ROG', 'ROGER', 'SB', 'STBY', 'STANDBY', 'SA', 'CORR', 'STAR'].includes(t) || !!unitOfToken(t, unitsOf(ctx)) || ctx.transitions.has(t) || !!ctx.stars?.has(t);
 }
 
 
@@ -286,9 +315,8 @@ const FIX_ALIASES: Record<string, string[]> = {
   KOK: ['koksy', 'coxy', 'cock see'], CIV: ['chievres', 'sheave', 'chiever'], NIK: ['nicky', 'nikki', 'nick'],
   BUB: ['brussels'], GSY: ['gosselies'], MAK: ['mackel'], GESLO: ['guess low'],
 };
-type Unit2 = 'TWR' | 'BRU' | 'MUAC' | 'BEEK' | 'MIL';
-const UNIT_WORDS: [string, Unit2][] = [['tower', 'TWR'], ['brussels', 'BRU'], ['maastricht', 'MUAC'], ['beek', 'BEEK'], ['military', 'MIL']];
-const UNIT_FREQ: Record<Unit2, string> = { TWR: '118.130', BRU: '131.100', MUAC: '132.755', BEEK: '123.980', MIL: '129.100' };
+/** Unit frequencies by id, from a unit table (units without a frequency are left out). */
+const unitFreqs = (units: UnitTable): Record<string, string> => Object.fromEntries(Object.values(units).filter((u) => u.freq).map((u) => [u.id, u.freq]));
 
 const KEYWORDS = new Set([
   'turn', 'heading', 'fly', 'fl', 'descend', 'climb', 'maintain', 'reduce', 'increase', 'speed', 'knots', 'direct', 'hold', 'cleared',
@@ -333,7 +361,7 @@ function normalise(text: string): string {
   s = s.replace(/[’']/g, '').replace(/(\d),(\d{3})/g, '$1$2').replace(/(\d):(\d{2})/g, '$1$2').replace(/(\d)\.(\d)/g, '$1 decimal $2');
   s = s.replace(/([a-z])(\d)/g, '$1 $2').replace(/(\d)([a-z])/g, '$1 $2').replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ');
   const R: [RegExp, string][] = [
-    [/ liege (approach|radar|arrival)/g, ' '], [/ (stand by|standby) /g, ' standby '], [/ say (again|that again)( your last)?/g, ' sayagain'],
+    [/^ (liege|luttich|langen|dusseldorf) (approach|radar|arrival) /, ' '], [/ (stand by|standby) /g, ' standby '], [/ say (again|that again)( your last)?/g, ' sayagain'],
     [/ flight ?levels? /g, ' fl '], [/ f l /g, ' fl '], [/ q n h /g, ' qnh '], [/ (eye|i) (l|el|ell) (s|ess) /g, ' ils '],
     [/ (i ls|iles|i less|ials|eyelash|eyeless) /g, ' ils '], [/ (r n p|rnav|our np|r and p|are np) /g, ' rnp '], [/ minimum clean( speed)?/g, ' minclean'],
     [/ (resume normal speed|no speed restrictions?|speed your discretion|high speed approved)/g, ' sres'],
@@ -539,6 +567,9 @@ export function parseVoice(text: string, ctx: VoiceCtx): VoiceResult {
   const out: Out[] = [];
   const fixes = [...ctx.fixes];
   const procs = [...ctx.transitions, ...(ctx.stars ?? [])];
+  const units = unitsOf(ctx);
+  const UNIT_WORDS = unitWords(units), UNIT_FREQ = unitFreqs(units);
+  const holdFix = ctx.holdFix ?? 'ALHUV';
   let correction = false;
   let corrPending = false;
   const emit = (sh: string, grp: Grp, conf = 1) => {
@@ -729,7 +760,7 @@ export function parseVoice(text: string, ctx: VoiceCtx): VoiceResult {
         emit('HOLD ' + m.name, 'lat', m.conf);
         if (m.conf < 0.85) unsure.push(`hold fix: heard "${m.said}", using ${m.name}`);
         take(i, m.next);
-      } else { emit('HOLD', 'lat', 0.8); unsure.push('hold: no fix heard, using ALHUV'); t.used = true; }
+      } else { emit('HOLD', 'lat', 0.8); unsure.push(`hold: no fix heard, using ${holdFix}`); t.used = true; }
       continue;
     }
     if (w === 'expectrelease') { t.used = true; continue; }
@@ -766,7 +797,7 @@ export function parseVoice(text: string, ctx: VoiceCtx): VoiceResult {
     // transfer
     if (w === 'contact' || w === 'monitor' || (w === 'tower' && isNum(at(i + 1)))) {
       let j = w === 'tower' ? i : i + 1;
-      let unit: Unit2 | undefined;
+      let unit: string | undefined;
       let uConf = 1;
       const uw = word(j);
       if (uw) {
@@ -779,7 +810,7 @@ export function parseVoice(text: string, ctx: VoiceCtx): VoiceResult {
       let freq: string | undefined;
       if (isNum(f)) { freq = f.n; j++; }
       const trim = (x: string) => x.replace(/\./, '').replace(/0+$/, '');
-      const fUnit = freq ? (Object.keys(UNIT_FREQ) as Unit2[]).find((u) => trim(UNIT_FREQ[u]) === trim(freq!)) : undefined;
+      const fUnit = freq ? Object.keys(UNIT_FREQ).find((u) => trim(UNIT_FREQ[u]) === trim(freq!)) : undefined;
       if (!unit && fUnit) unit = fUnit;
       if (unit && freq && fUnit !== unit) unsure.push(`frequency: ${freq} is not ${unit}`);
       if (unit) { emit(unit, 'xfr', uConf < 0.85 ? 0.8 : 1); if (uConf < 0.85) unsure.push(`unit: heard "${uw}", using ${unit}`); }

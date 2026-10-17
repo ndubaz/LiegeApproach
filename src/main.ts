@@ -44,8 +44,8 @@ radio.setPack(pack);
 let game: Game | undefined;
 let lastScenario: Scenario | undefined;
 
-/** Switch the airport: the pack, the store scope, the voices and the menu's handlers follow. */
-function setAirport(icao: string) {
+/** Switch the airport: the pack, the store scope, the voices and the menu's handlers follow, then `screen` opens (home by default). */
+function setAirport(icao: string, screen = 'home') {
   if (!PACKS[icao] || icao === pack.meta.icao) return;
   game?.destroy(); game = undefined;
   pack = loadPackById(icao);
@@ -54,7 +54,7 @@ function setAirport(icao: string) {
   setActiveAirport(pack.meta.icao);
   radio.setPack(pack);
   handlers.pack = pack;
-  go('home');
+  go(screen);
 }
 
 async function liveMetar(): Promise<string | undefined> {
@@ -73,7 +73,7 @@ const handlers: MenuHandlers & {
   startLesson(i: number): void;
   /** 2.0: the airports on offer and the switch (the menu's airport picker, phase 2). */
   airports: ReturnType<typeof airportList>;
-  setAirport(icao: string): void;
+  setAirport(icao: string, screen?: string): void;
   /** 2.0: the challenges written for the airport in use. */
   challenges(): Scenario[];
 } = {
@@ -141,20 +141,25 @@ function go(screen: string) {
   document.body.classList.remove('in-game');
   const map: Record<string, () => void> = {
     home: () => renderHome(app, handlers), free: () => renderFree(app, handlers), challenges: () => renderChallenges(app, handlers),
-    records: () => renderRecords(app, handlers), tutorial: () => renderTutorial(app, handlers), settings: () => renderSettings(app, handlers), help: () => renderHelp(app), daily: () => handlers.startDaily!(),
+    records: () => renderRecords(app, handlers), tutorial: () => renderTutorial(app, handlers), settings: () => renderSettings(app, handlers), help: () => renderHelp(app, pack), daily: () => handlers.startDaily!(),
     career: () => renderCareer(app, handlers), drills: () => renderDrills(app, handlers),
   };
   (map[screen] ?? map.home)();
   window.scrollTo(0, 0);
 }
 
+/** The airport the player had chosen before a lesson moved the console to the lesson's airport. */
+let airportBeforeLesson: string | undefined;
 function lesson(i: number) {
   const l = LESSONS[i];
-  // the 1.0 lessons are written for Liège; a lesson for another airport carries its icao
-  setAirport(l.scenario.icao ?? DEFAULT_PACK);
+  // the 1.0 lessons are written for Liège; a lesson for another airport carries its icao. Leaving the lessons
+  // brings the console back to the airport the player had chosen.
+  const want = l.scenario.icao ?? DEFAULT_PACK;
+  if (want !== pack.meta.icao) { airportBeforeLesson ??= pack.meta.icao; setAirport(want, 'tutorial'); }
+  const back = () => { const b = airportBeforeLesson; airportBeforeLesson = undefined; if (b && b !== pack.meta.icao) setAirport(b, 'tutorial'); else go('tutorial'); };
   play(l.scenario, undefined, coachFor(l, {
     next: i < LESSONS.length - 1 ? () => lesson(i + 1) : undefined,
-    exit: () => go('tutorial'),
+    exit: back,
     restart: () => lesson(i),
   }));
 }
