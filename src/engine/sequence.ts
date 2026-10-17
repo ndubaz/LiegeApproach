@@ -17,10 +17,13 @@ export function transitionNm(tr: Procedure, r: Runway): number {
   return d + distToThr(tr.legs[tr.legs.length - 1].p, r);
 }
 
-/** The STAR-to-final transition whose first leg points most nearly at the aircraft. */
+/** The STAR-to-final transition from the aircraft's stack fix whose first leg points most nearly at the aircraft. */
 export function bestTransition(sim: Sim, ac: Aircraft) {
-  const trs = sim.transitionsFor(sim.runway).filter((t) => !t.atcDiscretion);
-  const alh = sim.pack.fixes.get('ALHUV')?.p ?? sim.rwy.thr;
+  const sf = sim.stackFixOf(ac);
+  const all = sim.transitionsFor(sim.runway).filter((t) => !t.atcDiscretion);
+  const mine = all.filter((t) => t.legs[0]?.fix === sf);
+  const trs = mine.length ? mine : all;
+  const alh = sim.pack.fixes.get(sf)?.p ?? sim.rwy.thr;
   const brgAc = bearing(alh, ac.p);
   let best = trs[0], bd = 999;
   for (const t of trs) {
@@ -35,21 +38,22 @@ const isTransition = (sim: Sim, name?: string) => !!name && sim.pack.transitions
 
 /**
  * Track miles to touchdown along the path the aircraft will most likely fly:
- * on the localizer, on a published route (via ALHUV and `via` or the best transition), or on vectors.
+ * on the localizer, on a published route (via the stack fix and `via` or the best transition), or on vectors.
  */
 export function trackNm(sim: Sim, ac: Aircraft, via?: Procedure): number {
   const r = ac.app?.rwy ?? sim.pack.runways.get(ac.expectRwy ?? sim.runway) ?? sim.rwy;
   if (ac.app?.locCap) return Math.max(0, distToThr(ac.p, r));
-  const alh = sim.pack.fixes.get('ALHUV')?.p ?? r.thr;
+  const stacks = sim.stackFixes(r.id);
+  const alh = sim.pack.fixes.get(sim.stackFixOf(ac, r.id))?.p ?? r.thr;
   const tr = via ?? bestTransition(sim, ac);
   const trLen = tr ? transitionNm(tr, r) : 20;
-  if (ac.mode === 'HOLD' && ac.hold) return dist(ac.p, ac.hold.p) + (ac.hold.fix === 'ALHUV' ? trLen : dist(ac.hold.p, r.thr) + 12);
+  if (ac.mode === 'HOLD' && ac.hold) return dist(ac.p, ac.hold.p) + (stacks.includes(ac.hold.fix) ? trLen : dist(ac.hold.p, r.thr) + 12);
   if (ac.mode === 'NAV' && ac.route.length) {
     let p = ac.p, d = 0;
     for (const l of ac.route) { d += dist(p, l.p); p = l.p; }
     const last = ac.route[ac.route.length - 1];
     if (last.fix === r.ifFix) return d + distToThr(last.p, r);
-    if (last.fix === 'ALHUV') return d + trLen;
+    if (stacks.includes(last.fix)) return d + trLen;
     return d + dist(p, r.thr) + 12;
   }
   // on vectors (or at the end of its route)

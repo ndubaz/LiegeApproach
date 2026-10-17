@@ -1,8 +1,9 @@
 import type { Grade, Result } from './engine/assess';
 import { CHALLENGES } from './engine/scenarios';
 import {
-  CHECKRIDES, RANKS, SHIFT_MIN_MINUTES, careerStatus, emptyCareer, isShiftScenario, type CareerData, type CareerStatus, type CheckrideLog,
+  CHECKRIDES, RANKS, SHIFT_MIN_MINUTES, careerStatus, checkridesFor, emptyCareer, isShiftScenario, type CareerData, type CareerStatus, type CheckrideLog,
 } from './engine/career';
+import { DEFAULT_PACK } from './pack/index';
 import type { DrillId, DrillVerdict } from './engine/drills';
 export { RANKS };
 
@@ -25,14 +26,28 @@ export interface Settings {
   pedal: { kind: 'key'; code: string } | { kind: 'pad'; button: number; pad?: string } | null; // foot pedal binding
   voiceLang: 'en-GB' | 'en-US';
   voiceEngine: 'neural' | 'browser'; // neural radio voices (downloaded once) or the device's voices
-  speakIcom: boolean;      // speak intercom lines from Tower, Brussels and the others
+  speakIcom: boolean;      // speak intercom lines from Tower, the centre and the others
+  /** 2.0: the airport in use (ICAO id of a pack in src/pack/index.ts). */
+  airport: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   voice: true, speakAtc: false, speechRate: 1.08, radarRefresh: 4, quickMode: false, trainingWheels: false,
   leftHanded: false, labelSize: 'M', brightness: 'night', unlockAll: false, speedVectorMin: 1, showMva: false, showProcedures: true, hints: true,
-  pttKey: 'Space', pedal: null, voiceLang: 'en-GB', voiceEngine: 'neural', speakIcom: true,
+  pttKey: 'Space', pedal: null, voiceLang: 'en-GB', voiceEngine: 'neural', speakIcom: true, airport: DEFAULT_PACK,
 };
+
+// ---------------------------------------------------------------------------
+// Airport scoping. Records, the career, the daily shift and drill results are kept per airport. Liège keeps the
+// 1.0 keys (lgg.career, lgg.daily, lgg.drills, lgg.best); other airports get lgg.<key>.<ICAO>. The logbook is one
+// book across airports; its entries carry the airport.
+
+let activeAirport = DEFAULT_PACK;
+/** Set once by main.ts (and again on an airport change); every store function defaults to it. */
+export const setActiveAirport = (icao: string) => { activeAirport = icao || DEFAULT_PACK; };
+export const getActiveAirport = () => activeAirport;
+/** The storage key for an airport-scoped record. */
+export const airportKey = (base: string, icao = activeAirport) => (icao === DEFAULT_PACK ? base : `${base}.${icao}`);
 
 const get = <T>(k: string, d: T): T => {
   try { const v = localStorage.getItem(k); return v ? { ...d, ...JSON.parse(v) } : d; } catch { return d; }
@@ -58,6 +73,8 @@ const better = (a: Grade | undefined, b: Grade) => (gradeRank(b) > gradeRank(a) 
 export type RecordSummary = Pick<Result, 'id' | 'scenarioId' | 'title' | 'date' | 'durationMin' | 'ratings' | 'landed' | 'arrivals' | 'suggested'> & {
   gatePass: boolean; passed?: boolean;
   grade?: Grade; seqBest?: number; moves?: number; departures?: number;
+  /** 2.0: the airport (older records without it are Liège). */
+  icao?: string;
 };
 
 /** What the session contributed beyond the Result (counted by main.ts from the Sim). */
@@ -71,74 +88,80 @@ export interface SessionExtra {
   seconds: number;
   /** A replay or tutorial does not count toward the logbook. */
   counts: boolean;
+  /** The airport of the session (default: the active one). */
+  icao?: string;
 }
 
-export const loadRecords = (): RecordSummary[] => getArr<RecordSummary>('lgg.records');
+/** Every record, all airports (`icao` missing on 1.0 records means Liège). */
+export const loadAllRecords = (): RecordSummary[] => getArr<RecordSummary>('lgg.records');
+/** The records of one airport (default: the active one). */
+export const loadRecords = (icao = activeAirport): RecordSummary[] => loadAllRecords().filter((r) => (r.icao ?? DEFAULT_PACK) === icao);
 
 export function saveRecord(r: Result, x?: SessionExtra) {
-  loadCareer(); // migrate older saves before this record joins the history, so it is not logged twice
-  const recs = loadRecords();
+  const icao = x?.icao ?? activeAirport;
+  loadCareer(icao); // migrate older saves before this record joins the history, so it is not logged twice
+  const recs = loadAllRecords();
   recs.push({
     id: r.id, scenarioId: r.scenarioId, title: r.title, date: r.date, durationMin: r.durationMin, ratings: r.ratings, landed: r.landed, arrivals: r.arrivals,
-    suggested: r.suggested, gatePass: r.gate.pass, passed: r.pass?.ok, grade: r.grade, seqBest: r.seqBest, moves: x?.moves, departures: x?.departures,
+    suggested: r.suggested, gatePass: r.gate.pass, passed: r.pass?.ok, grade: r.grade, seqBest: r.seqBest, moves: x?.moves, departures: x?.departures, icao,
   });
   put('lgg.records', recs.slice(-200));
   if (x && !x.counts) return;
   // best grade per scenario (challenges and daily shifts)
   if (r.pass || r.scenarioId.startsWith('daily-')) {
-    const best = loadBest();
+    const best = loadBest(icao);
     best[r.scenarioId] = better(best[r.scenarioId], r.grade);
-    put('lgg.best', best);
+    put(airportKey('lgg.best', icao), best);
   }
   // a daily shift counts toward the streak once at least one arrival has landed, so opening and quitting does not
-  if (r.scenarioId.startsWith('daily-') && r.landed > 0) recordDaily(r);
-  addToLogbook(r, x);
+  if (r.scenarioId.startsWith('daily-') && r.landed > 0) recordDaily(r, icao);
+  addToLogbook(r, x, icao);
   // a free-play or daily session of 15 minutes or more is a logged shift for the career
   const seconds = x?.seconds ?? r.durationMin * 60;
   if (isShiftScenario(r.scenarioId) && seconds >= SHIFT_MIN_MINUTES * 60) {
-    const c = loadCareer();
+    const c = loadCareer(icao);
     c.shifts.push({ date: r.date, id: r.scenarioId, title: r.title, grade: r.grade, min: Math.round(seconds / 60) });
     c.shifts = c.shifts.slice(-400);
-    saveCareer(c);
+    saveCareer(c, icao);
   }
 }
 
 // ---------------------------------------------------------------------------
 // Best grade per challenge. Older saves only knew "passed": those migrate as 'pass'.
 
-export function loadBest(): Record<string, Grade> {
-  const b = getRaw<Record<string, Grade>>('lgg.best');
+export function loadBest(icao = activeAirport): Record<string, Grade> {
+  const b = getRaw<Record<string, Grade>>(airportKey('lgg.best', icao));
   if (b) return b;
   const out: Record<string, Grade> = {};
-  for (const r of loadRecords()) {
+  for (const r of loadRecords(icao)) {
     if (r.passed === undefined && !r.grade) continue;
     const g: Grade = r.grade ?? (r.passed ? 'pass' : 'fail');
     out[r.scenarioId] = better(out[r.scenarioId], g);
   }
-  put('lgg.best', out);
+  put(airportKey('lgg.best', icao), out);
   return out;
 }
-export const bestGrade = (id: string): Grade | undefined => loadBest()[id];
-export const passedChallenges = (): Set<string> => new Set(Object.entries(loadBest()).filter(([, g]) => g !== 'fail').map(([k]) => k));
+export const bestGrade = (id: string, icao = activeAirport): Grade | undefined => loadBest(icao)[id];
+export const passedChallenges = (icao = activeAirport): Set<string> => new Set(Object.entries(loadBest(icao)).filter(([, g]) => g !== 'fail').map(([k]) => k));
 
 // ---------------------------------------------------------------------------
 // Daily shift: one entry per local date, and a streak of consecutive days played.
 
 export interface DailyEntry { grade: Grade; landed: number; plays: number }
 export const ymdOf = (d: Date) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-const loadDaily = () => get<Record<string, DailyEntry>>('lgg.daily', {});
+const loadDaily = (icao = activeAirport) => get<Record<string, DailyEntry>>(airportKey('lgg.daily', icao), {});
 
-function recordDaily(r: Result) {
-  const days = loadDaily();
+function recordDaily(r: Result, icao = activeAirport) {
+  const days = loadDaily(icao);
   const ymd = r.scenarioId.slice(6);
   const o = days[ymd];
   days[ymd] = o ? { grade: better(o.grade, r.grade)!, landed: Math.max(o.landed, r.landed), plays: o.plays + 1 } : { grade: r.grade, landed: r.landed, plays: 1 };
-  put('lgg.daily', days);
+  put(airportKey('lgg.daily', icao), days);
 }
 
 /** Today's best and the run of consecutive days played, ending today (or yesterday, if today is not played yet). */
-export function dailyStatus(now = new Date()): { today?: DailyEntry; streak: number; best: number } {
-  const days = loadDaily();
+export function dailyStatus(now = new Date(), icao = activeAirport): { today?: DailyEntry; streak: number; best: number } {
+  const days = loadDaily(icao);
   const d = new Date(now);
   const today = days[ymdOf(d)];
   if (!today) d.setDate(d.getDate() - 1);
@@ -159,7 +182,7 @@ export function dailyStatus(now = new Date()): { today?: DailyEntry; streak: num
 // ---------------------------------------------------------------------------
 // Controller logbook: running totals that outlive the 200-record history.
 
-export interface LogEvent { date: string; kind: 'emergency' | 'rated' | 'good' | 'chain' | 'rank'; text: string }
+export interface LogEvent { date: string; kind: 'emergency' | 'rated' | 'good' | 'chain' | 'rank'; text: string; icao?: string }
 export interface Logbook {
   sessions: number;
   seconds: number;
@@ -171,13 +194,15 @@ export interface Logbook {
   rated: number;
   good: number;
   events: LogEvent[];
+  /** 2.0: sessions, seconds and movements per airport (older books have none: everything was Liège). */
+  byAirport?: Record<string, { sessions: number; seconds: number; moves: number; landings: number }>;
 }
 
 export function loadLogbook(): Logbook {
   const l = getRaw<Logbook>('lgg.log');
   if (l) return l;
   // first run with a logbook: rebuild what we can from the session history
-  const recs = loadRecords();
+  const recs = loadAllRecords();
   const out: Logbook = { sessions: recs.length, seconds: 0, moves: 0, landings: 0, departures: 0, bestSeq: 0, emergencies: 0, rated: 0, good: 0, events: [] };
   for (const r of recs) {
     out.seconds += r.durationMin * 60;
@@ -192,22 +217,33 @@ export function loadLogbook(): Logbook {
   return out;
 }
 
-function addToLogbook(r: Result, x: SessionExtra | undefined) {
+/** The logbook totals of one airport (the whole book for Liège when the book predates 2.0). */
+export function logbookFor(icao = activeAirport, l = loadLogbook()): { sessions: number; seconds: number; moves: number; landings: number } {
+  const by = l.byAirport?.[icao];
+  if (by) return by;
+  return icao === DEFAULT_PACK ? { sessions: l.sessions, seconds: l.seconds, moves: l.moves, landings: l.landings } : { sessions: 0, seconds: 0, moves: 0, landings: 0 };
+}
+
+function addToLogbook(r: Result, x: SessionExtra | undefined, icao = activeAirport) {
   const l = loadLogbook();
   const date = r.date;
+  const secs = x?.seconds ?? r.durationMin * 60, moves = x?.moves ?? r.landed;
   l.sessions++;
-  l.seconds += x?.seconds ?? r.durationMin * 60;
+  l.seconds += secs;
   l.landings += r.landed;
-  l.moves += x?.moves ?? r.landed;
+  l.moves += moves;
   l.departures += x?.departures ?? 0;
-  if (r.seqBest > l.bestSeq && r.seqBest >= 3) l.events.push({ date, kind: 'chain', text: `New best sequence: ${r.seqBest} landings in a row on the minimum (${r.title})` });
+  l.byAirport ??= { [DEFAULT_PACK]: { sessions: l.sessions - 1, seconds: l.seconds - secs, moves: l.moves - moves, landings: l.landings - r.landed } };
+  const by = (l.byAirport[icao] ??= { sessions: 0, seconds: 0, moves: 0, landings: 0 });
+  by.sessions++; by.seconds += secs; by.moves += moves; by.landings += r.landed;
+  if (r.seqBest > l.bestSeq && r.seqBest >= 3) l.events.push({ date, kind: 'chain', text: `New best sequence: ${r.seqBest} landings in a row on the minimum (${r.title})`, icao });
   l.bestSeq = Math.max(l.bestSeq, r.seqBest);
-  if (r.grade === 'rated') { l.rated++; l.events.push({ date, kind: 'rated', text: `Rated on ${r.title}` }); }
+  if (r.grade === 'rated') { l.rated++; l.events.push({ date, kind: 'rated', text: `Rated on ${r.title}`, icao }); }
   if (r.grade === 'good') l.good++;
   for (const e of x?.emergencies ?? []) {
     if (!e.landed) continue;
     l.emergencies++;
-    l.events.push({ date, kind: 'emergency', text: `${e.cs} landed safely after ${e.type === 'radio' ? 'a radio failure' : e.type === 'engine' ? 'an engine failure' : e.type === 'smoke' ? 'smoke in the hold' : 'an emergency'} (${r.title})` });
+    l.events.push({ date, kind: 'emergency', text: `${e.cs} landed safely after ${e.type === 'radio' ? 'a radio failure' : e.type === 'engine' ? 'an engine failure' : e.type === 'smoke' ? 'smoke in the hold' : 'an emergency'} (${r.title})`, icao });
   }
   l.events = l.events.slice(-60);
   put('lgg.log', l);
@@ -250,30 +286,32 @@ export function lessonsPassed(): number {
   } catch { return 0; }
 }
 
-export function loadCareer(): CareerData {
-  const c = getRaw<CareerData>('lgg.career');
+export function loadCareer(icao = activeAirport): CareerData {
+  const key = airportKey('lgg.career', icao);
+  const c = getRaw<CareerData>(key);
   if (c && Array.isArray(c.shifts) && Array.isArray(c.checkrides)) return c;
   // first run with careers: logged shifts from the session history, and checkrides credited for the rank already held
   const out = emptyCareer();
-  for (const r of loadRecords()) {
+  for (const r of loadRecords(icao)) {
     if (!isShiftScenario(r.scenarioId) || r.durationMin < SHIFT_MIN_MINUTES) continue;
     out.shifts.push({ date: r.date, id: r.scenarioId, title: r.title, grade: r.grade ?? (r.gatePass ? 'pass' : 'fail'), min: r.durationMin });
   }
-  const held = getRaw<Logbook>('lgg.log') ? legacyRankIndex(loadLogbook(), loadBest()) : 0;
+  const held = icao === DEFAULT_PACK && getRaw<Logbook>('lgg.log') ? legacyRankIndex(loadLogbook(), loadBest(icao)) : 0;
   const now = new Date().toISOString();
   for (let i = 0; i < held; i++) out.checkrides.push({ id: CHECKRIDES[i].id, date: now, pass: true, credited: true });
-  put('lgg.career', out);
+  put(key, out);
   return out;
 }
-export const saveCareer = (c: CareerData) => put('lgg.career', c);
+export const saveCareer = (c: CareerData, icao = activeAirport) => put(airportKey('lgg.career', icao), c);
 
-export function careerNow(l = loadLogbook(), best = loadBest()): CareerStatus {
-  return careerStatus({ log: l, best, career: loadCareer(), lessonsPassed: lessonsPassed() });
+/** Career status at an airport: its own checkride ladder, shifts, best grades and hours. */
+export function careerNow(l = loadLogbook(), best = loadBest(), icao = activeAirport): CareerStatus {
+  return careerStatus({ log: logbookFor(icao, l), best, career: loadCareer(icao), lessonsPassed: lessonsPassed() }, checkridesFor(icao));
 }
 
 /** Rank and what the next promotion needs (the checkride is the last line). */
-export function rankOf(l: Logbook, best: Record<string, Grade>): Rank {
-  const st = careerNow(l, best);
+export function rankOf(l: Logbook, best: Record<string, Grade>, icao = activeAirport): Rank {
+  const st = careerNow(l, best, icao);
   const p = st.promotion;
   const reqs: RankReq[] = p ? p.reqs.map((r) => ({ text: r.progress && !r.ok ? `${r.text} (${r.progress})` : r.text, ok: r.ok })) : [];
   if (p) reqs.push({ text: p.retakeIn ? `Checkride retake after ${p.retakeIn} more logged shift${p.retakeIn > 1 ? 's' : ''}` : `Pass the checkride${p.ready ? ' (ready to book)' : ''}`, ok: false });
@@ -281,15 +319,15 @@ export function rankOf(l: Logbook, best: Record<string, Grade>): Rank {
 }
 
 /** Log a checkride attempt. A pass is a promotion, noted in the logbook. */
-export function recordCheckride(id: string, pass: boolean, score: number, date = new Date().toISOString()): CheckrideLog {
-  const c = loadCareer();
+export function recordCheckride(id: string, pass: boolean, score: number, date = new Date().toISOString(), icao = activeAirport): CheckrideLog {
+  const c = loadCareer(icao);
   const e: CheckrideLog = { id, date, pass, score };
   c.checkrides.push(e);
   c.checkrides = c.checkrides.slice(-100);
-  saveCareer(c);
+  saveCareer(c, icao);
   const def = CHECKRIDES.find((d) => d.id === id);
   const l = loadLogbook();
-  l.events.push({ date, kind: 'rank', text: pass ? `Promoted to ${RANKS[def?.to ?? 0]} after the checkride` : `Checkride for ${RANKS[def?.to ?? 0]} not passed` });
+  l.events.push({ date, kind: 'rank', text: pass ? `Promoted to ${RANKS[def?.to ?? 0]} after the checkride` : `Checkride for ${RANKS[def?.to ?? 0]} not passed`, icao });
   l.events = l.events.slice(-60);
   put('lgg.log', l);
   return e;
@@ -299,11 +337,11 @@ export function recordCheckride(id: string, pass: boolean, score: number, date =
 // Drills: best score, best time on a pass, and the next variation to fly.
 
 export interface DrillRecord { plays: number; passes: number; bestScore: number; bestTime?: number; lastVariant: number; last?: { pass: boolean; score: number; timeS: number } }
-export const loadDrills = (): Partial<Record<DrillId, DrillRecord>> => get<Partial<Record<DrillId, DrillRecord>>>('lgg.drills', {});
-export const nextDrillVariant = (id: DrillId) => (loadDrills()[id]?.lastVariant ?? 0) + 1;
+export const loadDrills = (icao = activeAirport): Partial<Record<DrillId, DrillRecord>> => get<Partial<Record<DrillId, DrillRecord>>>(airportKey('lgg.drills', icao), {});
+export const nextDrillVariant = (id: DrillId, icao = activeAirport) => (loadDrills(icao)[id]?.lastVariant ?? 0) + 1;
 /** Save a drill attempt; says whether it beat the best score or the best time. */
-export function saveDrillResult(id: DrillId, variant: number, v: DrillVerdict): { record: DrillRecord; newScore: boolean; newTime: boolean; prev?: DrillRecord } {
-  const all = loadDrills();
+export function saveDrillResult(id: DrillId, variant: number, v: DrillVerdict, icao = activeAirport): { record: DrillRecord; newScore: boolean; newTime: boolean; prev?: DrillRecord } {
+  const all = loadDrills(icao);
   const prev = all[id] ? { ...all[id]! } : undefined;
   const r: DrillRecord = { ...(all[id] ?? { plays: 0, passes: 0, bestScore: 0, lastVariant: 0 }) };
   r.plays++;
@@ -313,7 +351,7 @@ export function saveDrillResult(id: DrillId, variant: number, v: DrillVerdict): 
   if (v.pass) { r.passes++; r.bestScore = Math.max(r.bestScore, v.score); if (newTime) r.bestTime = Math.round(v.timeS); }
   r.last = { pass: v.pass, score: v.score, timeS: Math.round(v.timeS) };
   all[id] = r;
-  put('lgg.drills', all);
+  put(airportKey('lgg.drills', icao), all);
   return { record: r, newScore, newTime, prev };
 }
 

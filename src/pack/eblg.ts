@@ -64,6 +64,8 @@ export const EBLG: PackSpec = {
     squawkBlock: ['6330', '6343'],
     effective: '2026-10-01',
     initialClimbLowQnh: { qnhMax: 995, level: 'F070' },
+    // The Brussels CTA over and around the TMA (ENR 2.1 remark): class C from 4,500 ft, delegated to Liège up to the sector ceiling.
+    upperClass: { floor: 4500, cls: 'C' },
   },
 
   fixes: {
@@ -407,4 +409,121 @@ export const EBLG: PackSpec = {
     { name: 'BE-DE', style: 'border', points: ['B_TRI1', 'B_DE1', 'B_DE2', 'B_DE3', 'B_DE4', 'B_TRI2'] },
     { name: 'BE-LU', style: 'border', points: ['B_TRI2', 'B_LU1', 'B_LU2'] },
   ],
+
+  // ---------------------------------------------------------------------------
+  // 2.0: what the engine used to assume about Liège.
+  stackFix: 'ALHUV',
+  country: 'BE',
+  utcOffsetWinter: 1,
+  depXfl: 'F090',
+  reservedAreasName: 'TSA',
+  runwayConfigs: [{ land: '22L', dep: '22L' }, { land: '04R', dep: '04R' }],
+  // Intercom units. Ids are what clearances, strips, keys and saved tutorials use; keep them.
+  // Liège Tower 118.130 (8.33 kHz channel): EBLG AD 2.18. Beek Approach 123.980: EHBK AD 2.18 (LVNL eAIP).
+  // Brussels Control and Maastricht Radar are plausible values, not verified; the military unit is a sim construct.
+  units: [
+    { id: 'TWR', role: 'tower', callsign: 'Liège Tower', freq: '118.130', label: 'TWR', source: 'EBLG AD 2.18', voices: ['fr'], say: 'Tower' },
+    { id: 'BRU', role: 'acc', callsign: 'Brussels Control', freq: '131.100', label: 'ACC', source: 'not verified', voices: ['nl', 'fr'], say: 'Brussels' },
+    { id: 'MIL', role: 'military', callsign: 'Military', freq: '129.100', label: 'Steenokkerzeel', source: 'sim construct (Belgian military ATCC, Steenokkerzeel)', voices: ['nl', 'fr'], say: 'MIL' },
+    { id: 'BEEK', role: 'neighbour', callsign: 'Beek Approach', freq: '123.980', label: 'BEEK', source: 'EHBK AD 2.18 (LVNL eAIP)', voices: ['nl'] },
+    { id: 'MUAC', role: 'upper', callsign: 'Maastricht Radar', freq: '132.755', label: '> FL245', source: 'callsign as in the upstream list; not verified', voices: ['de', 'nl', 'uk'] },
+    { id: 'SUP', role: 'supervisor', callsign: 'Supervisor', freq: '', label: 'supervisor', source: 'sim construct', voices: ['fr'], say: 'Supervisor' },
+  ],
+  // How crews say five-letter fixes and local names (voice engine). Hard g is written "gh" so it is not read as "j".
+  fixSay: {
+    ALHUV: 'Al-hoov', GILOM: 'Ghee-lom', GESLO: 'Guess-low', RUDIX: 'Roo-dix', RITAX: 'Ree-tax', IPLAN: 'Ee-plan',
+    RERTI: 'Rare-tee', OLPUN: 'Ol-pun', GIKLI: 'Ghee-klee', LIBVA: 'Lib-vah', LAVTO: 'Lav-toe', LITPO: 'Lit-poe',
+    OSTAT: 'Oh-stat', NEPIV: 'Neh-piv', EVSEN: 'Ev-sen', MAPUP: 'Mah-pup', TUTSO: 'Toot-so', ABLAZ: 'Ab-laz',
+    PIZVE: 'Piz-veh', KAQZI: 'Kak-zee', GIREL: 'Ghee-rel', FOXHE: 'Fox-hay', WISKY: 'Whisky', NOVEM: 'November',
+    SIERA: 'Sierra', NAMUR: 'Nah-moor', ROMEO: 'Romeo', INDIA: 'India', OSCAR: 'Oscar',
+    'Liège': 'Leeyezh', 'Beek': 'Bake', 'Maastricht': 'Mah-strikt', 'Steenokkerzeel': 'Stain-ocker-zail', 'Bierset': 'Beer-say',
+  },
+  // Traffic generation: a cargo hub with one long runway. Operators that fly freighters into Liège, with the types
+  // they typically use; the night inbound bank is long-haul heavies, mostly from the Gulf, Africa and Asia.
+  traffic: {
+    cargo: [
+      { op: 'FDX', types: ['B77L', 'MD11', 'B763'], w: 4 },
+      { op: 'QTR', types: ['B77L', 'B748'], w: 4 },
+      { op: 'THY', types: ['A332', 'B77L'], w: 3 },
+      { op: 'ETH', types: ['B77L', 'B763'], w: 3 },
+      { op: 'CHG', types: ['B748', 'B744'], w: 3 },
+      { op: 'TAY', types: ['B744', 'B763', 'B738'], w: 4 },
+      { op: 'MSR', types: ['A332'], w: 1 },
+      { op: 'AZG', types: ['B748', 'B744'], w: 2 },
+      { op: 'CAO', types: ['B77L'], w: 1 },
+      { op: 'CKS', types: ['B744', 'B77L'], w: 2 },
+      { op: 'CLX', types: ['B748', 'B744'], w: 2 },
+      { op: 'DHK', types: ['B763', 'A306'], w: 2 },
+      { op: 'ABR', types: ['B738'], w: 2 },
+      { op: 'BCS', types: ['A306', 'B752'], w: 2 },
+    ],
+    bank: [
+      { op: 'TAY', types: ['B744', 'B763'], w: 4 },
+      { op: 'QTR', types: ['B77L', 'B748'], w: 4 },
+      { op: 'ETH', types: ['B77L'], w: 3 },
+      { op: 'CKS', types: ['B744', 'B77L'], w: 2 },
+      { op: 'FDX', types: ['B77L', 'MD11'], w: 3 },
+      { op: 'CHG', types: ['B748', 'B744'], w: 3 },
+      { op: 'AZG', types: ['B748'], w: 1 },
+    ],
+    pax: [
+      { op: 'JAF', types: ['B738'], w: 3 },
+      { op: 'RYR', types: ['B738'], w: 2 },
+      { op: 'BEL', types: ['A320', 'A321'], w: 2 },
+      { op: 'TRA', types: ['B738'], w: 1 },
+    ],
+    military: [
+      { op: 'BAF', types: ['F35', 'A400'], w: 2 },
+      { op: 'NATO', types: ['E3TF'], w: 1 },
+      { op: 'RCH', types: ['C17'], w: 1 },
+    ],
+    gaPrefixes: ['OO'],
+    registration: { prefix: 'OO', length: 5 },
+    // Liège over 24 hours (UTC). Long-haul departures in the evening, the night inbound bank (integrator feeders and
+    // long-haul freighters), a short lull while the hub sorts, the outbound bank, a quiet early morning, then a
+    // steady daytime mix with a few passenger flights. Rates are movements per hour, linear between points.
+    curve: {
+      arr: [[0, 16], [0.75, 22], [1.25, 24], [2.4, 23], [2.7, 6], [3.25, 4], [5.25, 3], [6, 3], [7, 6], [8, 8], [17, 8], [18, 6], [21.5, 6], [22.5, 9], [23.5, 13], [24, 16]],
+      dep: [[0, 3], [2.75, 2], [3.25, 4], [3.5, 18], [3.75, 22], [4.75, 20], [5.25, 6], [6, 3], [7, 5], [8, 7], [17, 7], [18, 9], [19.5, 11], [21.5, 8], [22.5, 4], [24, 3]],
+      max: { arr: 24, dep: 22 },
+      phases: [
+        { from: 0, to: 2.75, phase: 'bank', label: 'night inbound bank', paxShare: 0 },
+        { from: 2.75, to: 3.25, phase: 'sort', label: 'the sort', paxShare: 0 },
+        { from: 3.25, to: 5.25, phase: 'outbound', label: 'outbound bank', paxShare: 0 },
+        { from: 5.25, to: 8, phase: 'morning', label: 'quiet morning', paxShare: 0.15 },
+        { from: 8, to: 18, phase: 'day', label: 'daytime mix', paxShare: 0.25 },
+        { from: 18, to: 23.5, phase: 'evening', label: 'evening departures', paxShare: 0.1 },
+        { from: 23.5, to: 24, phase: 'bank', label: 'night inbound bank', paxShare: 0 },
+      ],
+    },
+    // Bank arrivals come mostly from the west (KOK, CIV) and the south-east (GESLO).
+    arrivals: [{ base: 'KOK7', w: 3 }, { base: 'CIV7', w: 3 }, { base: 'NIK7', w: 2 }, { base: 'LNO6', w: 3 }, { base: 'GESLO6', w: 2 }],
+    arrivalsBank: [{ base: 'KOK7', w: 3 }, { base: 'CIV7', w: 3 }, { base: 'GESLO6', w: 3 }, { base: 'LNO6', w: 2 }, { base: 'NIK7', w: 1 }],
+    departures: [
+      { name: 'LNO9S', w: 3 }, { name: 'CIV5S', w: 2 }, { name: 'BUB9S', w: 2 },
+      { name: 'LNO2R', w: 3 }, { name: 'CIV6R', w: 2 }, { name: 'BUB1R', w: 2 },
+    ],
+    templates: {
+      night: { title: 'Night bank', arrPerHr: 18, depPerHr: 9, start: '01:40', paxShare: 0 },
+      day: { title: 'Daytime mix', arrPerHr: 11, depPerHr: 9, start: '10:15', paxShare: 0.25 },
+      quiet: { title: 'Quiet hour', arrPerHr: 6, depPerHr: 4, start: '15:30', paxShare: 0.2 },
+      shift: { title: 'Night shift', arrPerHr: 14, depPerHr: 6, start: '01:40', paxShare: 0 },
+    },
+    // TSA 29A is activated by NOTAM for weekday daytime flying only: 0600 to 2000 UTC in the sim.
+    reserved: { name: 'TSA29A', hoursUtc: [6, 20] },
+    // Diversions come from Brussels, straight at the field from the north-west.
+    diversion: { from: 'Brussels', icao: 'EBBR', brg: 300 },
+    // Transient traffic: VFR crossings on the published routes, the HEMS helicopter to the CHU pad, Belgian F-35s and
+    // an A400M crossing the TMA, the NATO E-3A out of Geilenkirchen, a USAF C-17 overflight and a flight-check King Air.
+    patterns: [
+      { at: 1, deck: 'hems', w: 0.4, kind: 'vfr', csReg: true, types: ['C172', 'PA28'], route: ['ROMEO', 'FOXHE'], from: { brg: 300, dist: 7 }, level: 1500, request: { kind: 'crossing', route: ['ROMEO', 'FOXHE'] } },
+      { at: 1, deck: 'hems', w: 0.6, kind: 'heli', cs: 'LIFE3', types: ['EC45'], route: ['NOVEM', 'CHU'], from: { brg: 5, dist: 8 }, level: 1500, request: { kind: 'direct', fix: 'CHU' } },
+      { at: 2, deck: 'military', w: 0.5, kind: 'mil', csOp: 'BAF', csNum: [51, 79], types: ['F35'], formation: 2, route: ['GILOM', 'ALHUV', 'VERVIERS'], from: { brg: 282, dist: 18 }, level: 'F070', spd: 300, request: { kind: 'climb', level: 'F150' } },
+      { at: 2, kind: 'mil', csOp: 'NATO0', csNum: [1, 9], types: ['E3TF'], route: ['G_ETNG', 'ECHO', 'LNO', 'GIREL'], from: { brg: 30, dist: 3 }, level: 4000, request: { kind: 'climb', level: 'F150' } },
+      { at: 2, kind: 'vfr', csReg: true, types: ['PA28'], route: ['OSCAR', 'INDIA'], from: { brg: 150, dist: 7 }, level: 1500, request: { kind: 'crossing', route: ['OSCAR', 'INDIA'] } },
+      { at: 3, kind: 'ovf', csOp: 'RCH', csNum: [100, 899], types: ['C17'], route: ['BUB', 'LG013', 'LNO'], from: { brg: 300, dist: 6 }, level: 'F090', request: { kind: 'direct', fix: 'LNO' } },
+      { at: 3, kind: 'cal', cs: 'FCK12', types: ['B350'], route: ['NOVEM'], from: { brg: 0, dist: 10 }, level: 3000, request: { kind: 'lowpass' } },
+      { at: 3, deck: 'military', w: 0.5, kind: 'mil', csOp: 'BAF7', csNum: [10, 99], types: ['A400'], route: ['ROMEO', 'ALHUV', 'SPA'], from: { brg: 300, dist: 10 }, level: 'F060', request: { kind: 'climb', level: 'F090' } },
+    ],
+  },
 };

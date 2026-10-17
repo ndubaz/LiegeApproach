@@ -20,7 +20,7 @@ export function hints(sim: Sim): Hint[] {
     if (n.kind === 'CLAM') out.push({ key: `clam:${n.cs}`, cs: n.cs, text: `${n.cs} is off its cleared level ${levelText(n.cfl)}. Check what it is doing and say the level again.`, urgency: 80 });
   }
   for (const r of sim.coordReqs) {
-    if (r.state === 'pending' && sim.t - r.t > 20) out.push({ key: `bru:${r.cs}`, cs: r.cs, text: `Brussels is waiting: can you take ${r.cs} early at ${levelText(r.level)}? Approve it, or Unable to keep the agreed level.`, term: 'Intercom', urgency: 42 + (sim.t - r.t) / 10 });
+    if (r.state === 'pending' && sim.t - r.t > 20) out.push({ key: `bru:${r.cs}`, cs: r.cs, text: `${sim.acc.say} is waiting: can you take ${r.cs} early at ${levelText(r.level)}? Approve it, or Unable to keep the agreed level.`, term: 'Intercom', urgency: 42 + (sim.t - r.t) / 10 });
   }
   if (sim.rwyChange) out.push({ key: `rwychg:${sim.rwyChange.to}`, text: `Runway change to ${sim.rwyChange.to} at ${sim.utc(sim.rwyChange.at).slice(0, 5)}. Decide which arrival lands last on ${sim.runway} and plan the others for ${sim.rwyChange.to}.`, urgency: 22 });
   for (const ac of sim.needReclear()) {
@@ -28,7 +28,7 @@ export function hints(sim: Sim): Hint[] {
     const st = ac.proc ? sim.mapStar(ac.proc, sim.runway) : undefined;
     out.push({ key: `reclear:${ac.cs}`, cs: ac.cs, text: st ? `${ac.cs} is still on the ${ac.proc} for the old runway. Re-clear it: runway ${sim.runway}, ${st.name} arrival.` : `${ac.cs} is still planned for the old runway. Give it a transition and approach for ${sim.runway}.`, term: 'STAR', urgency: 48 });
   }
-  for (const [name, at] of sim.tsaPending) out.push({ key: `tsa:${name}`, text: `${name} goes active at ${sim.utc(at).slice(0, 5)}. Keep traffic out of it from now on.`, term: 'TSA', urgency: 18 });
+  for (const [name, at] of sim.tsaPending) out.push({ key: `tsa:${name}`, text: `${name} goes active at ${sim.utc(at).slice(0, 5)}. Keep traffic out of it from now on.`, term: sim.areasName, urgency: 18 });
   for (const r of sim.releases) {
     const wait = sim.t - r.t;
     if (r.state === 'pending' && wait > 40) out.push({ key: `rel:${r.cs}`, cs: r.cs, text: `Tower has waited ${Math.round(wait)} s for a release for ${r.cs}. Release it, or tell Tower to hold it.`, term: 'Release', urgency: 40 + wait / 10 });
@@ -69,7 +69,8 @@ export function hints(sim: Sim): Hint[] {
       if (ac.mode === 'HOLD' && ac.efc !== undefined && sim.t > ac.efc - 30) out.push({ key: `efc:${ac.cs}`, cs: ac.cs, text: `${ac.cs} reaches its expected approach time. Release it from the hold or give a new time.`, term: 'EFC', urgency: 35 });
     } else if (ac.kind === 'dep') {
       const r0 = dist(ac.p, { x: 0, y: 0 });
-      if (r0 > 26) out.push({ key: `bru:${ac.cs}`, cs: ac.cs, text: `${ac.cs} is ${r0.toFixed(0)} NM out. Hand it to Brussels before the 40 NM ring.`, urgency: 30 + r0 });
+      const R = sim.pack.meta.sectorRadiusNm;
+      if (r0 > R * 0.65) out.push({ key: `bru:${ac.cs}`, cs: ac.cs, text: `${ac.cs} is ${r0.toFixed(0)} NM out. Hand it to ${sim.acc.say} before the ${R} NM ring.`, urgency: 30 + r0 });
     }
   }
   return out.sort((a, b) => b.urgency - a.urgency);

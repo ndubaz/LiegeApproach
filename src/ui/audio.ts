@@ -1,7 +1,9 @@
 import { hashStr } from '../engine/rng';
 import { NeuralVoices, neuralSupported, type ModelId } from '../voice/neural';
 import { castFor, groupsFor, type Group } from '../voice/casting';
-import { spokenText } from '../voice/speech-text';
+import { spokenText, setSpeechPack } from '../voice/speech-text';
+import { setCastingPack } from '../voice/casting';
+import type { Pack } from '../pack/load';
 import { Transmission, phrases, type FxKind } from '../voice/radio-fx';
 
 // Radio audio. Pilot voices come from neural models run in a worker (src/voice) and are
@@ -139,6 +141,8 @@ export class Radio {
   private prepared = new Map<string, Job>();
   /** How long the last few neural calls waited before sound (ms), for the settings readout and tests. */
   readonly startLag: number[] = [];
+  /** 2.0 hook: the pack whose fix names and unit voices the radio uses (the game sets it when a session starts). */
+  setPack(pack: Pack) { setSpeechPack(pack); setCastingPack(pack); }
   /** Start synthesizing a call the sim has scheduled, so it is ready when the pilot keys the mic. */
   prepare(text: string, who: string) {
     if (!this.enabled || !this.neuralOn || !text) return;

@@ -2,6 +2,7 @@ import { hashStr } from '../engine/rng';
 import type { ModelId } from './neural';
 import type { AccentLang } from './accent';
 import { CAST_POOLS } from './cast-pools';
+import type { Pack } from '../pack/load';
 
 // Who speaks for each callsign. Each airline maps to the accent groups its crews plausibly
 // have (a Qatar crew is as likely Indian or Arab as anything else; a FedEx crew American),
@@ -34,10 +35,23 @@ export const AIRLINE_GROUPS: Record<string, Group[]> = {
   TAY: ['fr', 'nl', 'fr', 'nl'], ABB: ['fr', 'nl'], BEL: ['nl', 'fr'], BAF: ['nl', 'fr'], JAF: ['nl', 'fr'], TRA: ['nl'], NAF: ['nl'],
   NATO: ['us', 'de', 'nl', 'uk'], FCK: ['de', 'uk'], LIFE: ['nl'], OO: ['fr', 'nl'],
 };
-/** Other units on the intercom and the controller's own voice. Liège is French-speaking; Beek is Dutch. */
-export const UNIT_GROUPS: Record<string, Group[]> = {
+/**
+ * Other units on the intercom and the controller's own voice, by unit id. Filled from the pack's `units[].voices`
+ * (Liège is French-speaking; Beek is Dutch) by `setCastingPack`; this is the Liège table until a pack is set.
+ */
+export let UNIT_GROUPS: Record<string, Group[]> = {
   TWR: ['fr'], BRU: ['nl', 'fr'], MIL: ['nl', 'fr'], BEEK: ['nl'], MUAC: ['de', 'nl', 'uk'], SUP: ['fr'], ATC: ['fr', 'nl'],
 };
+/** The unit voices of a pack: each unit's `voices`, the controller (ATC) with the tower's voices (the position is in the same room). */
+export function unitGroupsOf(pack: Pack): Record<string, Group[]> {
+  const out: Record<string, Group[]> = {};
+  for (const u of pack.units) if (u.voices?.length) out[u.id] = u.voices as Group[];
+  const twr = pack.units.find((u) => u.role === 'tower');
+  out.ATC = (twr?.voices?.length ? twr.voices : ['uk']) as Group[];
+  return out;
+}
+/** Cast the intercom units from this pack (the game calls it when a session starts). */
+export function setCastingPack(pack: Pack) { UNIT_GROUPS = unitGroupsOf(pack); }
 /** When a group has no voice in the loaded models, use these instead. Dutch, Flemish and French crews
  * speak with British voices: no usable Dutch or French voice model reads English yet (docs/VOICES.md). */
 const FALLBACK: Record<Group, Group[]> = {

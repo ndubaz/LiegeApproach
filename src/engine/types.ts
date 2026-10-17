@@ -162,8 +162,8 @@ export interface Tx {
   id: number;
   t0: number;
   t1: number;
-  /** ATC = the player; TWR/BRU/MIL/SUP are other units on the intercom. */
-  from: 'ATC' | 'PILOT' | 'SYS' | 'TWR' | 'BRU' | 'MIL' | 'SUP';
+  /** ATC = the player; any other value is a unit id from the pack (TWR, BRU, MIL, SUP at Liège) on the intercom. */
+  from: 'ATC' | 'PILOT' | 'SYS' | (string & {});
   cs: string;
   text: string;
   speech: string;
@@ -257,8 +257,12 @@ export interface Scenario {
   coordination?: boolean;
   /** Probability that Brussels asks for an early transfer of an arrival (default 0.1). */
   earlyTransferRate?: number;
-  /** Local time offset from UTC in hours (Belgium: 1 in winter, 2 in summer). Default 1. Drives crew fatigue. */
+  /** Local time offset from UTC in hours (Belgium: 1 in winter, 2 in summer). Default: the pack's winter offset, plus one in summer when `date` is given. Drives crew fatigue. */
   utcOffsetH?: number;
+  /** 2.0: the airport this scenario is written for (ICAO). Scripted challenges, checkrides and drills only show for their airport. */
+  icao?: string;
+  /** 2.0: calendar date of the shift (yyyy-mm-dd), for daylight saving time. */
+  date?: string;
 }
 
 /** Brussels' estimate for an arrival, sent on the intercom 2 to 4 minutes before the transfer. */
@@ -283,7 +287,8 @@ export interface Estimate {
 /** A coordination request from another unit, answered on the intercom with Approve / Unable (`appr` / `deny`). */
 export interface CoordReq {
   id: number;
-  from: 'BRU';
+  /** the centre's unit id (BRU at Liège) */
+  from: string;
   kind: 'early';
   cs: string;
   /** the level Brussels asks you to take the aircraft at */

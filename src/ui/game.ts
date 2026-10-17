@@ -1,7 +1,7 @@
 import type { Pack, Level } from '../pack/load';
 import { Sim, type CmdEntry } from '../engine/sim';
 import type { Aircraft, ReleaseReq, Scenario, Tx } from '../engine/types';
-import { UNITS, itemChip, levelText, mergeItem, sortItems, type Clearance, type Item } from '../engine/clearance';
+import { itemChip, levelText, mergeItem, sortItems, type Clearance, type Item } from '../engine/clearance';
 import { parseShorthand, parseVoiceAlternatives } from '../engine/parser';
 import { landingOrder } from '../engine/sequence';
 import { createPtt, type PttController } from './ptt';
@@ -1242,10 +1242,10 @@ export class Game {
     const reqs = sim.coordReqs.filter((r) => r.state === 'pending');
     const lastBy = (from: string) => { for (let i = sim.log.length - 1; i >= 0 && i > sim.log.length - 40; i--) { const t = sim.log[i]; if (t.channel === 'icom' && t.from === from) return sim.t - t.t0; } return 1e9; };
     const lit = {
-      TWR: sim.releases.some((r) => r.state === 'pending') || lastBy('TWR') < 20,
-      BRU: reqs.length > 0 || lastBy('BRU') < 20,
-      MIL: sim.aircraft.some((a) => a.request?.kind === 'milxing' && a.state === 'inbound') || sim.tsaPending.size > 0 || lastBy('MIL') < 20,
-      SUP: lastBy('SUP') < 30,
+      [sim.twr.id]: sim.releases.some((r) => r.state === 'pending') || lastBy(sim.twr.id) < 20,
+      [sim.acc.id]: reqs.length > 0 || lastBy(sim.acc.id) < 20,
+      [sim.mil.id]: sim.aircraft.some((a) => a.request?.kind === 'milxing' && a.state === 'inbound') || sim.tsaPending.size > 0 || lastBy(sim.mil.id) < 20,
+      [sim.sup.id]: lastBy(sim.sup.id) < 30,
     } as Record<string, boolean>;
     const sig = JSON.stringify([this.icomSig, reqs.map((r) => r.id), lit]);
     const netSig = JSON.stringify([nets.map((n) => n.id), [...sim.tsaPending.keys()], Math.floor(sim.t / 2)]);
@@ -1253,7 +1253,7 @@ export class Game {
     const topOnly = sig !== this.coordSig;
     this.coordSig = sig; this.netSig = netSig;
     const key = (u: string, sub: string) => `<button class="ikey ${lit[u] ? 'lit' : ''}" data-ikey="${u}"><b>${u}</b><small>${sub}</small></button>`;
-    const brus = reqs.map((r) => `<div class="ic-card bru"><div class="ic-h"><span class="ic-from">BRU ⇄</span><b class="mono">${esc(r.cs)}</b><span class="ic-t mono" data-tx="${r.expireT}">${mmss(r.expireT - sim.t)}</span></div><div class="ic-s">Early transfer at ${esc(levelText(r.level))}?</div><div class="ic-b"><button data-rel="${esc(r.cs)}" data-v="bruok" class="ok">Approve</button><button data-rel="${esc(r.cs)}" data-v="bruno">As coordinated</button></div></div>`).join('');
+    const brus = reqs.map((r) => `<div class="ic-card bru"><div class="ic-h"><span class="ic-from">${sim.acc.id} ⇄</span><b class="mono">${esc(r.cs)}</b><span class="ic-t mono" data-tx="${r.expireT}">${mmss(r.expireT - sim.t)}</span></div><div class="ic-s">Early transfer at ${esc(levelText(r.level))}?</div><div class="ic-b"><button data-rel="${esc(r.cs)}" data-v="bruok" class="ok">Approve</button><button data-rel="${esc(r.cs)}" data-v="bruno">As coordinated</button></div></div>`).join('');
     const tsas = [...sim.tsaPending].map(([n, t]) => `<div class="net mil"><span>TSA</span><b>${esc(n)}</b><em>live ${sim.utc(t).slice(0, 5)}Z</em></div>`).join('');
     const netRows = nets.map((n) => {
       if (n.kind === 'STCA' || n.kind === 'LOS') return `<button class="net red" data-cs="${n.a}"><span>${n.kind}</span><b>${n.a} / ${n.b}</b><em>${n.nm.toFixed(1)} NM ${Math.round(n.vertFt / 100) * 100} ft${n.kind === 'STCA' ? ` · ${mmss(n.tCpa)}` : ''}</em></button>`;
@@ -1266,7 +1266,7 @@ export class Game {
     const netsEl = this.els.coord.querySelector<HTMLElement>('.nets');
     if (!topOnly && netsEl) { netsEl.innerHTML = netsHtml; return; }
     this.els.coord.innerHTML = `
-      <div class="ikeys">${key('TWR', UNITS.TWR.freq)}${key('BRU', 'ACC')}${key('MIL', 'Steenokkerzeel')}${key('BEEK', UNITS.BEEK.freq)}${key('MUAC', '> FL245')}${key('SUP', 'supervisor')}</div>
+      <div class="ikeys">${Object.values(sim.units).map((u) => key(u.id, u.role === 'tower' || u.role === 'neighbour' ? u.freq : u.label)).join('')}</div>
       ${this.icomHtml || brus ? `<div class="coord-cards">${this.icomHtml}${brus}</div>` : '<div class="empty">No coordination waiting.</div>'}
       <div class="nets">${netsHtml}</div>`;
   }

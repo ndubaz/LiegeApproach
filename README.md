@@ -82,7 +82,7 @@ tests/         pack checks, fly-throughs, engine, game, suggestions, prediction,
 
 ## Adding an airport
 
-Write a new `PackSpec` (copy `src/pack/eblg.ts`). Transcribe fixes, runways, STARs, transitions, SIDs, holds and airspace from the AIP, then add a fly-through test. The engine reads only the pack. Charleroi (EBCI) is next. Munich (EDDM) needs parallel-runway support in the engine first.
+Write a new `PackSpec` (copy `src/pack/eblg.ts`) and register it in `src/pack/index.ts` (`PACKS`). Transcribe fixes, runways, STARs, transitions, SIDs, holds and airspace from the AIP, then fill the 2.0 block: the intercom `units` (ids, roles, callsigns, frequencies, voices), `traffic` (operators, the demand curve or an hourly `demand` table with a curfew as 0, STAR and SID weights, transient-traffic patterns), `fixSay`, `stackFix`, `depXfl`, `utcOffsetWinter`, `reservedAreasName` and, for an airport that lands and departs on different runways at the same time, `runwayConfigs`. The engine reads only the pack: `tests/synthetic-pack.ts` is a complete two-runway example and `tests/multiairport.test.ts` runs it. Scripted challenges, checkrides and drills carry an `icao` and only show for their airport; free play and the daily shift work at any airport from its pack alone.
 
 ## Controls
 

@@ -53,6 +53,28 @@ export const PERF: Record<string, Perf> = {
   PA28: P({ type: 'PA28', name: 'PA-28', recat: 'F', wake: 'L', vapp: 70, vminClean: 85, vminFlap: 75, vcruiseLow: 110, climbFpm: 650, descentFpm: 500, accel: 0.8, decel: 0.8, fuelKgH: 32, vfrCruise: 110 }),
   EC45: P({ type: 'EC45', name: 'H145', recat: 'F', wake: 'L', vapp: 70, vminClean: 60, vminFlap: 60, vcruiseLow: 120, climbFpm: 1200, descentFpm: 1000, accel: 1.5, decel: 1.5, fuelKgH: 200, heli: true, vfrCruise: 120 }),
   NH90: P({ type: 'NH90', name: 'NH90', recat: 'F', wake: 'M', vapp: 80, vminClean: 60, vminFlap: 60, vcruiseLow: 135, climbFpm: 1200, descentFpm: 1000, accel: 1.5, decel: 1.5, fuelKgH: 650, heli: true, vfrCruise: 135 }),
+  // ---- 2.0: the passenger-hub fleet (RECAT-EU categories per EUROCONTROL's type list; speeds at typical landing weights) ----
+  A388: P({ type: 'A388', name: 'A380-800', recat: 'A', wake: 'J', vapp: 140, vminClean: 220, vminFlap: 170, vcruiseLow: 250, climbFpm: 1800, descentFpm: 2000, accel: 0.9, decel: 0.6, fuelKgH: 12000 }),
+  B77W: P({ type: 'B77W', name: 'B777-300ER', recat: 'B', wake: 'H', vapp: 150, vminClean: 220, vminFlap: 170, vcruiseLow: 250, climbFpm: 2200, descentFpm: 2000, accel: 1.1, decel: 0.7, fuelKgH: 7800 }),
+  B789: P({ type: 'B789', name: 'B787-9', recat: 'B', wake: 'H', vapp: 145, vminClean: 215, vminFlap: 165, vcruiseLow: 250, climbFpm: 2500, descentFpm: 2200, accel: 1.2, decel: 0.75, fuelKgH: 5600 }),
+  B788: P({ type: 'B788', name: 'B787-8', recat: 'B', wake: 'H', vapp: 140, vminClean: 210, vminFlap: 160, vcruiseLow: 250, climbFpm: 2600, descentFpm: 2200, accel: 1.2, decel: 0.75, fuelKgH: 5200 }),
+  A359: P({ type: 'A359', name: 'A350-900', recat: 'B', wake: 'H', vapp: 140, vminClean: 215, vminFlap: 165, vcruiseLow: 250, climbFpm: 2500, descentFpm: 2200, accel: 1.2, decel: 0.75, fuelKgH: 5800 }),
+  A333: P({ type: 'A333', name: 'A330-300', recat: 'B', wake: 'H', vapp: 140, vminClean: 210, vminFlap: 160, vcruiseLow: 250, climbFpm: 2200, descentFpm: 2000, accel: 1.1, decel: 0.75, fuelKgH: 5900 }),
+  A339: P({ type: 'A339', name: 'A330-900', recat: 'B', wake: 'H', vapp: 140, vminClean: 210, vminFlap: 160, vcruiseLow: 250, climbFpm: 2300, descentFpm: 2000, accel: 1.1, decel: 0.75, fuelKgH: 5500 }),
+  B753: P({ type: 'B753', name: 'B757-300', recat: 'C', wake: 'M', vapp: 140, vminClean: 205, vminFlap: 155, vcruiseLow: 250, climbFpm: 2800, descentFpm: 2300, accel: 1.3, decel: 0.9, fuelKgH: 3400 }),
+  A21N: P({ type: 'A21N', name: 'A321neo', recat: 'D', wake: 'M', vapp: 140, vminClean: 210, vminFlap: 155, vcruiseLow: 250, climbFpm: 2800, descentFpm: 2300, accel: 1.5, decel: 1.0, fuelKgH: 2400 }),
+  A20N: P({ type: 'A20N', name: 'A320neo', recat: 'D', wake: 'M', vapp: 135, vminClean: 200, vminFlap: 150, vcruiseLow: 250, climbFpm: 3000, descentFpm: 2300, accel: 1.5, decel: 1.0, fuelKgH: 2200 }),
+  A319: P({ type: 'A319', name: 'A319', recat: 'D', wake: 'M', vapp: 130, vminClean: 195, vminFlap: 145, vcruiseLow: 250, climbFpm: 3000, descentFpm: 2300, accel: 1.5, decel: 1.0, fuelKgH: 2300 }),
+  B38M: P({ type: 'B38M', name: 'B737 MAX 8', recat: 'D', wake: 'M', vapp: 145, vminClean: 210, vminFlap: 160, vcruiseLow: 250, climbFpm: 2800, descentFpm: 2300, accel: 1.5, decel: 1.0, fuelKgH: 2300 }),
+  E195: P({ type: 'E195', name: 'E195', recat: 'E', wake: 'M', vapp: 135, vminClean: 195, vminFlap: 150, vcruiseLow: 250, climbFpm: 2900, descentFpm: 2300, accel: 1.6, decel: 1.1, fuelKgH: 2100 }),
+  E290: P({ type: 'E290', name: 'E190-E2', recat: 'E', wake: 'M', vapp: 130, vminClean: 190, vminFlap: 145, vcruiseLow: 250, climbFpm: 3000, descentFpm: 2300, accel: 1.6, decel: 1.1, fuelKgH: 1900 }),
+  CRJ9: P({ type: 'CRJ9', name: 'CRJ-900', recat: 'E', wake: 'M', vapp: 135, vminClean: 200, vminFlap: 150, vcruiseLow: 250, climbFpm: 3000, descentFpm: 2500, accel: 1.7, decel: 1.2, fuelKgH: 1600 }),
+  AT76: P({ type: 'AT76', name: 'ATR 72-600', recat: 'E', wake: 'M', vapp: 115, vminClean: 170, vminFlap: 130, vcruiseLow: 230, climbFpm: 1500, descentFpm: 1500, accel: 1.2, decel: 1.2, fuelKgH: 650 }),
+  DH8D: P({ type: 'DH8D', name: 'Dash 8 Q400', recat: 'E', wake: 'M', vapp: 120, vminClean: 180, vminFlap: 140, vcruiseLow: 250, climbFpm: 2000, descentFpm: 1800, accel: 1.3, decel: 1.2, fuelKgH: 800 }),
+  B463: P({ type: 'B463', name: 'BAe 146-300', recat: 'E', wake: 'M', vapp: 120, vminClean: 180, vminFlap: 140, vcruiseLow: 250, climbFpm: 2200, descentFpm: 2500, accel: 1.4, decel: 1.3, fuelKgH: 1700 }),
+  F2TH: P({ type: 'F2TH', name: 'Falcon 2000', recat: 'E', wake: 'M', vapp: 115, vminClean: 175, vminFlap: 135, vcruiseLow: 250, climbFpm: 3500, descentFpm: 2500, accel: 2, decel: 1.5, fuelKgH: 900 }),
+  CL60: P({ type: 'CL60', name: 'Challenger 600', recat: 'E', wake: 'M', vapp: 125, vminClean: 180, vminFlap: 140, vcruiseLow: 250, climbFpm: 3500, descentFpm: 2500, accel: 2, decel: 1.5, fuelKgH: 1000 }),
+  GLF6: P({ type: 'GLF6', name: 'Gulfstream G650', recat: 'E', wake: 'M', vapp: 125, vminClean: 185, vminFlap: 145, vcruiseLow: 250, climbFpm: 3500, descentFpm: 2500, accel: 2, decel: 1.5, fuelKgH: 1500 }),
 };
 
 /** RECAT-EU arrival wake separation minima, NM (leader → follower). Missing = radar minimum. */

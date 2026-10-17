@@ -6,9 +6,9 @@ import '@fontsource/ibm-plex-sans-condensed/latin-500.css';
 import '@fontsource/ibm-plex-sans-condensed/latin-600.css';
 import './styles.css';
 import { registerSW } from 'virtual:pwa-register';
-import { loadPack } from './pack/load';
-import { EBLG } from './pack/eblg';
-import { CHALLENGES } from './engine/scenarios';
+import type { Pack } from './pack/load';
+import { DEFAULT_PACK, PACKS, airportList, loadPackById } from './pack/index';
+import { CHALLENGES, challengesFor } from './engine/scenarios';
 import { dailyShift, freePlay, type FreePlayOpts } from './engine/traffic';
 import { track } from './engine/assess';
 import { autoControl } from './engine/autopilot';
@@ -20,7 +20,7 @@ import { Radio } from './ui/audio';
 import { Transmission, phrases } from './voice/radio-fx';
 import { spokenText } from './voice/speech-text';
 import { castFor } from './voice/casting';
-import { careerNow, loadSettings, nextDrillVariant, recordCheckride, saveDrillResult, saveRecord } from './store';
+import { careerNow, loadSettings, nextDrillVariant, recordCheckride, saveDrillResult, saveRecord, saveSettings, setActiveAirport } from './store';
 import {
   debriefData, renderBriefing, renderCareer, renderChallenges, renderDebrief, renderDrills, renderFree, renderHelp, renderHome, renderRecords, renderSettings, renderTutorial,
   startTrace, stopAttract, type DebriefExtra, type MenuHandlers,
@@ -33,18 +33,35 @@ import { LESSONS, coachFor } from './ui/tutorial';
 
 if (!__SINGLE__ && 'serviceWorker' in navigator) registerSW({ immediate: true });
 
-const pack = loadPack(EBLG);
 const app = document.getElementById('app')!;
 const radio = new Radio();
 const settings = loadSettings();
+if (!PACKS[settings.airport]) settings.airport = DEFAULT_PACK;
+/** The location pack in use. `setAirport` swaps it; everything reads `pack` at call time. */
+let pack: Pack = loadPackById(settings.airport);
+setActiveAirport(pack.meta.icao);
+radio.setPack(pack);
 let game: Game | undefined;
 let lastScenario: Scenario | undefined;
+
+/** Switch the airport: the pack, the store scope, the voices and the menu's handlers follow. */
+function setAirport(icao: string) {
+  if (!PACKS[icao] || icao === pack.meta.icao) return;
+  game?.destroy(); game = undefined;
+  pack = loadPackById(icao);
+  settings.airport = pack.meta.icao;
+  saveSettings(settings);
+  setActiveAirport(pack.meta.icao);
+  radio.setPack(pack);
+  handlers.pack = pack;
+  go('home');
+}
 
 async function liveMetar(): Promise<string | undefined> {
   try {
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), 4000);
-    const r = await fetch('/api/metar?ids=EBLG', { signal: ctl.signal });
+    const r = await fetch(`/api/metar?ids=${encodeURIComponent(pack.meta.icao)}`, { signal: ctl.signal });
     clearTimeout(t);
     if (!r.ok) return undefined;
     const j = await r.json();
@@ -52,7 +69,14 @@ async function liveMetar(): Promise<string | undefined> {
   } catch { return undefined; }
 }
 
-const handlers: MenuHandlers & { startLesson(i: number): void } = {
+const handlers: MenuHandlers & {
+  startLesson(i: number): void;
+  /** 2.0: the airports on offer and the switch (the menu's airport picker, phase 2). */
+  airports: ReturnType<typeof airportList>;
+  setAirport(icao: string): void;
+  /** 2.0: the challenges written for the airport in use. */
+  challenges(): Scenario[];
+} = {
   pack,
   settings,
   radio,
@@ -63,6 +87,9 @@ const handlers: MenuHandlers & { startLesson(i: number): void } = {
   startDaily: () => brief(dailyShift(pack, new Date()), 'home'),
   startCheckride: (def) => brief(def.scenario, 'career'),
   startDrill: (id) => brief(drillScenario(pack, id, nextDrillVariant(id)), 'drills'),
+  airports: airportList(),
+  setAirport,
+  challenges: () => challengesFor(pack.meta.icao),
 };
 
 /** Session hooks every Sim gets: assessment snapshots, the debrief timeline, 4 s track samples, and the examiner or drill script. */
@@ -80,7 +107,7 @@ function attachSession(sim: Sim, sc: Scenario) {
 function ghostFor(sc: Scenario, sim: Sim, playerGrade: string): (() => Promise<GhostData>) | undefined {
   const ride = checkrideById(sc.id);
   const dr = parseDrillScenario(sc.id);
-  const isChallenge = CHALLENGES.some((c) => c.id === sc.id);
+  const isChallenge = CHALLENGES.some((c) => c.id === sc.id && (c.icao ?? DEFAULT_PACK) === pack.meta.icao);
   if (!ride && !dr && !isChallenge) return undefined;
   const playerTracks = sampleTracks(sim);
   const playerCmds = sim.cmdLog.slice();
@@ -123,6 +150,8 @@ function go(screen: string) {
 
 function lesson(i: number) {
   const l = LESSONS[i];
+  // the 1.0 lessons are written for Liège; a lesson for another airport carries its icao
+  setAirport(l.scenario.icao ?? DEFAULT_PACK);
   play(l.scenario, undefined, coachFor(l, {
     next: i < LESSONS.length - 1 ? () => lesson(i + 1) : undefined,
     exit: () => go('tutorial'),
@@ -131,7 +160,10 @@ function lesson(i: number) {
 }
 
 function play(sc: Scenario, replay?: { cmds: { t: number; cl: Clearance }[]; until: number }, coach?: ReturnType<typeof coachFor>) {
+  // a scenario written for another airport (a lesson, a challenge from a link) runs on its own pack
+  if (sc.icao && sc.icao !== pack.meta.icao && PACKS[sc.icao]) setAirport(sc.icao);
   radio.unlock();
+  radio.setPack(pack);
   stopAttract();
   lastScenario = sc;
   game?.destroy();
@@ -154,6 +186,7 @@ function play(sc: Scenario, replay?: { cmds: { t: number; cl: Clearance }[]; unt
         emergencies: sim.emergencies.map((e) => ({ cs: e.cs, type: e.type, landed: e.landedT !== undefined })),
         seconds: sim.t,
         counts: !sc.tutorial && !dr,
+        icao: sim.pack.meta.icao,
       });
       const extra: DebriefExtra = { pack };
       if (ride) {
@@ -218,4 +251,4 @@ app.addEventListener('click', (e) => {
 
 document.fonts?.ready.then(() => game?.scope.draw(performance.now()));
 go('home');
-(window as any).__lgg = { pack, radio, get game() { return game; }, play, brief, autoControl, lesson, LESSONS, CHALLENGES, lastScenario: () => lastScenario, go, handlers, dev: { drillSolver, drillById, chipControl, voice: { Transmission, phrases, spokenText, castFor } } };
+(window as any).__lgg = { get pack() { return pack; }, radio, setAirport, airports: airportList(), get game() { return game; }, play, brief, autoControl, lesson, LESSONS, CHALLENGES, lastScenario: () => lastScenario, go, handlers, dev: { drillSolver, drillById, chipControl, voice: { Transmission, phrases, spokenText, castFor } } };

@@ -80,13 +80,13 @@ const STEPS: StepSpec[] = [
 
 const chTitle = (id: string) => CHALLENGES.find((c) => c.id === id)?.title ?? id;
 
-export function careerStatus(inp: CareerInput): CareerStatus {
+export function careerStatus(inp: CareerInput, rides: CheckrideDef[] = CHECKRIDES): CareerStatus {
   const passedRide = (id: string) => inp.career.checkrides.find((c) => c.id === id && c.pass);
   let index = 0;
   const promotedOn: (string | undefined)[] = [undefined];
-  while (index < CHECKRIDES.length && passedRide(CHECKRIDES[index].id)) { promotedOn.push(passedRide(CHECKRIDES[index].id)!.date); index++; }
+  while (index < rides.length && passedRide(rides[index].id)) { promotedOn.push(passedRide(rides[index].id)!.date); index++; }
   const name = RANKS[index];
-  if (index >= STEPS.length) return { index, name, promotedOn };
+  if (index >= STEPS.length || index >= rides.length) return { index, name, promotedOn };
   const st = STEPS[index];
   const reqs: Requirement[] = [];
   if (st.lessons) {
@@ -108,7 +108,7 @@ export function careerStatus(inp: CareerInput): CareerStatus {
   }
   if (st.hours) { const h = inp.log.seconds / 3600; reqs.push({ key: 'hours', text: `${st.hours} hours on position`, ok: h >= st.hours, progress: `${h.toFixed(1)}/${st.hours}` }); }
   if (st.moves) reqs.push({ key: 'moves', text: `${st.moves} movements`, ok: inp.log.moves >= st.moves, progress: `${Math.min(inp.log.moves, st.moves)}/${st.moves}` });
-  const ride = CHECKRIDES[index];
+  const ride = rides[index];
   const tries = inp.career.checkrides.filter((c) => c.id === ride.id);
   const lastFail = [...tries].reverse().find((c) => !c.pass);
   const since = lastFail ? inp.career.shifts.filter((s) => s.date > lastFail.date).length : RETAKE_SHIFTS;
@@ -133,6 +133,8 @@ export interface ExamEvent {
 }
 export interface CheckrideDef {
   id: string;
+  /** The airport the ride is written for (its scenario's icao). */
+  icao: string;
   /** Rank index this checkride promotes to. */
   to: number;
   title: string;
@@ -155,10 +157,10 @@ function ride(id: string, to: number, title: string, brief: string, minGrade: Gr
   const sp = spawns.map((s) => ({ ...s }));
   hotStart(sp);
   const scenario: Scenario = {
-    id: `checkride-${id}`, title, desc: brief, seed, durationMin: durationFor(sp), startUtc, metar, runway: '22L', readbackErr,
+    id: `checkride-${id}`, title, desc: brief, seed, durationMin: durationFor(sp), startUtc, metar, runway: '22L', readbackErr, icao: 'EBLG',
     spawns: sp, events: [], briefing: 'An examiner is plugged in behind you. Work the traffic as you would on any night. Expect the unexpected.',
   };
-  return { id, to, title, brief, minGrade, script, scenario };
+  return { id, icao: 'EBLG', to, title, brief, minGrade, script, scenario };
 }
 
 export const CHECKRIDES: CheckrideDef[] = [
@@ -186,6 +188,8 @@ export const CHECKRIDES: CheckrideDef[] = [
   ], [{ t: 520, kind: 'milxing', cs: 'BAF73' }, { t: 650, kind: 'radio', cs: 'ETH3721' }, { t: 840, kind: 'birds', min: 4 }, { t: 1100, kind: 'goaround', cs: 'AZG7321' }, { t: 1300, kind: 'qnh', dq: -2 }], 0.05),
 ];
 export const checkrideById = (id: string) => CHECKRIDES.find((c) => c.id === id || c.scenario.id === id);
+/** The checkrides written for an airport (Liège has the full ladder; another airport without rides stays at Student until its rides exist). */
+export const checkridesFor = (icao: string) => CHECKRIDES.filter((c) => c.icao === icao);
 
 /** What the examiner saw happen, collected while the session runs. */
 export interface ExamState {
@@ -278,7 +282,7 @@ export function examinerVerdict(run: ExamRun, def: CheckrideDef, r: Pick<Result,
   for (const ex of def.script) {
     switch (ex.kind) {
       case 'birds': {
-        const closures = st?.closures.length ? st.closures : [{ t0: ex.t, t1: ex.t + (ex.min ?? 4) * 60, rwy: '22L' }];
+        const closures = st?.closures.length ? st.closures : [{ t0: ex.t, t1: ex.t + (ex.min ?? 4) * 60, rwy: def.scenario.runway ?? '22L' }];
         for (const c of closures) {
           const ga = run.events.filter((e) => e.kind === 'goaround' && /occupied/.test(e.text) && e.t >= c.t0 && e.t <= c.t1 + 30);
           const ok = ga.length === 0;

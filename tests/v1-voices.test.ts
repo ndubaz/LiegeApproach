@@ -5,7 +5,7 @@ import { Sim } from '../src/engine/sim';
 import type { Scenario, SpawnSpec } from '../src/engine/types';
 import { CHALLENGES } from '../src/engine/scenarios';
 import { assess } from '../src/engine/assess';
-import { EVENT_DECK, freePlay, shiftCurveForHour, HOUR_CURVE } from '../src/engine/traffic';
+import { EVENT_DECK, freePlay, shiftCurveForHour, curveOf } from '../src/engine/traffic';
 import { coordAdvice, releaseAdvice, suggest } from '../src/engine/suggest';
 import { landingOrder, slotFor } from '../src/engine/sequence';
 import { hints } from '../src/engine/hints';
@@ -265,7 +265,7 @@ describe('runway change', () => {
 // ---------------------------------------------------------------- 4. Traffic by hour
 describe('traffic by hour', () => {
   it('follows the Liège day: evening departures, night bank, sort, outbound bank, quiet morning', () => {
-    const at = (h: number) => shiftCurveForHour(h);
+    const at = (h: number) => shiftCurveForHour(h, curveOf(pack));
     expect(at(19.5)).toMatchObject({ phase: 'evening' });
     expect(at(19.5).dep).toBeGreaterThan(at(19.5).arr);
     expect(at(1.5)).toMatchObject({ phase: 'bank' });
@@ -282,7 +282,7 @@ describe('traffic by hour', () => {
     for (let h = 0; h < 24; h += 0.25) peak = Math.max(peak, at(h).arr + at(h).dep);
     expect(peak).toBeGreaterThanOrEqual(20);
     expect(peak).toBeLessThanOrEqual(28);
-    expect(HOUR_CURVE.arr[0][0]).toBe(0);
+    expect(curveOf(pack).arr[0][0]).toBe(0);
   });
 
   it("free play's start hour drives the mix and the clock", () => {

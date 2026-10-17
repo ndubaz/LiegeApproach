@@ -12,21 +12,22 @@ interface AutoState {
 }
 const stateOf = (sim: Sim): AutoState => ((sim as any)._autoSeq ??= { queue: [], released: [], lastRel: -999, ga: new Map() });
 
-/** Track miles to touchdown along the cleared path (via ALHUV and the published transition if not yet on it). */
+/** Track miles to touchdown along the cleared path (via the stack fix and the published transition if not yet on it). */
 export function remainNm(sim: Sim, ac: Aircraft): number {
   const r = sim.rwy;
   if (ac.app?.locCap) return distToThr(ac.p, r);
-  const tr = sim.transitionsFor(r.id).find((t) => !t.atcDiscretion);
+  const sf = sim.stackFixOf(ac);
+  const tr = sim.transitionsFrom(sf).find((t) => !t.atcDiscretion) ?? sim.transitionsFor(r.id).find((t) => !t.atcDiscretion);
   const trLen = tr ? tr.legs.reduce((s, l, i) => (i ? s + dist(tr.legs[i - 1].p, l.p) : 0), 0) + distToThr(tr.legs[tr.legs.length - 1].p, r) : 20;
   let p = ac.p, d = 0;
   for (const l of ac.route) { d += dist(p, l.p); p = l.p; }
   const last = ac.route[ac.route.length - 1];
   if (!last) {
-    const alh = sim.pack.fixes.get('ALHUV')?.p ?? r.thr;
+    const alh = sim.pack.fixes.get(sf)?.p ?? r.thr;
     return dist(ac.p, alh) + trLen;
   }
   if (last.fix === r.ifFix) return d + distToThr(last.p, r);
-  if (last.fix === 'ALHUV') return d + trLen;
+  if (sim.stackFixes().includes(last.fix)) return d + trLen;
   return d + dist(p, r.thr) + 12;
 }
 
@@ -47,18 +48,18 @@ export function autoControl(sim: Sim) {
     }
   }
 
-  // Brussels early-transfer requests: keep the agreed level (the demo does not take traffic early)
+  // the centre's early-transfer requests: keep the agreed level (the demo does not take traffic early)
   for (const r of sim.coordReqs) if (r.state === 'pending' && sim.t - r.t >= 8) sim.issue({ cs: r.cs, items: [{ k: 'deny' }] });
   // after a runway change: arrivals still on the old runway's STAR get the matching one for the new runway
   if (sim.lastRwyChange) {
     for (const ac of sim.needReclear()) {
       if (ac.state !== 'assumed' || ac.radioFail || sim.readbackPending(ac.cs) || sim.freqBusy()) continue;
       const st = ac.proc ? sim.mapStar(ac.proc, sim.runway) : undefined;
-      const onStar = !!st && ac.mode === 'NAV' && ac.route.some((l) => l.fix === 'ALHUV');
+      const onStar = !!st && ac.mode === 'NAV' && ac.route.some((l) => sim.stackFixes().includes(l.fix));
       if (onStar) { sim.issue({ cs: ac.cs, items: [{ k: 'star', name: st!.name }] }); S.released = S.released.filter((x) => x !== ac.cs); break; }
       if (ac.app && !ac.app.locCap) {
-        // already released: the new runway's transition from ALHUV at its present level, in the same order
-        const tr = sim.transitionsFor(sim.runway).find((t) => !t.atcDiscretion);
+        // already released: the new runway's transition from the stack fix at its present level, in the same order
+        const tr = sim.transitionsFrom(sim.stackFixOf(ac)).find((t) => !t.atcDiscretion) ?? sim.transitionsFor(sim.runway).find((t) => !t.atcDiscretion);
         if (tr) { sim.issue({ cs: ac.cs, items: [{ k: 'trans', name: tr.name }, { k: 'app', app: 'ILS', rwy: sim.runway }] }); break; }
       }
     }
@@ -85,9 +86,10 @@ export function autoControl(sim: Sim) {
     if (ac.kind === 'arr') {
       const rw = sim.rwy;
       if (ac.request && ac.request.kind !== 'vectors') { send([{ k: 'appr' }]); continue; }
-      if (ac.app?.locCap) { send([{ k: 'xfr', unit: 'TWR' }]); continue; }
-      const alh = sim.pack.fixes.get('ALHUV')?.p ?? rw.thr;
-      const nearAlh = !ac.route.some((l) => l.fix === 'ALHUV') || dist(ac.p, alh) < 12;
+      if (ac.app?.locCap) { send([{ k: 'xfr', unit: sim.twr.id }]); continue; }
+      const sf = sim.stackFixOf(ac);
+      const alh = sim.pack.fixes.get(sf)?.p ?? rw.thr;
+      const nearAlh = !ac.route.some((l) => l.fix === sf) || dist(ac.p, alh) < 12;
       if (ac.app) {
         // released: descend for the transition near ALHUV, then match the leader's speed if closing
         const i = S.released.indexOf(ac.cs);
@@ -108,7 +110,7 @@ export function autoControl(sim: Sim) {
         if (ac.awaitingSince !== undefined) send([{ k: 'lvl', lvl: ac.cleared }]);
         continue;
       }
-      const tr = sim.transitionsFor(rw.id).find((t) => !t.atcDiscretion)!;
+      const tr = sim.transitionsFrom(sf).find((t) => !t.atcDiscretion) ?? sim.transitionsFor(rw.id).find((t) => !t.atcDiscretion)!;
       const ahead = S.released.filter((x) => !live(x)?.app?.locCap).length;
       const relFt = Math.min(sim.ftOf(ac.cleared), nearAlh || ahead ? rw.ifAlt + 1000 * ahead : 4000);
       const approach: any[] = [{ k: 'trans', name: tr.name }, { k: 'lvl', lvl: sim.levelFor(relFt) }, { k: 'app', app: 'ILS', rwy: rw.id }];
@@ -133,14 +135,16 @@ export function autoControl(sim: Sim) {
         if (k > 0 && ac.spdAssigned === undefined && ac.mode !== 'HOLD') items.push({ k: 'spd', spd: Math.max(ac.perf.vminClean + 10, 210) });
         send(items); continue;
       }
-      if (ac.mode === 'HDG' && !ac.route.length) { send([{ k: 'hold', fix: 'ALHUV' }, { k: 'lvl', lvl: ac.cleared }]); continue; }
+      if (ac.mode === 'HDG' && !ac.route.length) { send([{ k: 'hold', fix: sf }, { k: 'lvl', lvl: ac.cleared }]); continue; }
       if (ac.awaitingSince !== undefined) send([{ k: 'lvl', lvl: ac.cleared }]);
       continue;
     }
     if (ac.kind === 'dep') {
       const conflict = sim.aircraft.some((o) => o !== ac && o.kind === 'arr' && !o.remove && dist(o.p, ac.p) < 12 && o.alt > ac.alt - 1000 && o.alt < 10000);
-      if (ac.cleared.fl !== 90 && (ac.alt > 5000 || ac.awaitingSince !== undefined) && !conflict) send([{ k: 'lvl', lvl: { fl: 90 } }]);
-      else if (Math.hypot(ac.p.x, ac.p.y) > 20 && (ac.cleared.fl === 90 || Math.hypot(ac.p.x, ac.p.y) > 30)) send([{ k: 'xfr', unit: 'BRU' }]);
+      const xfl = sim.depXfl;
+      const atXfl = ac.cleared.fl === xfl.fl && ac.cleared.ft === xfl.ft;
+      if (!atXfl && (ac.alt > 5000 || ac.awaitingSince !== undefined) && !conflict) send([{ k: 'lvl', lvl: xfl }]);
+      else if (Math.hypot(ac.p.x, ac.p.y) > 20 && (atXfl || Math.hypot(ac.p.x, ac.p.y) > 30)) send([{ k: 'xfr', unit: sim.acc.id }]);
       else if (ac.awaitingSince !== undefined) send([{ k: 'lvl', lvl: ac.cleared }]);
     }
     if ((ac.kind === 'ovf' || ac.kind === 'mil' || ac.kind === 'vfr' || ac.kind === 'heli' || ac.kind === 'cal') && ac.awaitingSince !== undefined) send([{ k: 'appr' }]);

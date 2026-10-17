@@ -36,6 +36,8 @@ export interface DrillState {
 }
 export interface DrillDef {
   id: DrillId;
+  /** The airport the drill is written for; default EBLG. */
+  icao?: string;
   title: string;
   /** One line on the home of the drills screen. */
   summary: string;
@@ -429,6 +431,8 @@ const RELEASE: DrillDef = {
 
 export const DRILLS: DrillDef[] = [INTERCEPT, WAKE, CONFLICT, DESCENT, RELEASE];
 export const drillById = (id: string) => DRILLS.find((d) => d.id === id);
+/** The drills written for an airport. */
+export const drillsFor = (icao: string) => DRILLS.filter((d) => (d.icao ?? 'EBLG') === icao);
 const DRILL_BASE: Record<DrillId, number> = { intercept: 7100, wake: 7200, conflict: 7300, descent: 7400, release: 7500 };
 
 /** The scenario for one variation of a drill. Same id and variant, same session. */
@@ -437,7 +441,7 @@ export function drillScenario(pack: Pack, id: DrillId, variant: number): Scenari
   const seed = DRILL_BASE[id] * 1000 + variant;
   const p = def.params(seed);
   const base = def.scenario(pack, seed, p);
-  return { ...base, id: `drill-${id}-${variant}`, title: `Drill · ${def.title}`, desc: `${def.summary} ${def.goal}`, briefing: def.goal, seed, durationMin: Math.ceil(def.limitS / 60) + 1 };
+  return { ...base, id: `drill-${id}-${variant}`, title: `Drill · ${def.title}`, desc: `${def.summary} ${def.goal}`, briefing: def.goal, seed, durationMin: Math.ceil(def.limitS / 60) + 1, icao: def.icao ?? pack.meta.icao };
 }
 export function parseDrillScenario(scId: string): { id: DrillId; variant: number } | undefined {
   const m = /^drill-([a-z]+)-(\d+)$/.exec(scId);

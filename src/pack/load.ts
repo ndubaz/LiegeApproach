@@ -1,5 +1,5 @@
 import { destination, parseLatLon, Projection, type LatLon, type XY, DEG } from '../geo';
-import type { PackSpec, LevelSpec, PolySpec, FixKind } from './types';
+import type { PackSpec, LevelSpec, PolySpec, FixKind, UnitSpec, RunwayConfigSpec } from './types';
 
 export interface Level { ft?: number; fl?: number }
 export const parseLevel = (s: LevelSpec | undefined): Level | undefined => {
@@ -49,6 +49,33 @@ export interface Pack {
   mapLines: { name: string; pts: XY[]; style: string }[];
   /** All TMA sub-areas when the pack lists them. */
   tmaParts?: Area[];
+  // ---- 2.0 ----
+  /** Runway configurations in preference order (one entry per runway when the airport lands and departs on the same one). */
+  runwayConfigs: RunwayConfigSpec[];
+  /** The intercom units of this position (from the spec, or derived from the meta block when the spec has none). */
+  units: UnitSpec[];
+  /** Where the arrival stack forms: the spec's stackFix, else the first fix of the first transition. */
+  stackFix: string;
+  /** What the pack calls its military reserved areas ('TSA', 'ED-R'). */
+  reservedAreasName: string;
+  /** Winter UTC offset of the airport, hours. */
+  utcOffsetWinter: number;
+  /** Agreed departure transfer level to the centre. */
+  depXfl: Level;
+}
+
+/** The intercom units: the spec's list, or a minimal set built from the meta block (Tower, the centre, a supervisor). */
+export function unitsOf(spec: PackSpec): UnitSpec[] {
+  if (spec.units?.length) return spec.units;
+  const m = spec.meta;
+  const acc = m.upstream[0];
+  const out: UnitSpec[] = [
+    { id: 'TWR', role: 'tower', callsign: m.twrCallsign, freq: m.twrFreq, label: 'TWR', source: 'pack meta', say: 'Tower' },
+    { id: 'ACC', role: 'acc', callsign: acc?.callsign ?? 'Control', freq: acc?.freq ?? '', label: 'ACC', source: 'pack upstream list', say: (acc?.callsign ?? 'Control').split(' ')[0] },
+  ];
+  for (const u of m.upstream.slice(1)) out.push({ id: u.name.split(' ')[0].toUpperCase().slice(0, 5), role: 'neighbour', callsign: u.callsign, freq: u.freq, label: u.name.split(' ')[0], source: 'pack upstream list' });
+  out.push({ id: 'SUP', role: 'supervisor', callsign: 'Supervisor', freq: '', label: 'supervisor', source: 'sim construct', say: 'Supervisor' });
+  return out;
 }
 
 export function loadPack(spec: PackSpec): Pack {
@@ -122,6 +149,12 @@ export function loadPack(spec: PackSpec): Pack {
     vfrRoutes: spec.vfrRoutes,
     mapLines: spec.mapLines.map((l) => ({ name: l.name, style: l.style, pts: l.points.map(fx) })),
     tmaParts: spec.tmaParts?.map(area),
+    runwayConfigs: spec.runwayConfigs?.length ? spec.runwayConfigs : spec.preferredRunways.map((r) => ({ land: r, dep: r })),
+    units: unitsOf(spec),
+    stackFix: spec.stackFix ?? spec.transitions[0]?.legs[0]?.fix ?? spec.stars[0]?.legs[spec.stars[0].legs.length - 1]?.fix ?? '',
+    reservedAreasName: spec.reservedAreasName ?? 'TSA',
+    utcOffsetWinter: spec.utcOffsetWinter ?? 1,
+    depXfl: parseLevel(spec.depXfl ?? 'F090')!,
   };
 }
 

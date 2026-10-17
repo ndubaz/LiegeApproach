@@ -1,8 +1,9 @@
 import type { Scenario, SpawnSpec } from './types';
 import { durationFor, emergencyObjectives, hotStart } from './traffic';
 
-// The challenge library: 22 scripted scenarios in four tiers.
+// The challenge library: 22 scripted scenarios in four tiers, written for Liège (EBLG).
 // Times are seconds from the start. Callsigns are realistic in format; flights are fictional.
+// Each scenario carries its airport in `icao`; `challengesFor(icao)` gives the menu the right list.
 
 const A = (t: number, cs: string, type: string, star: string, x: Partial<SpawnSpec> = {}): SpawnSpec => ({ t, kind: 'arr', cs, type, star, spawnDist: 40, ...x });
 const D = (t: number, cs: string, type: string, sid: string, x: Partial<SpawnSpec> = {}): SpawnSpec => ({ t, kind: 'dep', cs, type, sid, ...x });
@@ -268,16 +269,19 @@ export const CHALLENGES: Scenario[] = LIBRARY.map((sc) => {
     const t0 = o.byT - (o.text.includes('15:00') ? 15 : 12) * 60;
     return { ...o, text: `Land ${o.cs} within ${m}:00`, byT: t0 + m * 60 };
   });
-  return { ...sc, spawns, durationMin: durationFor(spawns), objectives: obj.length ? obj : sc.objectives };
+  return { ...sc, icao: sc.icao ?? 'EBLG', spawns, durationMin: durationFor(spawns), objectives: obj.length ? obj : sc.objectives };
 });
+/** The challenges written for an airport (none yet for airports other than Liège). */
+export const challengesFor = (icao: string) => CHALLENGES.filter((c) => (c.icao ?? 'EBLG') === icao);
 
-/** Tier n+1 opens once every challenge in tier n is passed. */
-export function unlockedTiers(passed: Set<string>, unlockAll = false): Set<number> {
+/** Tier n+1 opens once every challenge in tier n is passed (per airport: pass its challenge list). */
+export function unlockedTiers(passed: Set<string>, unlockAll = false, list: Scenario[] = CHALLENGES): Set<number> {
   if (unlockAll) return new Set([1, 2, 3, 4]);
   const tiers = new Set([1]);
   for (let t = 1; t < 4; t++) {
     if (!tiers.has(t)) break;
-    if (CHALLENGES.filter((c) => c.tier === t).every((c) => passed.has(c.id))) tiers.add(t + 1);
+    const inTier = list.filter((c) => c.tier === t);
+    if (inTier.length && inTier.every((c) => passed.has(c.id))) tiers.add(t + 1);
   }
   return tiers;
 }

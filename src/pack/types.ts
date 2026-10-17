@@ -119,6 +119,8 @@ export interface PackSpec {
     initialClimbLowQnh?: { qnhMax: number; level: LevelSpec };
     /** 2.5 NM on the same final approach is approved at this unit (ICAO Doc 4444 8.7.4.4). */
     reducedFinalSep?: boolean;
+    /** 2.0: controlled airspace over and around the TMA inside the sector (Liège: the Brussels CTA from 4,500 ft, class C). Default: none (class G). */
+    upperClass?: { floor: LevelSpec; cls: string };
   };
   fixes: Record<string, FixSpec>;
   runways: RunwaySpec[];
@@ -156,7 +158,16 @@ export interface PackSpec {
   reservedAreasName?: string;
   /** Places and towns for the video map and the briefing (lat/lon via fixes of kind 'town'). */
   country?: 'BE' | 'DE' | 'NL' | 'FR';
+  /**
+   * Runway configurations in preference order, for airports that land and depart on different runways at the same
+   * time (Düsseldorf: 23L landing, 23R departures). `land` is `sim.runway`, `dep` is `sim.depRunway`. Without this
+   * list the engine uses `preferredRunways` and one runway does both.
+   */
+  runwayConfigs?: RunwayConfigSpec[];
 }
+
+/** One runway pair in use: the landing runway and the departure runway (the same id when one runway does both). */
+export interface RunwayConfigSpec { land: string; dep: string; note?: string }
 
 export interface UnitSpec {
   /** short id used everywhere: TWR, ACC, MIL, plus neighbours */
@@ -170,6 +181,8 @@ export interface UnitSpec {
   source: string;
   /** which accent groups the people at this unit have (voice casting) */
   voices?: string[];
+  /** how the unit names itself on the landline ("Liège, Brussels, estimate ..."; "Approach, Tower, ..."). Default: the first word of the callsign */
+  say?: string;
 }
 
 export interface OperatorSpec { op: string; types: string[]; w: number; kind?: 'arr' | 'dep' | 'both'; telephony?: string }
@@ -187,4 +200,49 @@ export interface TrafficSpec {
   gaPrefixes?: string[];
   /** military callsigns that cross or use the field */
   military?: OperatorSpec[];
+  // ---- 2.0 additions (ENGINE track); all optional, the engine derives defaults from the procedures when absent ----
+  /**
+   * Movements per hour over the UTC day as piecewise-linear curves (arrivals and departures), with the named phases of
+   * the day. Preferred over `demand` when both are given (finer than hourly). `max` is the highest rate on each curve.
+   */
+  curve?: { arr: [number, number][]; dep: [number, number][]; max: { arr: number; dep: number }; phases: PhaseSpec[] };
+  /** STAR families by weight: `base` is the STAR name without its runway letter (KOK7 for KOK7X / KOK7D). `wBank` applies in a bank phase. Default: every STAR of the runway, equal weight. */
+  arrivals?: { base: string; w: number; wBank?: number }[];
+  /** STAR families in a bank phase, in their own order and weights (the night bank at Liège comes mostly from the west and south-east). Default: `arrivals` with `wBank`. */
+  arrivalsBank?: { base: string; w: number }[];
+  /** SIDs by weight (any runway; the engine keeps those of the departure runway in use). Default: every non-discretionary SID, equal weight. */
+  departures?: { name: string; w: number }[];
+  /** General aviation, helicopter, military and other transient traffic the generator can add, with the free-play military level that brings each in. */
+  patterns?: PatternSpec[];
+  /** Free-play templates. Default: derived from the curve. */
+  templates?: Partial<Record<'night' | 'day' | 'quiet' | 'shift', TemplateSpec>>;
+  /** The reserved area the event deck activates, and the UTC hours it may be active (NOTAM). Default: none (the card becomes a military crossing). */
+  reserved?: { name: string; hoursUtc: [number, number] };
+  /** Where diversions come from (the big airport next door) and the true bearing they arrive from. */
+  diversion?: { from: string; icao?: string; brg: number };
+  /** Registration marks for GA callsigns: prefix plus random letters to this length (Belgium OO-xxx; Germany D-Exxx). Default: the first `gaPrefixes` entry, 5 letters. */
+  registration?: { prefix: string; length: number };
+}
+
+export interface PhaseSpec { from: number; to: number; phase: string; label: string; paxShare: number }
+export interface TemplateSpec { title: string; arrPerHr: number; depPerHr: number; start: string; paxShare: number }
+/** A transient-traffic template. Callsign: fixed `cs`, or `csOp` + a number in `csNum`, or a registration (`csReg`). Several `types`: one is picked. */
+export interface PatternSpec {
+  kind: 'vfr' | 'heli' | 'mil' | 'ovf' | 'cal';
+  cs?: string;
+  csOp?: string;
+  csNum?: [number, number];
+  csReg?: boolean;
+  types: string[];
+  route: string[];
+  from: { brg: number; dist: number };
+  level: LevelSpec;
+  spd?: number;
+  formation?: number;
+  request?: { kind: 'climb' | 'crossing' | 'direct' | 'lowpass'; level?: LevelSpec; fix?: string; route?: string[] };
+  /** free-play military level (1 to 3) from which this pattern appears; omitted: deck cards only */
+  at?: 1 | 2 | 3;
+  /** event-deck cards this pattern can play ('hems', 'military'), with a weight among the tagged patterns */
+  deck?: 'hems' | 'military';
+  w?: number;
 }

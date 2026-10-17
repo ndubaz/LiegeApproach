@@ -1,61 +1,60 @@
 import { Rng } from './rng';
 import type { Scenario, ScEvent, SpawnSpec, Storm } from './types';
-import { parseMetar, selectRunway } from './weather';
+import { parseMetar, presetMetar, selectConfig } from './weather';
 import { PERF } from './perf';
 import { bearing, dist, move, type XY } from '../geo';
-import type { Level, Pack } from '../pack/load';
+import { parseLevel, type Level, type Pack } from '../pack/load';
+import type { OperatorSpec, PatternSpec, PhaseSpec, TemplateSpec, TrafficSpec } from '../pack/types';
+import { areaSpoken } from './clearance';
 
-// Operators that fly freighters into Liège, with the types they typically use.
-export const CARGO_OPS: { op: string; types: string[]; w: number }[] = [
-  { op: 'FDX', types: ['B77L', 'MD11', 'B763'], w: 4 },
-  { op: 'QTR', types: ['B77L', 'B748'], w: 4 },
-  { op: 'THY', types: ['A332', 'B77L'], w: 3 },
-  { op: 'ETH', types: ['B77L', 'B763'], w: 3 },
-  { op: 'CHG', types: ['B748', 'B744'], w: 3 },
-  { op: 'TAY', types: ['B744', 'B763', 'B738'], w: 4 },
-  { op: 'MSR', types: ['A332'], w: 1 },
-  { op: 'AZG', types: ['B748', 'B744'], w: 2 },
-  { op: 'CAO', types: ['B77L'], w: 1 },
-  { op: 'CKS', types: ['B744', 'B77L'], w: 2 },
-  { op: 'CLX', types: ['B748', 'B744'], w: 2 },
-  { op: 'DHK', types: ['B763', 'A306'], w: 2 },
-  { op: 'ABR', types: ['B738'], w: 2 },
-  { op: 'BCS', types: ['A306', 'B752'], w: 2 },
-];
-/** The night inbound bank: long-haul heavies, mostly from the Gulf, Africa and Asia. */
-export const BANK_OPS: { op: string; types: string[]; w: number }[] = [
-  { op: 'TAY', types: ['B744', 'B763'], w: 4 },
-  { op: 'QTR', types: ['B77L', 'B748'], w: 4 },
-  { op: 'ETH', types: ['B77L'], w: 3 },
-  { op: 'CKS', types: ['B744', 'B77L'], w: 2 },
-  { op: 'FDX', types: ['B77L', 'MD11'], w: 3 },
-  { op: 'CHG', types: ['B748', 'B744'], w: 3 },
-  { op: 'AZG', types: ['B748'], w: 1 },
-];
-export const PAX_OPS: { op: string; types: string[]; w: number }[] = [
-  { op: 'JAF', types: ['B738'], w: 3 },
-  { op: 'RYR', types: ['B738'], w: 2 },
-  { op: 'BEL', types: ['A320', 'A321'], w: 2 },
-  { op: 'TRA', types: ['B738'], w: 1 },
-];
+// Traffic generation reads everything from the pack's `traffic` block (operators, the demand curve, STAR and SID
+// weights, transient-traffic patterns, templates). A pack without one gets believable defaults derived from its
+// procedures and a generic regional day.
 
-export const ARR_STAR_BASES = [
-  { base: 'KOK7', w: 3 }, { base: 'CIV7', w: 3 }, { base: 'NIK7', w: 2 }, { base: 'LNO6', w: 3 }, { base: 'GESLO6', w: 2 },
+export type Op = { op: string; types: string[]; w: number };
+
+/** A generic passenger mix for packs that list no operators. */
+const GENERIC_PAX: Op[] = [
+  { op: 'DLH', types: ['A320', 'A321', 'A20N'], w: 3 }, { op: 'EWG', types: ['A320', 'A319'], w: 3 }, { op: 'RYR', types: ['B738', 'B38M'], w: 2 },
+  { op: 'EZY', types: ['A320', 'A20N'], w: 2 }, { op: 'KLM', types: ['B738', 'E190'], w: 1 }, { op: 'THY', types: ['A321', 'B738'], w: 1 },
 ];
-/** Bank arrivals come mostly from the west (KOK, CIV) and the south-east (GESLO). */
-export const BANK_STAR_BASES = [
-  { base: 'KOK7', w: 3 }, { base: 'CIV7', w: 3 }, { base: 'GESLO6', w: 3 }, { base: 'LNO6', w: 2 }, { base: 'NIK7', w: 1 },
-];
-export const starFor = (base: string, rwy: string) => base + (rwy.startsWith('22') ? 'X' : 'D');
-export const DEP_SIDS: Record<string, { name: string; w: number }[]> = {
-  '22': [{ name: 'LNO9S', w: 3 }, { name: 'CIV5S', w: 2 }, { name: 'BUB9S', w: 2 }],
-  '04': [{ name: 'LNO2R', w: 3 }, { name: 'CIV6R', w: 2 }, { name: 'BUB1R', w: 2 }],
-};
-export const sidFor = (rng: Rng, rwy: string) => rng.weighted(DEP_SIDS[rwy.slice(0, 2)].map((s) => ({ w: s.w, v: s.name })));
+const GENERIC_CARGO: Op[] = [{ op: 'FDX', types: ['B763', 'B77L'], w: 2 }, { op: 'UPS', types: ['B763'], w: 1 }, { op: 'DHK', types: ['B763', 'A306'], w: 2 }];
+
+export const ARR_STAR_BASES = [{ base: 'KOK7', w: 3 }, { base: 'CIV7', w: 3 }, { base: 'NIK7', w: 2 }, { base: 'LNO6', w: 3 }, { base: 'GESLO6', w: 2 }];
+/** The STAR of a family for a runway: the pack's STAR whose name starts with `base` and serves `rwy` (KOK7 + 22L = KOK7X at Liège). */
+export const starFor = (base: string, rwy: string, pack?: Pack) => pack?.stars.find((s) => s.name.startsWith(base) && s.name.length === base.length + 1 && s.runways.includes(rwy))?.name ?? base + (rwy.startsWith('22') ? 'X' : 'D');
+/** The STAR families (name without the runway letter) that serve a runway. */
+export function starBasesFor(pack: Pack, rwy: string): string[] {
+  const out: string[] = [];
+  for (const s of pack.stars) if (s.runways.includes(rwy) && !s.atcDiscretion) { const b = s.name.slice(0, -1); if (!out.includes(b)) out.push(b); }
+  return out;
+}
+/** Weighted STAR families for a runway, in a bank phase or not, from the pack (default: every family, equal weight). */
+export function arrivalWeights(pack: Pack, rwy: string, bank: boolean): { w: number; v: string }[] {
+  const t = pack.spec.traffic;
+  const spec: { base: string; w: number; wBank?: number }[] | undefined = bank && t?.arrivalsBank?.length ? t.arrivalsBank : t?.arrivals;
+  const bases = starBasesFor(pack, rwy);
+  if (spec?.length) {
+    const out = spec.filter((a) => bases.includes(a.base) || pack.stars.some((s) => s.name.startsWith(a.base) && s.runways.includes(rwy))).map((a) => ({ w: bank ? a.wBank ?? a.w : a.w, v: a.base }));
+    if (out.length) return out;
+  }
+  return bases.map((b) => ({ w: 1, v: b }));
+}
+/** Weighted SIDs of a runway from the pack (default: every non-discretionary SID, equal weight). */
+export function sidWeights(pack: Pack, rwy: string): { w: number; v: string }[] {
+  const spec = pack.spec.traffic?.departures;
+  const sids = pack.sids.filter((s) => s.runways.includes(rwy) && !s.atcDiscretion);
+  if (spec?.length) {
+    const out = spec.filter((d) => sids.some((s) => s.name === d.name)).map((d) => ({ w: d.w, v: d.name }));
+    if (out.length) return out;
+  }
+  return sids.map((s) => ({ w: 1, v: s.name }));
+}
+export const sidFor = (rng: Rng, rwy: string, pack: Pack) => rng.weighted(sidWeights(pack, rwy));
 
 export class CallsignPool {
   used = new Set<string>();
-  constructor(private rng: Rng) {}
+  constructor(private rng: Rng, private registration: { prefix: string; length: number } = { prefix: 'OO', length: 5 }) {}
   make(op: string): string {
     for (let i = 0; i < 50; i++) {
       const n = this.rng.chance(0.5) ? this.rng.int(10, 999) : this.rng.int(1000, 9899);
@@ -65,9 +64,12 @@ export class CallsignPool {
     }
     return `${op}${this.used.size + 100}`;
   }
+  /** A registration mark: the pack's prefix plus random letters (OO-xxx at Liège, D-Exxx in Germany). */
   reg(): string {
     const L = 'ABCDEFGHIJKLMNOPRSTUVW';
-    const cs = `OO${L[this.rng.int(0, L.length - 1)]}${L[this.rng.int(0, L.length - 1)]}${L[this.rng.int(0, L.length - 1)]}`;
+    const { prefix, length } = this.registration;
+    let cs = prefix;
+    for (let i = prefix.length; i < length; i++) cs += L[this.rng.int(0, L.length - 1)];
     this.used.add(cs);
     return cs;
   }
@@ -84,13 +86,14 @@ export interface FreePlayOpts {
   difficulty: 1 | 2 | 3 | 4 | 5;
   seed?: number;
   /**
-   * Start time, UTC hours (e.g. 1.5 for 01:30). When set, the traffic follows Liège's real day
-   * (shiftCurveForHour) from that time instead of the template's flat rates or compressed night.
+   * Start time, UTC hours (e.g. 1.5 for 01:30). When set, the traffic follows the airport's real day
+   * (the pack's demand curve) from that time instead of the template's flat rates or compressed night.
    */
   startHour?: number;
 }
 
-export const TEMPLATES = {
+/** The engine's fallback templates (a cargo hub's night and day); packs give their own in `traffic.templates`. */
+export const TEMPLATES: Record<'night' | 'day' | 'quiet' | 'shift', TemplateSpec> = {
   night: { title: 'Night bank', arrPerHr: 18, depPerHr: 9, start: '01:40', paxShare: 0 },
   day: { title: 'Daytime mix', arrPerHr: 11, depPerHr: 9, start: '10:15', paxShare: 0.25 },
   quiet: { title: 'Quiet hour', arrPerHr: 6, depPerHr: 4, start: '15:30', paxShare: 0.2 },
@@ -98,16 +101,37 @@ export const TEMPLATES = {
   shift: { title: 'Night shift', arrPerHr: 14, depPerHr: 6, start: '01:40', paxShare: 0 },
 };
 
-export const WEATHER_PRESETS: Record<string, string> = {
-  good: 'EBLG 120140Z 22008KT 9999 FEW035 12/07 Q1018 NOSIG',
-  'windy-ne': 'EBLG 120140Z 04016G26KT 9999 SCT025 09/04 Q1004 NOSIG',
-  lvp: 'EBLG 120140Z 21004KT 0300 R22L/0350 FG VV001 08/08 Q1022 NOSIG',
-  storms: 'EBLG 120140Z 20012G22KT 8000 TSRA SCT030CB BKN060 21/17 Q1009 TEMPO TSRA',
-};
+/** The free-play templates of a pack: its own, or ones derived from its demand curve (busiest night hour, busiest day hour, quietest hour). */
+export function templatesOf(pack: Pack): Record<'night' | 'day' | 'quiet' | 'shift', TemplateSpec> {
+  const own = pack.spec.traffic?.templates;
+  if (own?.night && own.day && own.quiet && own.shift) return own as Record<'night' | 'day' | 'quiet' | 'shift', TemplateSpec>;
+  const curve = curveOf(pack);
+  const at = (h: number) => shiftCurveForHour(h, curve);
+  const busiest = (from: number, to: number) => {
+    let best = from, bv = -1;
+    for (let h = from; h < to; h += 0.25) { const m = at(h); if (m.arr + m.dep > bv) { bv = m.arr + m.dep; best = h; } }
+    return best;
+  };
+  const quietest = () => {
+    let best = 12, bv = Infinity;
+    for (let h = 0; h < 24; h += 0.25) { const m = at(h); const v = m.arr + m.dep; if (v > 0 && v < bv) { bv = v; best = h; } }
+    return best;
+  };
+  const off = pack.utcOffsetWinter;
+  const tpl = (h: number, title?: string): TemplateSpec => { const m = at(h); return { title: title ?? cap(m.label), arrPerHr: Math.max(1, Math.round(m.arr)), depPerHr: Math.max(1, Math.round(m.dep)), start: hhmmOfHour(h), paxShare: m.paxShare }; };
+  const peak = busiest(0, 24);
+  const derived = {
+    night: tpl(busiest(22 - off, 30 - off)),
+    day: tpl(busiest(8 - off, 18 - off)),
+    quiet: tpl(quietest(), 'Quiet hour'),
+    shift: tpl(Math.max(0, peak - 0.33), `${cap(at(peak).label)} shift`),
+  };
+  return { ...derived, ...own } as Record<'night' | 'day' | 'quiet' | 'shift', TemplateSpec>;
+}
 
 // ---------------------------------------------------------------------------
-// Demand curve for the 'shift' template: a real Liège cargo night, as fractions
-// of the traffic window. Rates are movements per hour, linear between points.
+// Demand curve for the 'shift' template: a cargo night, as fractions of the traffic window.
+// Rates are movements per hour, linear between points.
 export type Phase = 'warmup' | 'bank' | 'crossover' | 'tail';
 export const SHIFT_PHASES: { name: Phase; from: number; to: number }[] = [
   { name: 'warmup', from: 0, to: 0.15 },
@@ -156,43 +180,65 @@ export function poissonTimes(rng: Rng, windowS: number, ratePerHr: (t: number) =
 }
 
 // ---------------------------------------------------------------------------
-// Liège over 24 hours (UTC). A cargo hub with one long runway: long-haul departures in the evening,
-// the night inbound bank (integrator feeders and long-haul freighters), a short lull while the hub sorts,
-// the outbound bank, a quiet early morning, then a steady daytime mix with a few passenger flights.
-// Rates are movements per hour, linear between points; the peaks add up to about 25 movements an hour.
-export type HourPhase = 'evening' | 'bank' | 'sort' | 'outbound' | 'morning' | 'day';
-export const HOUR_CURVE: { arr: [number, number][]; dep: [number, number][] } = {
-  arr: [[0, 16], [0.75, 22], [1.25, 24], [2.4, 23], [2.7, 6], [3.25, 4], [5.25, 3], [6, 3], [7, 6], [8, 8], [17, 8], [18, 6], [21.5, 6], [22.5, 9], [23.5, 13], [24, 16]],
-  dep: [[0, 3], [2.75, 2], [3.25, 4], [3.5, 18], [3.75, 22], [4.75, 20], [5.25, 6], [6, 3], [7, 5], [8, 7], [17, 7], [18, 9], [19.5, 11], [21.5, 8], [22.5, 4], [24, 3]],
+// The airport's day (UTC): movements per hour as piecewise-linear curves with named phases.
+export type HourPhase = string;
+export type HourCurve = NonNullable<TrafficSpec['curve']>;
+/** A generic regional day for packs without a curve: a morning wave, a steady day, an evening wave, little at night. */
+export const DEFAULT_CURVE: HourCurve = {
+  arr: [[0, 1], [4, 1], [5, 4], [6, 12], [8, 14], [10, 10], [13, 12], [16, 14], [19, 12], [21, 8], [22.5, 3], [24, 1]],
+  dep: [[0, 1], [4, 1], [5, 8], [6, 16], [8, 12], [10, 10], [13, 12], [16, 12], [19, 10], [21, 4], [22.5, 2], [24, 1]],
+  max: { arr: 14, dep: 16 },
+  phases: [
+    { from: 0, to: 5, phase: 'night', label: 'quiet night', paxShare: 0.6 },
+    { from: 5, to: 9, phase: 'morning', label: 'morning wave', paxShare: 0.9 },
+    { from: 9, to: 16, phase: 'day', label: 'daytime flow', paxShare: 0.9 },
+    { from: 16, to: 21, phase: 'evening', label: 'evening wave', paxShare: 0.9 },
+    { from: 21, to: 24, phase: 'night', label: 'late evening', paxShare: 0.8 },
+  ],
 };
-const HOUR_PHASES: { from: number; to: number; phase: HourPhase; label: string; paxShare: number }[] = [
-  { from: 0, to: 2.75, phase: 'bank', label: 'night inbound bank', paxShare: 0 },
-  { from: 2.75, to: 3.25, phase: 'sort', label: 'the sort', paxShare: 0 },
-  { from: 3.25, to: 5.25, phase: 'outbound', label: 'outbound bank', paxShare: 0 },
-  { from: 5.25, to: 8, phase: 'morning', label: 'quiet morning', paxShare: 0.15 },
-  { from: 8, to: 18, phase: 'day', label: 'daytime mix', paxShare: 0.25 },
-  { from: 18, to: 23.5, phase: 'evening', label: 'evening departures', paxShare: 0.1 },
-  { from: 23.5, to: 24, phase: 'bank', label: 'night inbound bank', paxShare: 0 },
-];
-/** Highest hourly rates on HOUR_CURVE (for the thinning sampler). */
-export const HOUR_MAX = { arr: 24, dep: 22 };
+/** The pack's demand curve: `traffic.curve`, else built from the hourly `demand` table (local time), else the generic day. */
+export function curveOf(pack: Pack): HourCurve {
+  const t = pack.spec.traffic;
+  if (t?.curve) return t.curve;
+  if (t?.demand?.length === 24) {
+    const off = pack.utcOffsetWinter;
+    const arr: [number, number][] = [], dep: [number, number][] = [];
+    for (let u = 0; u <= 24; u++) {
+      const d = t.demand[(((u + off) % 24) + 24) % 24];
+      arr.push([u, d.perHour / 2]); dep.push([u, d.perHour / 2]);
+    }
+    const phases: PhaseSpec[] = [];
+    for (let u = 0; u < 24; u++) {
+      const d = t.demand[(((u + off) % 24) + 24) % 24];
+      const phase = d.perHour === 0 ? 'curfew' : d.perHour >= 20 ? 'wave' : 'day';
+      const label = d.perHour === 0 ? 'night curfew' : d.perHour >= 20 ? 'peak wave' : 'steady flow';
+      const last = phases[phases.length - 1];
+      if (last && last.phase === phase && Math.abs(last.paxShare - d.paxShare) < 0.01) last.to = u + 1;
+      else phases.push({ from: u, to: u + 1, phase, label, paxShare: d.paxShare });
+    }
+    const max = { arr: Math.max(...arr.map((x) => x[1])), dep: Math.max(...dep.map((x) => x[1])) };
+    return { arr, dep, max, phases };
+  }
+  return DEFAULT_CURVE;
+}
 /** Traffic mix at a UTC hour (fractional hours, any value; wraps at 24). */
-export function shiftCurveForHour(hourUtc: number): { arr: number; dep: number; phase: HourPhase; label: string; paxShare: number } {
+export function shiftCurveForHour(hourUtc: number, curve: HourCurve = DEFAULT_CURVE): { arr: number; dep: number; phase: HourPhase; label: string; paxShare: number } {
   const h = ((hourUtc % 24) + 24) % 24;
-  const ph = HOUR_PHASES.find((p) => h >= p.from && h < p.to) ?? HOUR_PHASES[0];
-  return { arr: curveAt(HOUR_CURVE.arr, h), dep: curveAt(HOUR_CURVE.dep, h), phase: ph.phase, label: ph.label, paxShare: ph.paxShare };
+  const ph = curve.phases.find((p) => h >= p.from && h < p.to) ?? curve.phases[0];
+  return { arr: curveAt(curve.arr, h), dep: curveAt(curve.dep, h), phase: ph.phase, label: ph.label, paxShare: ph.paxShare };
 }
 const cap = (x: string) => x.charAt(0).toUpperCase() + x.slice(1);
+/** A wind direction as a word: "north-easterly". */
+export const compassName = (dir: number) => ['northerly', 'north-easterly', 'easterly', 'south-easterly', 'southerly', 'south-westerly', 'westerly', 'north-westerly'][Math.round((((dir % 360) + 360) % 360) / 45) % 8];
 const hhmmOfHour = (h: number) => { const m = Math.round((((h % 24) + 24) % 24) * 60); return `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
 
 // ---------------------------------------------------------------------------
-// Brussels handover rules.
+// Centre handover rules.
 /** Ground speed of an arrival on the STAR at handover, NM per minute (measured 4.6 to 5.0; conservative). */
 export const ARR_NM_PER_MIN = 4.5;
 export const HANDOVER_TRAIL_NM = 10;
 const lvlFt = (l: Level) => (l.fl !== undefined ? l.fl * 100 : l.ft ?? 0);
 const lvlUp = (l: Level): Level => (l.fl !== undefined ? { fl: l.fl + 10 } : { ft: (l.ft ?? 0) + 1000 });
-
 /** Point `d` track miles before the end of a STAR (the same walk-back the sim uses to spawn). */
 export function starPoint(pack: Pack, starName: string, d: number): XY | undefined {
   const star = pack.stars.find((s) => s.name === starName);
@@ -213,7 +259,7 @@ function trackOf(pack: Pack, s: SpawnSpec): ArrTrack | undefined {
   if (s.kind !== 'arr') return undefined;
   if (s.unfamiliar) {
     // diversions without a STAR come in from the north-west, straight at the field
-    return { spec: s, key: 'DIVERT', level: s.level ?? { fl: 80 }, at: (d) => move({ x: 0, y: 0 }, 300, Math.max(0, d)) };
+    return { spec: s, key: 'DIVERT', level: s.level ?? { fl: 80 }, at: (d) => move({ x: 0, y: 0 }, pack.spec.traffic?.diversion?.brg ?? 300, Math.max(0, d)) };
   }
   const star = pack.stars.find((x) => x.name === s.star);
   if (!star) return undefined;
@@ -325,6 +371,7 @@ export function emergencyObjectives(spawns: SpawnSpec[]): NonNullable<Scenario['
   return out;
 }
 
+
 // ---------------------------------------------------------------------------
 // Event deck for the shift template.
 export type DeckCard = 'tsa' | 'goaround' | 'wind' | 'hems' | 'medical' | 'unfamiliar' | 'military' | 'runway';
@@ -340,20 +387,49 @@ export const EVENT_DECK: { card: DeckCard; w: number; once?: boolean; phases?: P
   { card: 'runway', w: 1, once: true, phases: ['bank', 'crossover'] },
 ];
 
-/** TSA 29A is activated by NOTAM for weekday daytime flying only: 0600 to 2000 UTC in the sim. */
+/** The pack's reserved area may be active now: inside its NOTAM hours (TSA 29A at Liège: 0600 to 2000 UTC). */
+export const reservedActive = (pack: Pack, start: string, t: number) => {
+  const r = pack.spec.traffic?.reserved;
+  if (!r) return false;
+  const hr = Number(utcPlus(start, t).slice(0, 2));
+  return hr >= r.hoursUtc[0] && hr < r.hoursUtc[1];
+};
+/** TSA 29A is activated by NOTAM for weekday daytime flying only: 0600 to 2000 UTC in the sim (kept for 1.0 callers). */
 export const tsaDaytime = (start: string, t: number) => { const hr = Number(utcPlus(start, t).slice(0, 2)); return hr >= 6 && hr < 20; };
 
-interface DeckCtx { rng: Rng; cs: CallsignPool; spawns: SpawnSpec[]; events: ScEvent[]; objectives: NonNullable<Scenario['objectives']>; rwy: string; notes: string[]; start: string }
+/** The operator pools of a pack, with generic fallbacks for packs that list none. */
+export function opsOf(pack: Pack): { cargo: Op[]; bank: Op[]; pax: Op[] } {
+  const t = pack.spec.traffic;
+  const ops = (xs?: OperatorSpec[]): Op[] => (xs ?? []).map((o) => ({ op: o.op, types: o.types, w: o.w }));
+  const pax = ops(t?.pax), cargo = ops(t?.cargo), bank = ops(t?.bank);
+  return { cargo: cargo.length ? cargo : pax.length ? pax : GENERIC_CARGO, bank, pax: pax.length ? pax : cargo.length ? cargo : GENERIC_PAX };
+}
+const patternsOf = (pack: Pack): PatternSpec[] => pack.spec.traffic?.patterns ?? [];
+/** A spawn from a pattern (callsign and type drawn in the pattern's order: callsign first, then the type). */
+function spawnFromPattern(p: PatternSpec, t: number, rng: Rng, cs: CallsignPool): SpawnSpec {
+  const callsign = p.cs ?? (p.csReg ? cs.reg() : `${p.csOp ?? 'GA'}${rng.int(p.csNum?.[0] ?? 1, p.csNum?.[1] ?? 99)}`);
+  const type = p.types.length > 1 ? rng.pick(p.types) : p.types[0];
+  const req = p.request ? { kind: p.request.kind, level: parseLevel(p.request.level), fix: p.request.fix, route: p.request.route } : undefined;
+  return { t, kind: p.kind, cs: callsign, type, route: p.route, from: p.from, level: parseLevel(p.level), spd: p.spd, formation: p.formation, request: req };
+}
+/** Magnetic heading of a runway rounded to 10 degrees (the wind direction that favours it). */
+const rwyWindDir = (pack: Pack, rwy: string) => { const r = pack.runways.get(rwy); return r ? (Math.round((((r.crs - pack.meta.magVar) % 360) + 360) % 360 / 10) * 10 || 360) : 220; };
+const accName = (pack: Pack) => pack.meta.upstream[0]?.name ?? 'The centre';
+
+interface DeckCtx { rng: Rng; cs: CallsignPool; spawns: SpawnSpec[]; events: ScEvent[]; objectives: NonNullable<Scenario['objectives']>; rwy: string; notes: string[]; start: string; pack: Pack }
 
 function playCard(card: DeckCard, t: number, c: DeckCtx) {
-  const { rng } = c;
+  const { rng, pack } = c;
+  const ops = opsOf(pack);
+  const tagged = (deck: 'hems' | 'military') => patternsOf(pack).filter((p) => p.deck === deck).sort((a, b) => (b.w ?? 1) - (a.w ?? 1));
   switch (card) {
     case 'tsa': {
-      // TSA 29A is a weekday daytime area (by NOTAM): at night the card becomes a military crossing instead
-      if (!tsaDaytime(c.start, t)) { playCard('military', t, c); break; }
-      c.events.push({ t, kind: 'tsa', name: 'TSA29A', on: true });
-      c.events.push({ t: t + rng.int(15, 25) * 60, kind: 'tsa', name: 'TSA29A', on: false });
-      c.notes.push(`TSA 29A active from ${utcPlus(c.start, t)}.`);
+      // the reserved area is a daytime area (by NOTAM): at night, or without one, the card becomes a military crossing instead
+      const r = pack.spec.traffic?.reserved;
+      if (!r || !reservedActive(pack, c.start, t)) { playCard('military', t, c); break; }
+      c.events.push({ t, kind: 'tsa', name: r.name, on: true });
+      c.events.push({ t: t + rng.int(15, 25) * 60, kind: 'tsa', name: r.name, on: false });
+      c.notes.push(`${areaSpoken(r.name)} active from ${utcPlus(c.start, t)}.`);
       break;
     }
     case 'goaround': {
@@ -365,42 +441,39 @@ function playCard(card: DeckCard, t: number, c: DeckCtx) {
       break;
     }
     case 'wind': {
-      const base = c.rwy.startsWith('22') ? 220 : 40;
+      const base = rwyWindDir(pack, c.rwy);
       const dir = Math.round((base + rng.int(-40, 40) + 360) % 360 / 10) * 10 || 360;
       const kt = rng.int(10, 18);
       c.events.push({ t, kind: 'wind', dir, kt, gust: rng.chance(0.4) ? kt + rng.int(8, 12) : undefined });
       break;
     }
-    case 'hems': {
-      if (rng.chance(0.6)) c.spawns.push({ t, kind: 'heli', cs: 'LIFE3', type: 'EC45', route: ['NOVEM', 'CHU'], from: { brg: 5, dist: 8 }, level: { ft: 1500 }, request: { kind: 'direct', fix: 'CHU' } });
-      else c.spawns.push({ t, kind: 'vfr', cs: c.cs.reg(), type: rng.pick(['C172', 'PA28']), route: ['ROMEO', 'FOXHE'], from: { brg: 300, dist: 7 }, level: { ft: 1500 }, request: { kind: 'crossing', route: ['ROMEO', 'FOXHE'] } });
+    case 'hems': case 'military': {
+      const pats = tagged(card);
+      if (!pats.length) break;
+      const p = pats.length > 1 ? rng.weighted(pats.map((x) => ({ w: x.w ?? 1, v: x }))) : pats[0];
+      c.spawns.push(spawnFromPattern(p, t, rng, c.cs));
       break;
     }
     case 'medical': {
-      // A passenger jet diverts with a sick passenger: no Liège STAR, wants priority.
-      const op = rng.weighted(PAX_OPS.map((x) => ({ w: x.w, v: x })));
+      // A passenger jet diverts with a sick passenger: no local STAR, wants priority.
+      const op = rng.weighted(ops.pax.map((x) => ({ w: x.w, v: x })));
       const cs = c.cs.make(op.op);
       c.spawns.push({ t, kind: 'arr', cs, type: rng.pick(op.types), unfamiliar: true, spawnDist: rng.range(28, 34) });
-      c.events.push({ t: Math.max(1, t - 20), kind: 'note', text: `Brussels ACC: ${cs} diverting to Liège with a medical emergency on board, requests priority landing` });
+      c.events.push({ t: Math.max(1, t - 20), kind: 'note', text: `${accName(pack)}: ${cs} diverting to ${pack.meta.name} with a medical emergency on board, requests priority landing` });
       c.objectives.push({ cs, text: `Land ${cs} within 15:00`, byT: t + 15 * 60 });
       break;
     }
     case 'unfamiliar': {
-      const op = rng.weighted(PAX_OPS.map((x) => ({ w: x.w, v: x })));
+      const op = rng.weighted(ops.pax.map((x) => ({ w: x.w, v: x })));
       c.spawns.push({ t, kind: 'arr', cs: c.cs.make(op.op), type: rng.pick(op.types), unfamiliar: true, spawnDist: rng.range(30, 38) });
       break;
     }
     case 'runway': {
-      const into = c.rwy.startsWith('22') ? 40 : 220;
+      const into = (rwyWindDir(pack, c.rwy) + 180) % 360 || 360;
       const dir = Math.round((into + rng.int(-20, 20) + 360) % 360 / 10) * 10 || 360;
       const kt = rng.int(9, 14);
       c.events.push({ t, kind: 'wind', dir, kt });
       c.notes.push(`Wind expected to swing round to ${String(dir).padStart(3, '0')}° later in the shift: be ready for a runway change.`);
-      break;
-    }
-    case 'military': {
-      if (rng.chance(0.5)) c.spawns.push({ t, kind: 'mil', cs: 'BAF' + rng.int(51, 79), type: 'F35', formation: 2, route: ['GILOM', 'ALHUV', 'VERVIERS'], from: { brg: 282, dist: 18 }, level: { fl: 70 }, spd: 300, request: { kind: 'climb', level: { fl: 150 } } });
-      else c.spawns.push({ t, kind: 'mil', cs: 'BAF7' + rng.int(10, 99), type: 'A400', route: ['ROMEO', 'ALHUV', 'SPA'], from: { brg: 300, dist: 10 }, level: { fl: 60 }, request: { kind: 'climb', level: { fl: 90 } } });
       break;
     }
   }
@@ -432,57 +505,60 @@ export function drawDeck(c: DeckCtx, windowS: number): { card: DeckCard; t: numb
   return played;
 }
 
-/** Build a free-play scenario from options. */
+/** Build a free-play scenario from options, at any airport, from its pack alone. */
 export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
   const seed = o.seed ?? Math.floor(Math.random() * 1e9);
   const rng = new Rng(seed);
-  const tpl0 = TEMPLATES[o.template];
+  const templates = templatesOf(pack);
+  const curve = curveOf(pack);
+  const tpl0 = templates[o.template];
   const byHour = o.startHour !== undefined;
   const tpl = byHour ? { ...tpl0, start: hhmmOfHour(o.startHour!) } : tpl0;
   const hourAt = (t: number) => (o.startHour ?? 0) + t / 3600;
-  const metar = o.weather === 'live' && o.liveMetar ? o.liveMetar : WEATHER_PRESETS[o.weather === 'live' ? 'good' : o.weather];
-  const rwy = selectRunway(pack, parseMetar(metar));
-  const cs = new CallsignPool(rng);
+  const mixAt = (t: number) => shiftCurveForHour(hourAt(t), curve);
+  const metar = o.weather === 'live' && o.liveMetar ? o.liveMetar : presetMetar(pack, o.weather === 'live' ? 'good' : o.weather);
+  const cfg = selectConfig(pack, parseMetar(metar));
+  const rwy = cfg.land, depRwy = cfg.dep;
+  const ops = opsOf(pack);
+  const cs = new CallsignPool(rng, pack.spec.traffic?.registration ?? (pack.spec.traffic?.gaPrefixes?.[0] ? { prefix: pack.spec.traffic.gaPrefixes[0], length: 5 } : undefined));
   const spawns: SpawnSpec[] = [];
   const W = Math.max(10, o.durationMin - 15) * 60; // traffic window
   const shift = o.template === 'shift';
   const arrCurve = shiftArrCurve(W);
   const compressed = shift && !byHour;
 
-  const arrRate = (t: number) => (byHour ? shiftCurveForHour(hourAt(t)).arr : compressed ? curveAt(arrCurve, t / W) : tpl.arrPerHr);
-  const depRate = (t: number) => (byHour ? shiftCurveForHour(hourAt(t)).dep : compressed ? curveAt(SHIFT_CURVE.dep, t / W) : tpl.depPerHr);
-  const arrT = poissonTimes(rng, W, arrRate, byHour ? HOUR_MAX.arr : compressed ? 24 : tpl.arrPerHr);
-  const depT = poissonTimes(rng, W, depRate, byHour ? HOUR_MAX.dep : compressed ? 20 : tpl.depPerHr).filter((t) => t >= 60);
-  if (!arrT.length || arrT[0] > 2) arrT.unshift(2);
-  else arrT[0] = 2;
+  const arrRate = (t: number) => (byHour ? mixAt(t).arr : compressed ? curveAt(arrCurve, t / W) : tpl.arrPerHr);
+  const depRate = (t: number) => (byHour ? mixAt(t).dep : compressed ? curveAt(SHIFT_CURVE.dep, t / W) : tpl.depPerHr);
+  const arrT = poissonTimes(rng, W, arrRate, byHour ? curve.max.arr : compressed ? 24 : tpl.arrPerHr);
+  const depT = poissonTimes(rng, W, depRate, byHour ? curve.max.dep : compressed ? 20 : tpl.depPerHr).filter((t) => t >= 60);
+  // a curfew (rate 0 over the whole window) stays empty; otherwise the session starts hot
+  const curfew = byHour && arrT.length === 0 && depT.length === 0 && arrRate(0) === 0 && arrRate(W) === 0;
+  if (!curfew) {
+    if (!arrT.length || arrT[0] > 2) arrT.unshift(2);
+    else arrT[0] = 2;
+  }
   const bankEnd = 0.5 * W, bankStart = shiftPhases(W)[1].from * W;
   for (const t of arrT) {
-    const inBank = byHour ? shiftCurveForHour(hourAt(t)).phase === 'bank' : shift && t >= bankStart && t < bankEnd;
-    const pax = !inBank && rng.chance(byHour ? shiftCurveForHour(hourAt(t)).paxShare : tpl.paxShare);
-    const op = rng.weighted((pax ? PAX_OPS : inBank ? BANK_OPS : CARGO_OPS).map((x) => ({ w: x.w, v: x })));
-    const base = rng.weighted((inBank ? BANK_STAR_BASES : ARR_STAR_BASES).map((b) => ({ w: b.w, v: b.base })));
-    spawns.push({ t, kind: 'arr', cs: cs.make(op.op), type: rng.pick(op.types), star: starFor(base, rwy), spawnDist: rng.range(36, 46) });
+    // a bank phase draws from the bank operators; an airport without a bank list keeps its usual mix
+    const inBank = (byHour ? mixAt(t).phase === 'bank' : shift && t >= bankStart && t < bankEnd) && ops.bank.length > 0;
+    const pax = !inBank && rng.chance(byHour ? mixAt(t).paxShare : tpl.paxShare);
+    const pool = pax ? ops.pax : inBank ? ops.bank : ops.cargo;
+    const op = rng.weighted(pool.map((x) => ({ w: x.w, v: x })));
+    const base = rng.weighted(arrivalWeights(pack, rwy, inBank));
+    spawns.push({ t, kind: 'arr', cs: cs.make(op.op), type: rng.pick(op.types), star: starFor(base, rwy, pack), spawnDist: rng.range(36, 46) });
   }
   for (const t of depT) {
-    const op = rng.weighted((byHour && rng.chance(shiftCurveForHour(hourAt(t)).paxShare) ? PAX_OPS : CARGO_OPS).map((x) => ({ w: x.w, v: x })));
-    spawns.push({ t, kind: 'dep', cs: cs.make(op.op), type: rng.pick(op.types), sid: sidFor(rng, rwy) });
+    const pool = byHour && rng.chance(mixAt(t).paxShare) ? ops.pax : ops.cargo;
+    const op = rng.weighted(pool.map((x) => ({ w: x.w, v: x })));
+    spawns.push({ t, kind: 'dep', cs: cs.make(op.op), type: rng.pick(op.types), sid: sidFor(rng, depRwy, pack) });
   }
-  // Military and transient traffic
+  // Military and transient traffic, from the pack's patterns by free-play military level
   const extras: SpawnSpec[] = [];
   const at = () => Math.round(rng.range(120, Math.max(180, W - 120)));
-  if (o.military >= 1 && !shift) {
-    extras.push({ t: at(), kind: 'vfr', cs: cs.reg(), type: rng.pick(['C172', 'PA28']), route: ['ROMEO', 'FOXHE'], from: { brg: 300, dist: 7 }, level: { ft: 1500 }, request: { kind: 'crossing', route: ['ROMEO', 'FOXHE'] } });
-    extras.push({ t: at(), kind: 'heli', cs: 'LIFE3', type: 'EC45', route: ['NOVEM', 'CHU'], from: { brg: 5, dist: 8 }, level: { ft: 1500 }, request: { kind: 'direct', fix: 'CHU' } });
-  }
-  if (o.military >= 2) {
-    extras.push({ t: at(), kind: 'mil', cs: 'BAF' + rng.int(51, 79), type: 'F35', formation: 2, route: ['GILOM', 'ALHUV', 'VERVIERS'], from: { brg: 282, dist: 18 }, level: { fl: 70 }, spd: 300, request: { kind: 'climb', level: { fl: 150 } } });
-    extras.push({ t: at(), kind: 'mil', cs: 'NATO0' + rng.int(1, 9), type: 'E3TF', route: ['G_ETNG', 'ECHO', 'LNO', 'GIREL'], from: { brg: 30, dist: 3 }, level: { ft: 4000 }, request: { kind: 'climb', level: { fl: 150 } } });
-    extras.push({ t: at(), kind: 'vfr', cs: cs.reg(), type: 'PA28', route: ['OSCAR', 'INDIA'], from: { brg: 150, dist: 7 }, level: { ft: 1500 }, request: { kind: 'crossing', route: ['OSCAR', 'INDIA'] } });
-  }
-  if (o.military >= 3) {
-    extras.push({ t: at(), kind: 'ovf', cs: 'RCH' + rng.int(100, 899), type: 'C17', route: ['BUB', 'LG013', 'LNO'], from: { brg: 300, dist: 6 }, level: { fl: 90 }, request: { kind: 'direct', fix: 'LNO' } });
-    extras.push({ t: at(), kind: 'cal', cs: 'FCK12', type: 'B350', route: ['NOVEM'], from: { brg: 0, dist: 10 }, level: { ft: 3000 }, request: { kind: 'lowpass' } });
-    extras.push({ t: at(), kind: 'mil', cs: 'BAF7' + rng.int(10, 99), type: 'A400', route: ['ROMEO', 'ALHUV', 'SPA'], from: { brg: 300, dist: 10 }, level: { fl: 60 }, request: { kind: 'climb', level: { fl: 90 } } });
+  for (const p of patternsOf(pack)) {
+    if (!p.at || p.at > o.military) continue;
+    if (p.at === 1 && shift) continue;
+    extras.push(spawnFromPattern(p, at(), rng, cs));
   }
   spawns.push(...extras);
   // Emergencies
@@ -498,13 +574,14 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
   const notes: string[] = [];
   let storms: Storm[] | undefined;
   if (o.weather === 'storms') storms = [{ p: { x: -14, y: -10 }, r: 4, vx: 8, vy: 10 }, { p: { x: -22, y: 6 }, r: 3.5, vx: 9, vy: 6 }, { p: { x: 8, y: -20 }, r: 5, vx: 4, vy: 9 }];
-  if (shift) drawDeck({ rng, cs, spawns, events, objectives, rwy, notes, start: tpl.start }, W);
-  else if (o.military >= 2 && tsaDaytime(tpl.start, Math.round(W * 0.4)) && tsaDaytime(tpl.start, Math.round(W * 0.9))) {
+  const reserved = pack.spec.traffic?.reserved;
+  if (shift) drawDeck({ rng, cs, spawns, events, objectives, rwy, notes, start: tpl.start, pack }, W);
+  else if (o.military >= 2 && reserved && reservedActive(pack, tpl.start, Math.round(W * 0.4)) && reservedActive(pack, tpl.start, Math.round(W * 0.9))) {
     const on = Math.round(W * 0.4);
-    events.push({ t: on, kind: 'tsa', name: 'TSA29A', on: true }, { t: Math.round(W * 0.9), kind: 'tsa', name: 'TSA29A', on: false });
-    notes.push(`TSA 29A active from ${utcPlus(tpl.start, on)}.`);
+    events.push({ t: on, kind: 'tsa', name: reserved.name, on: true }, { t: Math.round(W * 0.9), kind: 'tsa', name: reserved.name, on: false });
+    notes.push(`${areaSpoken(reserved.name)} active from ${utcPlus(tpl.start, on)}.`);
   }
-  // Brussels hands over in trail; the tower lines departures up with wake gaps.
+  // The centre hands over in trail; the tower lines departures up with wake gaps.
   separateHandovers(pack, spawns);
   spaceDepartures(spawns);
   hotStart(spawns.filter((s) => s.kind === 'arr'));
@@ -524,31 +601,32 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
 
   const nArr = spawns.filter((s) => s.kind === 'arr').length;
   const nDep = spawns.filter((s) => s.kind === 'dep').length;
-  const parts = [`${byHour ? cap(shiftCurveForHour(o.startHour!).label) : tpl.title}.`, `${nArr} inbound, ${nDep} out.`, `Runway ${rwy}.`];
-  if (byHour) parts.push(hourBrief(o.startHour!, W));
+  const rwyText = depRwy === rwy ? `Runway ${rwy}.` : `Runway ${rwy} landing, ${depRwy} departures.`;
+  const parts = [`${byHour ? cap(mixAt(0).label) : tpl.title}.`, `${nArr} inbound, ${nDep} out.`, rwyText];
+  if (byHour) parts.push(hourBrief(o.startHour!, W, curve));
   else if (shift) parts.push(`Wave peaks around ${utcPlus(tpl.start, Math.round(0.33 * W))}, departures push from ${utcPlus(tpl.start, Math.round(0.6 * W))}.`);
   else parts.push(o.template === 'quiet' ? 'A gentle flow.' : 'Steady flow all session.');
   parts.push(...notes);
   if (o.weather === 'lvp') parts.push('Fog: low visibility procedures, CAT III only.');
   if (o.weather === 'storms') parts.push('Thunderstorms drifting in from the south-west; expect deviation requests.');
-  if (o.weather === 'windy-ne') parts.push('Strong north-easterly, gusting 26 kt.');
+  if (o.weather === 'windy-ne') parts.push(`Strong ${compassName(parseMetar(metar).windDir)}, gusting 26 kt.`);
   if (o.military >= 2 && !shift) parts.push('Military traffic crossing the area.');
 
   return {
-    id: 'free', title: `Free play · ${byHour ? `${cap(shiftCurveForHour(o.startHour!).label)} from ${tpl.start}Z` : tpl.title}`, desc: 'Generated session', seed, durationMin: o.durationMin, startUtc: tpl.start, metar,
+    id: 'free', title: `Free play · ${byHour ? `${cap(mixAt(0).label)} from ${tpl.start}Z` : tpl.title}`, desc: 'Generated session', seed, durationMin: o.durationMin, startUtc: tpl.start, metar,
     runway: rwy, spawns, events, storms, readbackErr: [0, 0.02, 0.04, 0.06, 0.08, 0.1][o.difficulty], confusion: o.difficulty >= 4, freePlay: true,
-    briefing: parts.join(' '), objectives: objectives.length ? objectives : undefined,
+    briefing: parts.join(' '), objectives: objectives.length ? objectives : undefined, icao: pack.meta.icao,
   };
 }
 
 /** One line on what the clock brings: the phase the session starts in and the phase changes during it. */
-export function hourBrief(startHour: number, windowS: number): string {
-  const first = shiftCurveForHour(startHour);
+export function hourBrief(startHour: number, windowS: number, curve: HourCurve = DEFAULT_CURVE): string {
+  const first = shiftCurveForHour(startHour, curve);
   const out = [`Starts in the ${first.label}`];
   let cur = first.label;
   for (let s = 60; s < windowS; s += 60) {
     const h = Math.round(startHour * 60 + s / 60) / 60;
-    const m = shiftCurveForHour(h);
+    const m = shiftCurveForHour(h, curve);
     if (m.label !== cur) { out.push(`${m.label} from ${hhmmOfHour(h).replace(':', '')}Z`); cur = m.label; }
   }
   return out.join(', ') + '.';
@@ -562,5 +640,7 @@ export function dailyShift(pack: Pack, date: Date): Scenario {
   const weather = rng.weighted<FreePlayOpts['weather']>([{ w: 6, v: 'good' }, { w: 2, v: 'windy-ne' }, { w: 1, v: 'storms' }, { w: 1, v: 'lvp' }]);
   const sc = freePlay(pack, { template: 'shift', durationMin: 40, military: 1, weather, emergencies: false, difficulty: 2, seed: ymd });
   const title = `Daily shift ${date.getDate()} ${MONTHS[date.getMonth()]}`;
-  return { ...sc, id: `daily-${ymd}`, title, desc: 'Today\'s shift. Everyone gets the same traffic.', briefing: sc.briefing?.replace(/^Night shift\./, 'Daily shift.') };
+  const shiftTitle = templatesOf(pack).shift.title;
+  const iso = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  return { ...sc, id: `daily-${ymd}`, title, desc: 'Today\'s shift. Everyone gets the same traffic.', date: iso, briefing: sc.briefing?.startsWith(`${shiftTitle}.`) ? `Daily shift.${sc.briefing.slice(shiftTitle.length + 1)}` : sc.briefing };
 }

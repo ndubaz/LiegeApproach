@@ -223,14 +223,14 @@ export function explain(sim: Sim, e: SimEvent): string {
     case 'tsa': return `${cs} entered an active military area. ${lastInstr} Check the active areas before you turn or descend traffic near them.`;
     case 'cb': return `${cs} flew into a thunderstorm. ${lastInstr} Approve deviation requests quickly and vector around cells with a few miles to spare.`;
     case 'exit_unxfr': return `${cs} left your airspace still on your frequency. ${lastInstr} Hand departures and crossers to the next sector before they reach the boundary.`;
-    case 'flow': return `${cs} went to Brussels too close behind ${e.cs2 ?? 'the previous departure'} on the same route. ${lastInstr} Use speed or a short heading to build the required gap before the handoff.`;
+    case 'flow': return `${cs} went to ${sim.acc.say} too close behind ${e.cs2 ?? 'the previous departure'} on the same route. ${lastInstr} Use speed or a short heading to build the required gap before the handoff.`;
     case 'speed_limit': return `${cs} flew faster than 250 kt below FL100. ${lastInstr}`;
     case 'warning_sent': return `You sent an instruction to ${cs} even though the system warned you about it. ${lastInstr}`;
     case 'airspace': return `${cs} climbed above your airspace before you handed it on. ${lastInstr}`;
-    case 'xfr_level': return `${cs} went to Brussels still cleared below the agreed level of FL090. ${lastInstr} Climb departures to the agreed level before the handoff, or coordinate a different one.`;
+    case 'xfr_level': return `${cs} went to ${sim.acc.say} still cleared below the agreed level of ${levelText(sim.depXfl)}. ${lastInstr} Climb departures to the agreed level before the handoff, or coordinate a different one.`;
     case 'xfr_conflict': return `${cs} went to the next sector with a conflict still predicted. ${lastInstr} Solve the conflict first, or tell the next unit about it.`;
-    case 'coord_unanswered': return `Brussels asked whether you could take ${cs} early and got no answer before its transfer. Answer every intercom request, even with Unable.`;
-    case 'tsa_routed': return `${cs} was routed into a military area after MIL had announced it. ${lastInstr} Once a TSA is announced, route traffic around it or below its floor.`;
+    case 'coord_unanswered': return `${sim.acc.say} asked whether you could take ${cs} early and got no answer before its transfer. Answer every intercom request, even with Unable.`;
+    case 'tsa_routed': return `${cs} was routed into a military area after ${sim.mil.say} had announced it. ${lastInstr} Once a ${sim.areasName} is announced, route traffic around it or below its floor.`;
     default: return lastInstr;
   }
 }
@@ -446,10 +446,10 @@ export function assess(sim: Sim): Result {
     r -= ev.filter((e) => e.kind === 'goaround' && e.comp === 'CORD').length;
     ratings.CORD = xfrs + cordEv + answered > 0 ? clamp5(r) : null;
     const extra = [
-      answered + count('coord_unanswered') ? `${answered} Brussels requests answered, ${count('coord_unanswered')} not` : '',
+      answered + count('coord_unanswered') ? `${answered} ${sim.acc.say} requests answered, ${count('coord_unanswered')} not` : '',
       count('xfr_level') ? `${count('xfr_level')} below the agreed level` : '',
       count('xfr_conflict') ? `${count('xfr_conflict')} in conflict` : '',
-      count('tsa_routed') ? `${count('tsa_routed')} routed into an announced TSA` : '',
+      count('tsa_routed') ? `${count('tsa_routed')} routed into an announced ${sim.areasName}` : '',
     ].filter(Boolean);
     evidence.CORD = `${xfrs} handoffs, ${count('late_xfr')} late, ${count('exit_unxfr')} missed, ${count('tsa')} military area, ${count('flow')} flow${extra.length ? ', ' + extra.join(', ') : ''}`;
   }

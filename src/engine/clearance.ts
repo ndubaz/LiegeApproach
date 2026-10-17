@@ -1,6 +1,8 @@
-import type { Level } from '../pack/load';
+import type { Level, Pack } from '../pack/load';
+import type { UnitSpec } from '../pack/types';
 
-export type Unit = 'TWR' | 'BRU' | 'MUAC' | 'BEEK' | 'MIL';
+/** A unit id from the location pack's `units` (TWR, BRU, MUAC, BEEK, MIL at Liège; TWR, LANGEN, ... at Düsseldorf). */
+export type Unit = string;
 export type ApproachType = 'ILS' | 'RNP' | 'VIS';
 
 export type Item =
@@ -56,14 +58,20 @@ const PHON: Record<string, string> = {
 const DIG = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'niner'];
 export const digits = (s: string | number) => String(s).split('').map((c) => (/\d/.test(c) ? DIG[Number(c)] : PHON[c.toUpperCase()] ?? c)).join(' ');
 
-export function telephony(cs: string): string {
-  if (/^OO[A-Z]{3}$/.test(cs)) return `${PHON.O} ${PHON.O} ${cs.slice(2).split('').map((c) => PHON[c]).join(' ')}`;
+/** Registration prefixes spelt letter by letter (OO-xxx Belgium; D-Exxx Germany is spelt the same way). */
+const REG_PREFIXES = ['OO', 'D', 'PH', 'F', 'G', 'LX', 'OE', 'HB'];
+const isReg = (cs: string, prefixes: readonly string[]) => /^[A-Z]{4,6}$/.test(cs) && prefixes.some((p) => cs.startsWith(p) && cs.length === (p.length <= 2 ? 5 : p.length + 3));
+/** Radiotelephony callsign: the operator's designator plus the flight number, or a registration spelt out. `table` adds a pack's operators. */
+export function telephony(cs: string, table: Record<string, string> = TELEPHONY, regPrefixes: readonly string[] = REG_PREFIXES): string {
+  if (isReg(cs, regPrefixes)) return cs.split('').map((c) => PHON[c] ?? c).join(' ');
   const m = cs.match(/^([A-Z]+?)(\d[A-Z0-9]*)$/);
-  if (m && TELEPHONY[m[1]]) return `${TELEPHONY[m[1]]} ${digits(m[2])}`;
+  if (m && table[m[1]]) return `${table[m[1]]} ${digits(m[2])}`;
   const m2 = cs.match(/^([A-Z]{3,5})(\d+[A-Z]*)$/);
-  if (m2 && TELEPHONY[m2[1]]) return `${TELEPHONY[m2[1]]} ${digits(m2[2])}`;
+  if (m2 && table[m2[1]]) return `${table[m2[1]]} ${digits(m2[2])}`;
   return digits(cs);
 }
+/** The telephony table for a pack: the engine's designators plus the pack's own. */
+export const telephonyTable = (pack?: Pack): Record<string, string> => (pack?.spec.traffic?.telephony ? { ...TELEPHONY, ...pack.spec.traffic.telephony } : TELEPHONY);
 
 // ---------- Levels ----------
 export function levelText(l: Level): string {
@@ -86,23 +94,30 @@ export function freqSpeech(f: string): string {
   return `${digits(a)} decimal ${digits(said)}`;
 }
 /** A unit the approach controller hands traffic to: RT callsign, frequency, short key label, and how sure the data is. */
-export interface UnitInfo { callsign: string; freq: string; key: string; source: string; verified: boolean }
+export interface UnitInfo extends Omit<UnitSpec, 'label' | 'say'> { key: string; label: string; say: string; verified: boolean }
+export type UnitTable = Record<Unit, UnitInfo>;
+const unitInfo = (u: UnitSpec): UnitInfo => ({ ...u, key: u.id, label: u.label, say: u.say ?? u.callsign.split(' ')[0], verified: !/not verified|sim construct/i.test(u.source) });
+/** The unit table of a pack: keys, labels, callsigns and frequencies, by id. */
+export const unitTable = (pack: Pack): UnitTable => Object.fromEntries(pack.units.map((u) => [u.id, unitInfo(u)]));
 /**
- * Every unit the sim transfers to, in one table the UI can read for keys, labels and frequencies.
- * Liège Tower 118.130 (8.33 kHz channel): EBLG AD 2.18, AIRAC effective 01 OCT 2026. Beek Approach 123.980: EHBK AD 2.18.
- * Brussels Control and Maastricht Radar are plausible values, not verified; the military unit is a sim construct.
+ * The default unit table, used by callers that have no pack at hand (the parser's tables, old tests): Liège's units
+ * until a Sim is built, then the units of the last pack a Sim was built for (see `setActiveUnits`).
  */
-export const UNITS: Record<Unit, UnitInfo> = {
-  TWR: { callsign: 'Liège Tower', freq: '118.130', key: 'TWR', source: 'EBLG AD 2.18', verified: true },
-  BRU: { callsign: 'Brussels Control', freq: '131.100', key: 'BRU', source: 'not verified', verified: false },
-  MUAC: { callsign: 'Maastricht Radar', freq: '132.755', key: 'MUAC', source: 'callsign as in the pack upstream list; not verified', verified: false },
-  BEEK: { callsign: 'Beek Approach', freq: '123.980', key: 'BEEK', source: 'EHBK AD 2.18 (LVNL eAIP)', verified: true },
-  // Belgian military en-route control (Steenokkerzeel ATCC); callsign and frequency are a sim construct.
-  MIL: { callsign: 'Military', freq: '129.100', key: 'MIL', source: 'sim construct', verified: false },
+export let UNITS: UnitTable = {
+  TWR: unitInfo({ id: 'TWR', role: 'tower', callsign: 'Liège Tower', freq: '118.130', label: 'TWR', source: 'EBLG AD 2.18', say: 'Tower' }),
+  BRU: unitInfo({ id: 'BRU', role: 'acc', callsign: 'Brussels Control', freq: '131.100', label: 'ACC', source: 'not verified' }),
+  MUAC: unitInfo({ id: 'MUAC', role: 'upper', callsign: 'Maastricht Radar', freq: '132.755', label: '> FL245', source: 'callsign as in the pack upstream list; not verified' }),
+  BEEK: unitInfo({ id: 'BEEK', role: 'neighbour', callsign: 'Beek Approach', freq: '123.980', label: 'BEEK', source: 'EHBK AD 2.18 (LVNL eAIP)' }),
+  MIL: unitInfo({ id: 'MIL', role: 'military', callsign: 'Military', freq: '129.100', label: 'Steenokkerzeel', source: 'sim construct', say: 'MIL' }),
+  SUP: unitInfo({ id: 'SUP', role: 'supervisor', callsign: 'Supervisor', freq: '', label: 'supervisor', source: 'sim construct' }),
 };
-const U = (u: UnitInfo) => ({ text: `${u.callsign} ${u.freq}`, speech: `${u.callsign} ${freqSpeech(u.freq)}` });
-const UNIT_NAME = Object.fromEntries((Object.keys(UNITS) as Unit[]).map((k) => [k, U(UNITS[k])])) as Record<Unit, { text: string; speech: string }>;
-export const unitName = (u: Unit) => UNIT_NAME[u];
+/** Make a pack's units the default table (the Sim constructor does this), so UI code without a sim reads the right names. */
+export function setActiveUnits(pack: Pack) { UNITS = unitTable(pack); }
+const U = (u: UnitInfo) => ({ text: `${u.callsign} ${u.freq}`.trim(), speech: `${u.callsign}${u.freq ? ' ' + freqSpeech(u.freq) : ''}` });
+/** "Liège Tower 118.130" as text and as speech, from the given table (default: the active pack's). */
+export const unitName = (u: Unit, units: UnitTable = UNITS) => U(units[u] ?? { id: u, role: 'neighbour', callsign: u, freq: '', label: u, source: '', key: u, verified: false });
+/** The unit with a role (the first one), from a table. */
+export const unitByRole = (units: UnitTable, role: UnitSpec['role']): UnitInfo | undefined => Object.values(units).find((u) => u.role === role);
 
 export interface Ctx {
   /** current altitude ft and whether the new level is below it */
@@ -132,6 +147,14 @@ export interface Ctx {
   firstCall?: boolean;
   /** 'star' item after a runway change: the new runway and approach, said before the STAR */
   starChange?: { rwy: string; app: ApproachType };
+  /** the position's own callsign ("Liège Approach"); default Liège */
+  appCallsign?: string;
+  /** the pack's units, for "contact ..." (default: the active table) */
+  units?: UnitTable;
+  /** telephony designators (the engine's plus the pack's) */
+  telephony?: Record<string, string>;
+  /** registration prefixes spelt letter by letter */
+  regPrefixes?: readonly string[];
 }
 
 export const rwySpeech = (rwy: string) => rwy.replace(/(\d+)([LRC]?)/, (_m, n, l) => `${digits(n)}${l ? ' ' + (l === 'L' ? 'left' : l === 'R' ? 'right' : 'center') : ''}`);
@@ -208,7 +231,7 @@ export function phraseology(cl: Clearance, ctx: Ctx): { text: string; speech: st
         else { t.push('no delay expected'); s.push('no delay expected'); }
         break;
       case 'roger':
-        if (ctx.firstCall) { t.push('Liège Approach, identified'); s.push('Liège Approach, identified'); } else { t.push('roger'); s.push('roger'); }
+        if (ctx.firstCall) { const n = ctx.appCallsign ?? 'Liège Approach'; t.push(`${n}, identified`); s.push(`${n}, identified`); } else { t.push('roger'); s.push('roger'); }
         break;
       case 'standby': t.push('standby'); s.push('standby'); break;
       case 'sayagain': t.push('say again'); s.push('say again'); break;
@@ -267,7 +290,7 @@ export function phraseology(cl: Clearance, ctx: Ctx): { text: string; speech: st
         t.push(x); s.push(x);
         break;
       }
-      case 'xfr': t.push(`contact ${UNIT_NAME[it.unit].text}`); s.push(`contact ${UNIT_NAME[it.unit].speech}`); break;
+      case 'xfr': { const n = unitName(it.unit, ctx.units); t.push(`contact ${n.text}`); s.push(`contact ${n.speech}`); break; }
       case 'rel': case 'relhold': {
         const r = releasePhrase(cl.cs, it);
         t.push(r.text); s.push(r.speech);
@@ -275,7 +298,7 @@ export function phraseology(cl: Clearance, ctx: Ctx): { text: string; speech: st
       }
     }
   }
-  return { text: `${cl.cs}, ${t.join(', ')}`, speech: `${telephony(cl.cs)}, ${s.join(', ')}` };
+  return { text: `${cl.cs}, ${t.join(', ')}`, speech: `${telephony(cl.cs, ctx.telephony, ctx.regPrefixes)}, ${s.join(', ')}` };
 }
 
 /** Intercom phraseology for a departure release (Approach to Tower). */
@@ -296,14 +319,15 @@ export function releasePhrase(cs: string, it: Extract<Item, { k: 'rel' | 'relhol
 export function readback(cs: string, items: Item[], ctx: Ctx, wrong?: { idx: number; item: Item }): { text: string; speech: string } {
   // a refusal is acknowledged, not read back ("unable, standby" is the controller's line, never the pilot's)
   const its = items.map((it, i) => (wrong && wrong.idx === i ? wrong.item : it)).map((it): Item => (it.k === 'deny' ? { k: 'roger' } : it)).filter((it) => it.k !== 'standby');
-  if (!its.length) return { text: `roger, ${cs}`, speech: `roger, ${telephony(cs)}` };
+  const tel = telephony(cs, ctx.telephony, ctx.regPrefixes);
+  if (!its.length) return { text: `roger, ${cs}`, speech: `roger, ${tel}` };
   // a wrong level is read back with the controller's verb ("descend 5,000 ft" stays "descend")
   const orig = wrong ? items[wrong.idx] : undefined;
   const c2: Ctx = orig?.k === 'lvl' ? { ...ctx, lvlVerb: levelVerb(orig.lvl, ctx.alt, ctx.qnh) } : ctx;
   const p = phraseology({ cs, items: its }, { ...c2, posNm: undefined, firstCall: false });
   // Pilots read back with the callsign at the end and drop "proceed"/"fly" filler.
   const body = (x: string, csx: string) => x.slice(csx.length + 2).replace(/^fly /, '').replace(/, fly /g, ', ').replace(/proceed direct/g, 'direct').replace(/contact /, '').replace(/runway change, now runway/, 'runway');
-  return { text: `${body(p.text, cs)}, ${cs}`, speech: `${body(p.speech, telephony(cs))}, ${telephony(cs)}` };
+  return { text: `${body(p.text, cs)}, ${cs}`, speech: `${body(p.speech, tel)}, ${tel}` };
 }
 
 export function itemChip(it: Item): string {
@@ -333,6 +357,9 @@ export function itemChip(it: Item): string {
     case 'eat': return 'EAT';
   }
 }
+
+/** A reserved area's name as it is said: "TSA 29A", "ED-R 117". */
+export const areaSpoken = (name: string) => name.replace(/^([A-Z]+(?:-[A-Z]+)?)(\d)/, '$1 $2');
 
 /** Approximate airtime in seconds of a transmission. */
 export const airtime = (speech: string) => 0.6 + speech.split(/\s+/).length * 0.3;
