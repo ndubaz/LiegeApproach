@@ -1,4 +1,5 @@
 import type { PackSpec } from './types';
+import { EBLG_AIRPORTS, EBLG_PLACES, EBLG_TERRAIN } from './eblg-map';
 
 // Liège (EBLG) location pack.
 // Checked against the skeyes eAIP Belgium & Luxembourg, AIRAC cycle effective
@@ -526,4 +527,5 @@ export const EBLG: PackSpec = {
       { at: 3, deck: 'military', w: 0.5, kind: 'mil', csOp: 'BAF7', csNum: [10, 99], types: ['A400'], route: ['ROMEO', 'ALHUV', 'SPA'], from: { brg: 300, dist: 10 }, level: 'F060', request: { kind: 'climb', level: 'F090' } },
     ],
   },
+  terrain: EBLG_TERRAIN, places: EBLG_PLACES, airports: EBLG_AIRPORTS,
 };

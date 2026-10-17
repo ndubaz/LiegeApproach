@@ -137,7 +137,7 @@ export interface PackSpec {
   tsas: AreaSpec[];
   mva: MvaSpec[];
   vfrRoutes: { name: string; points: string[]; alt: number }[];
-  mapLines: { name: string; points: string[]; style: 'river' | 'border' | 'road' }[];
+  mapLines: { name: string; points: string[]; style: 'river' | 'border' | 'road' | 'rail' | 'coast' }[];
   /** All published sub-areas of the TMA (ENR 2.1); `tma` is the H24 core used for drawing. */
   tmaParts?: AreaSpec[];
 
@@ -164,8 +164,23 @@ export interface PackSpec {
    * list the engine uses `preferredRunways` and one runway does both.
    */
   runwayConfigs?: RunwayConfigSpec[];
+
+  // ---- 2.0 graphics: everything the scope draws that is not procedure data (all optional) ----
+  /** Terrain for the video map: contour polylines (lat, lon pairs in decimal degrees), spot heights and region names. */
+  terrain?: TerrainSpec;
+  /** Towns with a size rank: 1 is drawn at every zoom with a larger label, 3 only when zoomed in. Replaces fixes of kind 'town' when present. */
+  places?: PlaceSpec[];
+  /** Other aerodromes in the area, drawn as small symbols with their ICAO code. */
+  airports?: AirportSpec[];
 }
 
+export interface TerrainSpec {
+  contours: { pts: [number, number][]; closed?: boolean; label?: string }[];
+  spots: { lat: number; lon: number; text: string }[];
+  regions: { lat: number; lon: number; name: string }[];
+}
+export interface PlaceSpec { name: string; lat: string; lon: string; rank: 1 | 2 | 3 }
+export interface AirportSpec { icao: string; lat: string; lon: string; name?: string; kind?: 'civil' | 'mil' | 'heli' | 'glider' }
 /** One runway pair in use: the landing runway and the departure runway (the same id when one runway does both). */
 export interface RunwayConfigSpec { land: string; dep: string; note?: string }
 

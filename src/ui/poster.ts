@@ -3,8 +3,9 @@
 
 import type { Pack } from '../pack/load';
 import type { XY } from '../geo';
-import { move } from '../geo';
+import { move, parseLatLon } from '../geo';
 import { posAt, type Divergence, type TrackLine, type TrackLog } from '../engine/career';
+import { SKIN, withAlpha, type Skin } from './skins';
 
 const MONO = '"IBM Plex Mono", ui-monospace, Menlo, monospace';
 const SANS = '"IBM Plex Sans Condensed", "Arial Narrow", sans-serif';
@@ -32,43 +33,103 @@ export function frame(logs: TrackLog[], w: number, h: number, minSpanNm = 30): V
   return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, scale, w, h };
 }
 
-/** The video map: range rings, borders, roads and river, TMA and CTR, runways, the active centreline, key fixes. */
-export function drawVideoMap(ctx: CanvasRenderingContext2D, pack: Pack, v: View, rwyId = '22L', k = 1) {
+/** Fixes worth naming on a poster: the stack fix, the STAR entry fixes, navaids, and the IF and FAF of the runway in use. */
+function keyFixes(pack: Pack, rw: { ifFix: string; faf: string }): Set<string> {
+  const keys = new Set<string>([rw.ifFix, rw.faf]);
+  if (pack.spec.stackFix) keys.add(pack.spec.stackFix);
+  for (const st of pack.stars) if (st.legs[0]) keys.add(st.legs[0].fix);
+  for (const [id, f] of pack.fixes) if (f.kind === 'vor' || f.kind === 'ndb') keys.add(id);
+  return keys;
+}
+
+/**
+ * The video map in the scope's visual language: terrain, rings, lines by weight, airspace, runways and the active
+ * centreline, key fixes, places and other aerodromes. `S` is the skin (night by default: the poster is printed dark).
+ */
+export function drawVideoMap(ctx: CanvasRenderingContext2D, pack: Pack, v: View, rwyId = pack.preferredRunways[0], k = 1, S: Skin = SKIN.night) {
   const path = (pts: XY[], close = true) => { ctx.beginPath(); pts.forEach((p, i) => { const s = toS(v, p); if (i) ctx.lineTo(s.x, s.y); else ctx.moveTo(s.x, s.y); }); if (close) ctx.closePath(); };
+  const inView = (s: XY) => s.x >= (v.ox ?? 0) && s.y >= (v.oy ?? 0) && s.x <= (v.ox ?? 0) + v.w && s.y <= (v.oy ?? 0) + v.h;
   const arp = toS(v, { x: 0, y: 0 });
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  // terrain contours
+  ctx.strokeStyle = S.contour; ctx.lineWidth = 0.8 * k;
+  for (const c of pack.spec.terrain?.contours ?? []) {
+    const pts = c.pts.map(([la, lo]) => pack.proj.toXY({ lat: la, lon: lo }));
+    path(pts, !!c.closed); ctx.stroke();
+  }
+  // rings
   ctx.lineWidth = 1 * k;
-  for (let r = 10; r <= 40; r += 10) { ctx.strokeStyle = r % 20 ? 'rgba(150,178,195,0.05)' : 'rgba(150,178,195,0.09)'; ctx.beginPath(); ctx.arc(arp.x, arp.y, r * v.scale, 0, Math.PI * 2); ctx.stroke(); }
-  for (const l of pack.mapLines) {
-    if (l.style === 'border') { ctx.strokeStyle = 'rgba(170,180,190,0.22)'; ctx.setLineDash([10 * k, 4 * k, 2 * k, 4 * k]); ctx.lineWidth = 1 * k; }
-    else if (l.style === 'road') { ctx.strokeStyle = 'rgba(150,160,170,0.08)'; ctx.setLineDash([]); ctx.lineWidth = 2 * k; }
-    else { ctx.strokeStyle = 'rgba(90,140,175,0.26)'; ctx.setLineDash([]); ctx.lineWidth = 1.6 * k; }
+  for (let r = 10; r <= 40; r += 10) { ctx.strokeStyle = r % 20 ? S.ring : S.ring10; ctx.beginPath(); ctx.arc(arp.x, arp.y, r * v.scale, 0, Math.PI * 2); ctx.stroke(); }
+  // lines by weight
+  const order: Record<string, number> = { road: 0, river: 1, rail: 2, border: 3, coast: 4 };
+  for (const l of [...pack.mapLines].sort((a, b) => (order[a.style] ?? 0) - (order[b.style] ?? 0))) {
+    if (l.style === 'border') { ctx.strokeStyle = S.border; ctx.setLineDash([10 * k, 4 * k, 2 * k, 4 * k]); ctx.lineWidth = 1 * k; }
+    else if (l.style === 'road') { ctx.strokeStyle = S.road; ctx.setLineDash([]); ctx.lineWidth = 2 * k; }
+    else if (l.style === 'rail') { ctx.strokeStyle = S.rail; ctx.setLineDash([6 * k, 3 * k]); ctx.lineWidth = 1 * k; }
+    else { ctx.strokeStyle = l.style === 'coast' ? S.coast : S.river; ctx.setLineDash([]); ctx.lineWidth = 1.6 * k; }
     path(l.pts, false); ctx.stroke();
   }
   ctx.setLineDash([]);
-  ctx.strokeStyle = 'rgba(125,180,210,0.13)'; ctx.lineWidth = 1 * k; ctx.setLineDash([7 * k, 6 * k]); path(pack.tma.poly); ctx.stroke(); ctx.setLineDash([]);
-  ctx.strokeStyle = 'rgba(125,180,210,0.3)'; ctx.lineWidth = 1.1 * k; path(pack.ctr.poly); ctx.stroke();
+  // airspace
+  path(pack.tma.poly); ctx.fillStyle = withAlpha(S.tmaFill, 0.02); ctx.fill();
+  ctx.strokeStyle = S.tma; ctx.lineWidth = 1 * k; ctx.setLineDash([7 * k, 6 * k]); ctx.stroke(); ctx.setLineDash([]);
+  path(pack.ctr.poly); ctx.fillStyle = withAlpha(S.ctrFill, 0.04); ctx.fill();
+  ctx.strokeStyle = S.ctr; ctx.lineWidth = 1.1 * k; ctx.stroke();
+  for (const t of pack.tsas) { path(t.poly); ctx.strokeStyle = S.tsaOff; ctx.lineWidth = 1 * k; ctx.setLineDash([3 * k, 5 * k]); ctx.stroke(); }
+  ctx.setLineDash([]);
+  // runway, centreline with ticks
   const rw = pack.runways.get(rwyId) ?? [...pack.runways.values()][0];
-  ctx.strokeStyle = 'rgba(205,220,230,0.22)'; ctx.setLineDash([5 * k, 5 * k]);
+  ctx.strokeStyle = S.centreline; ctx.setLineDash([5 * k, 5 * k]); ctx.lineWidth = 1 * k;
   { const a = toS(v, rw.thr), b = toS(v, move(rw.thr, rw.crs + 180, 18)); ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); }
   ctx.setLineDash([]);
+  ctx.strokeStyle = S.tick;
+  for (let d = 1; d <= 18; d++) {
+    const c = move(rw.thr, rw.crs + 180, d), len = d % 5 === 0 ? 0.6 : 0.25;
+    const p1 = toS(v, move(c, rw.crs + 90, len)), p2 = toS(v, move(c, rw.crs - 90, len));
+    ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+  }
   for (const st of pack.strips) {
     const A = toS(v, st.a), B = toS(v, st.b);
-    ctx.strokeStyle = st.ends.includes(rwyId) ? 'rgba(223,232,237,0.9)' : 'rgba(223,232,237,0.4)';
+    ctx.strokeStyle = S.runway; ctx.globalAlpha = st.ends.includes(rwyId) ? 0.9 : 0.4;
     ctx.lineWidth = Math.max(2, 0.05 * v.scale) * (st.ends.includes(rwyId) ? 1 : 0.7);
     ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
+    ctx.globalAlpha = 1;
   }
-  const keys = new Set(['ALHUV', rw.ifFix, rw.faf, 'LNO', 'CIV', 'KOK', 'NIK', 'GESLO', 'RUDIX', 'GIREL', 'BUB']);
+  // key fixes
+  const keys = keyFixes(pack, rw);
   ctx.font = `500 ${10 * k}px ${MONO}`;
-  for (const [id, f] of pack.fixes) {
-    if (!keys.has(id)) continue;
+  for (const id of keys) {
+    const f = pack.fixes.get(id);
+    if (!f) continue;
     const s = toS(v, f.p);
-    if (s.x < 0 || s.y < 0 || s.x > (v.ox ?? 0) + v.w || s.y > (v.oy ?? 0) + v.h) continue;
-    ctx.strokeStyle = 'rgba(165,190,205,0.4)'; ctx.lineWidth = 1 * k;
-    ctx.beginPath(); ctx.moveTo(s.x, s.y - 4 * k); ctx.lineTo(s.x + 3.5 * k, s.y + 2.5 * k); ctx.lineTo(s.x - 3.5 * k, s.y + 2.5 * k); ctx.closePath(); ctx.stroke();
-    ctx.fillStyle = 'rgba(165,190,205,0.42)'; ctx.fillText(id, s.x + 6 * k, s.y + 3 * k);
+    if (!inView(s)) continue;
+    ctx.strokeStyle = S.fix; ctx.lineWidth = 1 * k;
+    ctx.beginPath();
+    if (f.kind === 'vor') { for (let i = 0; i < 6; i++) { const a = (i / 6) * Math.PI * 2; const px = s.x + Math.cos(a) * 4.5 * k, py = s.y + Math.sin(a) * 4.5 * k; if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py); } ctx.closePath(); }
+    else { ctx.moveTo(s.x, s.y - 4 * k); ctx.lineTo(s.x + 3.5 * k, s.y + 2.5 * k); ctx.lineTo(s.x - 3.5 * k, s.y + 2.5 * k); ctx.closePath(); }
+    ctx.stroke();
+    ctx.fillStyle = S.fixText; ctx.fillText(id, s.x + 6 * k, s.y + 3 * k);
   }
-  ctx.font = `400 ${11 * k}px ${SANS}`; ctx.fillStyle = 'rgba(160,180,195,0.26)';
-  for (const [, f] of pack.fixes) if (f.kind === 'town') { const s = toS(v, f.p); ctx.fillText(f.note ?? f.id, s.x + 4 * k, s.y - 3 * k); }
+  // places by rank, then other aerodromes
+  const places = pack.spec.places?.length ? pack.spec.places.map((p) => ({ p: pack.proj.toXY(parseLatLon(p.lat, p.lon)), name: p.name, rank: p.rank })) : [...pack.fixes.values()].filter((f) => f.kind === 'town').map((f) => ({ p: f.p, name: f.note ?? f.id, rank: 2 as const }));
+  for (const pl of places) {
+    if (pl.rank === 3) continue;
+    const s = toS(v, pl.p);
+    if (!inView(s)) continue;
+    ctx.fillStyle = pl.rank === 1 ? S.town1 : S.town2;
+    const r = (pl.rank === 1 ? 2 : 1.5) * k;
+    ctx.fillRect(s.x - r, s.y - r, r * 2, r * 2);
+    ctx.font = `${pl.rank === 1 ? 500 : 400} ${(pl.rank === 1 ? 12 : 11) * k}px ${SANS}`;
+    ctx.fillText(pl.name, s.x + 4 * k, s.y - 3 * k);
+  }
+  ctx.strokeStyle = S.airport; ctx.lineWidth = 1 * k; ctx.fillStyle = S.airportText; ctx.font = `500 ${9 * k}px ${MONO}`;
+  for (const ap of pack.spec.airports ?? []) {
+    const s = toS(v, pack.proj.toXY(parseLatLon(ap.lat, ap.lon)));
+    if (!inView(s)) continue;
+    ctx.beginPath(); ctx.arc(s.x, s.y, 3.5 * k, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(s.x - 5 * k, s.y); ctx.lineTo(s.x + 5 * k, s.y); ctx.stroke();
+    ctx.fillText(ap.icao, s.x + 7 * k, s.y + 3 * k);
+  }
 }
 
 function trail(ctx: CanvasRenderingContext2D, v: View, ln: TrackLine, k: number, alpha: number, t0 = -Infinity, t1 = Infinity) {
@@ -102,17 +163,18 @@ export function renderPoster(canvas: HTMLCanvasElement, pack: Pack, tracks: Trac
   const k = size.w / 1200;
   // paper: deep console blue with a soft glow at the airfield
   const bg = ctx.createLinearGradient(0, 0, 0, size.h);
-  bg.addColorStop(0, '#0d151b'); bg.addColorStop(1, '#091015');
+  const S = SKIN.night;
+  bg.addColorStop(0, S.bg1); bg.addColorStop(1, S.bg0);
   ctx.fillStyle = bg; ctx.fillRect(0, 0, size.w, size.h);
   const pad = 70 * k, mapH = size.h - 470 * k;
   const v: View = { ...frame([tracks], size.w - pad * 2, mapH - pad), ox: pad, oy: pad };
   const glowAt = toS(v, { x: 0, y: 0 });
   const glow = ctx.createRadialGradient(glowAt.x, glowAt.y, 0, glowAt.x, glowAt.y, 520 * k);
-  glow.addColorStop(0, 'rgba(79,209,232,0.06)'); glow.addColorStop(1, 'rgba(79,209,232,0)');
+  glow.addColorStop(0, withAlpha(S.selFill, 0.06)); glow.addColorStop(1, withAlpha(S.selFill, 0));
   ctx.fillStyle = glow; ctx.fillRect(0, 0, size.w, mapH);
   ctx.save();
   ctx.beginPath(); ctx.rect(pad * 0.5, pad * 0.5, size.w - pad, mapH - pad * 0.2); ctx.clip();
-  drawVideoMap(ctx, pack, v, meta.runway, k);
+  drawVideoMap(ctx, pack, v, meta.runway, k, S);
   // trails, additive so busy routes glow
   ctx.globalCompositeOperation = 'lighter';
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -131,12 +193,12 @@ export function renderPoster(canvas: HTMLCanvasElement, pack: Pack, tracks: Trac
   ctx.globalCompositeOperation = 'source-over';
   // title block
   const y0 = mapH + 40 * k;
-  ctx.strokeStyle = 'rgba(150,178,195,0.25)'; ctx.lineWidth = 1 * k;
+  ctx.strokeStyle = S.panelLine; ctx.lineWidth = 1 * k;
   ctx.beginPath(); ctx.moveTo(pad, y0); ctx.lineTo(size.w - pad, y0); ctx.stroke();
-  ctx.fillStyle = '#4fd1e8'; ctx.font = `500 ${22 * k}px ${MONO}`;
-  ctx.fillText(`EBLG APP · 119.280 · RWY ${meta.runway}`, pad, y0 + 50 * k);
-  ctx.fillStyle = '#eef3f6'; ctx.font = `600 ${92 * k}px ${SANS}`;
-  ctx.fillText('LIÈGE APPROACH', pad - 4 * k, y0 + 150 * k);
+  ctx.fillStyle = S.select; ctx.font = `500 ${22 * k}px ${MONO}`;
+  ctx.fillText(`${pack.meta.icao} APP  ${pack.meta.appFreq}  RWY ${meta.runway}`, pad, y0 + 50 * k);
+  ctx.fillStyle = S.assumed; ctx.font = `600 ${92 * k}px ${SANS}`;
+  ctx.fillText(pack.meta.appCallsign.toUpperCase(), pad - 4 * k, y0 + 150 * k);
   ctx.fillStyle = '#c9d4db'; ctx.font = `500 ${36 * k}px ${SANS}`;
   ctx.fillText(meta.title, pad, y0 + 205 * k);
   ctx.fillStyle = 'rgba(201,212,219,0.6)'; ctx.font = `400 ${21 * k}px ${MONO}`;
@@ -280,8 +342,8 @@ export class GhostViewer {
       const m = document.createElement('canvas');
       m.width = Math.round(w * dpr); m.height = Math.round(h * dpr);
       const ctx = m.getContext('2d')!;
-      ctx.fillStyle = '#0f171d'; ctx.fillRect(0, 0, m.width, m.height);
-      drawVideoMap(ctx, this.pack, this.view!, this.d.runway, dpr * 0.85);
+      ctx.fillStyle = SKIN.night.bg0; ctx.fillRect(0, 0, m.width, m.height);
+      drawVideoMap(ctx, this.pack, this.view!, this.d.runway, dpr * 0.85, SKIN.night);
       return m;
     });
     this.draw();

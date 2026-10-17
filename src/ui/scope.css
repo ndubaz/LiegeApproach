@@ -1,0 +1,36 @@
+/* The radar scope: canvas chrome and the per-skin ground colour behind it.
+   Everything drawn on the picture lives in scope.ts and skins.ts; this file only
+   covers the element itself and the wrapper the skin is announced on. */
+
+canvas.scope {
+  cursor: crosshair;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+}
+canvas.scope:focus-visible { outline: 2px solid var(--select, #56d2ea); outline-offset: -2px; }
+
+/* The wrapper takes data-skin from the scope so the ground behind the canvas (and any control sitting
+   over it) matches the picture before the first frame is painted. */
+[data-skin="night"] { --scope-bg: #0b1015; --scope-ink: rgba(150, 178, 195, 0.6); --select: #56d2ea; }
+[data-skin="day"] { --scope-bg: #cfd6da; --scope-ink: #3f4f58; --select: #005f78; }
+[data-skin="amber"] { --scope-bg: #0d0802; --scope-ink: rgba(255, 176, 0, 0.6); --select: #fff3cc; }
+
+/* Overlay controls over the day skin need dark ink, over the others light ink. */
+[data-skin="day"] .zoom button { color: #1f2d36; border-color: rgba(31, 45, 54, 0.4); background: rgba(236, 240, 242, 0.85); }
+[data-skin="amber"] .zoom button { color: #ffcf5c; border-color: rgba(255, 176, 0, 0.35); background: rgba(13, 8, 2, 0.8); }
+[data-skin="amber"] .zoom button.on { color: #140c03; background: #ffcf5c; }
+
+/* Amber CRT: a faint scanline veil over the picture, phosphor-style. Static (no animation), skipped for reduced motion users anyway because it is a mask, not motion. */
+[data-skin="amber"] canvas.scope { filter: saturate(1.05); }
+[data-skin="amber"]::after {
+  content: '';
+  position: absolute; inset: 0; pointer-events: none;
+  background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0) 0 2px, rgba(0, 0, 0, 0.09) 2px 3px);
+  mix-blend-mode: multiply;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  canvas.scope { transition: none; }
+}

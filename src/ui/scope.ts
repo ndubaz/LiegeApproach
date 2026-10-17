@@ -1,4 +1,5 @@
-import { alongTrack, angDiff, bearing, crossTrack, dist, move, norm360, pointInPolygon, type XY } from '../geo';
+import './scope.css';
+import { alongTrack, angDiff, bearing, crossTrack, dist, move, norm360, parseLatLon, pointInPolygon, type XY } from '../geo';
 import type { Sim } from '../engine/sim';
 import type { Aircraft } from '../engine/types';
 import type { Item } from '../engine/clearance';
@@ -8,40 +9,9 @@ import { predict, type PredPt } from '../engine/predict';
 import { Rng } from '../engine/rng';
 import type { Level } from '../pack/load';
 import type { Settings } from '../store';
+import { SKIN, skinFor, withAlpha, type Skin, type SkinName } from './skins';
 
-/**
- * Every colour on the scope lives here so the display can be tuned to match a
- * real position. Colour budget: red = safety only; amber = act now (one or two
- * items at most); cyan = your clearance or selection; white = assumed;
- * green = inbound/notified; blue-grey = transferred; dim grey = unconcerned.
- */
-export const SKIN = {
-  night: {
-    bg0: '#10171d', bg1: '#162028', terrain: 'rgba(150,160,120,', ring: 'rgba(150,178,195,0.06)', ring10: 'rgba(150,178,195,0.11)', ringText: 'rgba(150,178,195,0.42)',
-    rose: 'rgba(150,178,195,0.18)', border: 'rgba(170,180,190,0.32)', road: 'rgba(150,160,170,0.12)', river: 'rgba(90,140,175,0.34)', town: 'rgba(160,180,195,0.34)',
-    ctr: 'rgba(125,180,210,0.42)', tma: 'rgba(125,180,210,0.17)', centreline: 'rgba(205,220,230,0.42)', centreDim: 'rgba(205,220,230,0.14)', runway: '#dfe8ed',
-    fix: 'rgba(165,190,205,0.5)', fixKey: 'rgba(200,220,232,0.85)', fixText: 'rgba(165,190,205,0.58)', proc: 'rgba(110,165,200,0.15)', procText: 'rgba(130,180,210,0.42)', sid: 'rgba(170,150,215,0.11)', hold: 'rgba(160,190,210,0.22)',
-    assumed: '#f2f6f8', notified: '#8fe0a2', transferred: '#7d92a2', unconcerned: '#56666f', select: '#56d2ea', urgent: '#ff5148', warn: '#ffb444', assigned: '#80d5e8',
-    tsaOn: 'rgba(242,184,75,0.6)', tsaFill: 'rgba(242,184,75,0.05)', tsaOff: 'rgba(242,184,75,0.16)', mva: 'rgba(150,200,150,0.32)', mvaFill: 'rgba(150,200,150,',
-    wx: ['rgba(64,128,160,0.30)', 'rgba(200,164,62,0.38)', 'rgba(222,76,96,0.48)'], wxLine: 'rgba(210,180,100,0.55)', route: 'rgba(86,210,234,0.55)', halo: 'rgba(10,16,21,0.85)', ftdi: 'rgba(200,215,225,0.85)', rbl: '#e8d36a',
-    plate: 'rgba(14,22,29,0.7)', plateSel: 'rgba(14,22,29,0.85)', contour: 'rgba(150,160,120,0.18)', contourText: 'rgba(160,170,130,0.32)',
-    conflictFill: 'rgba(255,81,72,0.10)', pillBg: '#3a1114', pillText: '#ffffff', gapOk: '#8fe0a2', emerText: '#0e161d', selFill: 'rgba(86,210,234,0.10)',
-    chip: 'rgba(86,210,234,0.10)', chipLine: 'rgba(86,210,234,0.45)', panel: 'rgba(9,15,20,0.9)', panelLine: 'rgba(150,178,195,0.22)', gsBand: 'rgba(205,220,230,0.11)',
-  },
-  day: {
-    bg0: '#b1bcc1', bg1: '#bec8cd', terrain: 'rgba(110,105,70,', ring: 'rgba(107,122,131,0.16)', ring10: 'rgba(107,122,131,0.3)', ringText: '#56656e',
-    rose: 'rgba(107,122,131,0.42)', border: 'rgba(90,104,113,0.7)', road: 'rgba(107,122,131,0.3)', river: 'rgba(52,106,148,0.55)', town: '#56656e',
-    ctr: 'rgba(55,85,105,0.7)', tma: 'rgba(55,85,105,0.36)', centreline: 'rgba(52,67,76,0.6)', centreDim: 'rgba(52,67,76,0.22)', runway: '#34434c',
-    fix: '#6b7a83', fixKey: '#34434c', fixText: '#56656e', proc: 'rgba(40,90,130,0.24)', procText: 'rgba(40,80,115,0.6)', sid: 'rgba(100,70,150,0.24)', hold: 'rgba(52,67,76,0.32)',
-    assumed: '#0b1720', notified: '#16743a', transferred: '#56707f', unconcerned: '#7b8a93', select: '#006f8a', urgent: '#c8102e', warn: '#9a5a00', assigned: '#006f8a',
-    tsaOn: 'rgba(154,90,0,0.75)', tsaFill: 'rgba(154,90,0,0.06)', tsaOff: 'rgba(154,90,0,0.32)', mva: 'rgba(40,100,50,0.5)', mvaFill: 'rgba(40,100,50,',
-    wx: ['rgba(60,130,170,0.32)', 'rgba(196,146,30,0.42)', 'rgba(200,16,46,0.40)'], wxLine: 'rgba(120,80,0,0.6)', route: 'rgba(0,111,138,0.65)', halo: 'rgba(230,236,239,0.85)', ftdi: '#34434c', rbl: '#6e5200',
-    plate: 'rgba(226,232,235,0.72)', plateSel: 'rgba(230,236,239,0.9)', contour: 'rgba(95,90,55,0.24)', contourText: 'rgba(95,90,55,0.5)',
-    conflictFill: 'rgba(200,16,46,0.10)', pillBg: '#c8102e', pillText: '#ffffff', gapOk: '#16743a', emerText: '#ffffff', selFill: 'rgba(0,111,138,0.10)',
-    chip: 'rgba(0,111,138,0.08)', chipLine: 'rgba(0,111,138,0.5)', panel: 'rgba(212,219,223,0.94)', panelLine: 'rgba(52,67,76,0.25)', gsBand: 'rgba(52,67,76,0.08)',
-  },
-};
-type Skin = typeof SKIN.night;
+export { SKIN, type Skin, type SkinName };
 
 export type Field = 'cs' | 'lvl' | 'spd' | 'hdg' | 'app';
 export type RadialKey = 'HDG' | 'LVL' | 'SPD' | 'DCT' | 'ILS' | 'HOLD' | 'TWR' | 'MORE';
@@ -50,7 +20,7 @@ export interface QuickOption { label: string; item: Item; warn?: string }
 interface LabelBox { x: number; y: number; w: number; h: number; lines: number; lh: number }
 type Seg = { t: string; c?: 'urgent' | 'warn' | 'assigned' | 'dim'; b?: boolean };
 type Anchor = { cs?: string; p?: XY };
-type Rect = { x: number; y: number; w: number; h: number };
+export type Rect = { x: number; y: number; w: number; h: number };
 interface Chip extends Rect { f: Field; cap: string; val: string; assigned: boolean; warn?: boolean }
 
 export interface ScopeEvents {
@@ -76,33 +46,155 @@ export interface ScopeEvents {
   speedOptions?(cs: string): QuickOption[];
   /** An aircraft started a new call (once per call). */
   newCaller?(cs: string): void;
+  /** 2.0: the trail replay of an aircraft finished (or was stopped). */
+  replayDone?(cs: string): void;
+  /** 2.0: the range (NM shown from centre to the nearest edge) changed after a zoom, pinch or range-ring step. */
+  rangeChanged?(nm: number): void;
 }
+
+/** 2.0 display options. Everything has a default; the UI changes them directly on the scope. */
+export interface ScopeOptions {
+  /** Skin to draw with. Undefined: follow `settings.brightness` (night, day, or amber once the setting allows it). */
+  skin?: SkinName;
+  /** Range-ring spacing in NM. */
+  ringStep: 5 | 10 | 20;
+  showRings: boolean;
+  /** A rotating sweep line, one turn per radar update. Off by default: a game aid, not a controller's tool. */
+  sweep: boolean;
+  /** Interpolate the symbol between radar plots. The latest plot stays visible as a faint ghost while the symbol catches up. */
+  smooth: boolean;
+  /** History dots behind each symbol (0 to 7 radar plots). */
+  trailLen: number;
+  /** Level filter in feet: traffic outside the band is dimmed to a one-line label. The selected aircraft, callers and conflicts always show. */
+  levelFilter?: { lo?: number; hi?: number };
+  /** Declutter: short labels, fewer map names. 'auto' turns it on for small screens and crowded pictures. */
+  declutter: 'auto' | 'on' | 'off';
+  showWeather: boolean;
+  /** Bearing and range from the aerodrome under the mouse, and time-to-fix for the selected aircraft when hovering a fix. */
+  cursorReadout: boolean;
+  /** Map detail: 'full' draws towns of every rank, rail and airports; 'reduced' keeps borders, rivers, rank-1 towns. */
+  mapDetail: 'full' | 'reduced';
+}
+
+export const DEFAULT_SCOPE_OPTIONS: ScopeOptions = { ringStep: 5, showRings: true, sweep: false, smooth: true, trailLen: 5, declutter: 'auto', showWeather: true, cursorReadout: true, mapDetail: 'full' };
 
 const mono = (px: number, wt = 400) => `${wt} ${px}px "IBM Plex Mono", ui-monospace, Menlo, monospace`;
 const sans = (px: number, wt = 400) => `${wt} ${px}px "IBM Plex Sans Condensed", "Arial Narrow", sans-serif`;
 const RADIAL: RadialKey[] = ['HDG', 'LVL', 'SPD', 'DCT', 'ILS', 'HOLD', 'TWR', 'MORE'];
-const overlap = (a: Rect, b: Rect) => Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
-const inRect = (x: number, y: number, r: Rect, pad = 0) => x >= r.x - pad && x <= r.x + r.w + pad && y >= r.y - pad && y <= r.y + r.h + pad;
 const fmtT = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
 const vib = (ms: number) => { try { navigator.vibrate?.(ms); } catch { /* not supported */ } };
 
-/** Hand-drawn relief: approximate contours of the Condroz, Herve plateau and Ardennes (lat, lon), lightly jittered when drawn. */
-const RELIEF: { pts: [number, number][]; closed?: boolean }[] = [
-  { pts: [[50.86, 5.98], [50.76, 5.93], [50.69, 5.86], [50.62, 5.76], [50.57, 5.64], [50.53, 5.50], [50.49, 5.33], [50.45, 5.16], [50.40, 4.98], [50.35, 4.80], [50.30, 4.62]] },
-  { pts: [[50.78, 6.14], [50.68, 6.06], [50.60, 5.97], [50.53, 5.84], [50.46, 5.66], [50.39, 5.46], [50.32, 5.26], [50.25, 5.06], [50.18, 4.88]] },
-  { pts: [[50.68, 6.27], [50.59, 6.17], [50.51, 6.03], [50.43, 5.90], [50.35, 5.72], [50.27, 5.53], [50.19, 5.34], [50.10, 5.15]] },
-  { pts: [[50.60, 6.36], [50.50, 6.26], [50.42, 6.12], [50.35, 5.99], [50.28, 5.84], [50.19, 5.70], [50.10, 5.52], [50.01, 5.35]] },
-  { pts: [[50.535, 6.02], [50.555, 6.10], [50.535, 6.19], [50.48, 6.20], [50.455, 6.10], [50.48, 6.01]], closed: true },
-  { pts: [[50.515, 6.06], [50.515, 6.12], [50.49, 6.14], [50.48, 6.08]], closed: true },
-  { pts: [[50.29, 5.69], [50.28, 5.79], [50.22, 5.81], [50.19, 5.73], [50.23, 5.65]], closed: true },
-  { pts: [[50.15, 5.93], [50.10, 6.04], [50.03, 6.02], [50.04, 5.90], [50.10, 5.86]], closed: true },
-];
-const SPOTS: { ll: [number, number]; t: string }[] = [
-  { ll: [50.501, 6.093], t: '2277' }, { ll: [50.253, 5.729], t: '2139' }, { ll: [50.635, 5.92], t: '1050' },
-];
-const AREA_NAMES: { ll: [number, number]; t: string }[] = [
-  { ll: [50.585, 6.10], t: 'H A U T E S   F A G N E S' }, { ll: [50.10, 6.22], t: 'A R D E N N E S' }, { ll: [50.38, 5.08], t: 'C O N D R O Z' },
-];
+// ======================================================================================
+// Pure geometry and label helpers (tested in tests/scope.test.ts)
+
+/** Overlap area of two rectangles (0 when they do not touch). */
+export const overlap = (a: Rect, b: Rect) => Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+export const inRect = (x: number, y: number, r: Rect, pad = 0) => x >= r.x - pad && x <= r.x + r.w + pad && y >= r.y - pad && y <= r.y + r.h + pad;
+
+/** True when segments ab and cd cross (strictly, shared endpoints do not count). */
+export function segmentsCross(a: XY, b: XY, c: XY, d: XY): boolean {
+  const o = (p: XY, q: XY, r: XY) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+  const o1 = o(a, b, c), o2 = o(a, b, d), o3 = o(c, d, a), o4 = o(c, d, b);
+  return o1 * o2 < 0 && o3 * o4 < 0;
+}
+
+/** Point on the edge of a box nearest to p (where a leader line meets the label). */
+export function boxEdgePoint(p: XY, b: Rect): XY {
+  return { x: Math.max(b.x, Math.min(p.x, b.x + b.w)), y: Math.max(b.y, Math.min(p.y, b.y + b.h)) };
+}
+
+/** Candidate label offsets around a symbol: three rings of eight, leaders of about 14, 36 and 62 px. */
+export function labelCandidates(bw: number, bh: number): [number, number][] {
+  const out: [number, number][] = [];
+  for (const g of [14, 36, 62]) {
+    out.push([g, -bh - g * 0.5], [g, g * 0.5], [-bw - g, -bh - g * 0.5], [-bw - g, g * 0.5], [g + 4, -bh / 2], [-bw - g - 4, -bh / 2], [-bw / 2, -bh - g - 4], [-bw / 2, g + 4]);
+  }
+  return out;
+}
+
+export interface LabelInput {
+  /** Symbol position (screen px). */
+  s: XY;
+  w: number; h: number;
+  /** Boxes already placed (labels, pills, map text) that this one should not cover. */
+  obstacles: Rect[];
+  /** Positions of every symbol; a candidate that covers one is thrown out. */
+  symbols: XY[];
+  /** Leader lines of labels already placed, so leaders do not cross. */
+  leaders: { a: XY; b: XY }[];
+  /** End of this aircraft's speed vector (screen px), to keep the label off it. */
+  vEnd: XY;
+  /** Drawable area: width, height, and the top band reserved for the frame text. */
+  bounds: { w: number; h: number; top: number; reserved?: Rect[] };
+  /** Previous offset, for hysteresis. */
+  prev?: { dx: number; dy: number };
+  /** Priority 0 (selected) to 7 (unconcerned): higher priorities pay more to leave the screen. */
+  priority: number;
+}
+
+/**
+ * Pick the label offset with the lowest cost. The costs, in order of weight: covering another aircraft's
+ * symbol (disqualifying), leaving the screen, overlapping another box, crossing another leader, lying on
+ * the own speed vector, then leader length. A small bonus keeps the label where it was last frame.
+ */
+export function solveLabel(inp: LabelInput): { dx: number; dy: number; cost: number } {
+  const { s, w, h } = inp;
+  const cands = labelCandidates(w, h);
+  const offPen = inp.priority <= 1 ? 3000 : 300;
+  let best = { dx: cands[0][0], dy: cands[0][1], cost: Infinity };
+  const vx = inp.vEnd.x - s.x, vy = inp.vEnd.y - s.y;
+  for (let i = 0; i < cands.length; i++) {
+    const dx = cands[i][0], dy = cands[i][1];
+    const b = { x: s.x + dx, y: s.y + dy, w, h };
+    let c = (i % 8) * 2 + Math.floor(i / 8) * 55;
+    for (const q of inp.symbols) if ((q.x !== s.x || q.y !== s.y) && inRect(q.x, q.y, b, 7)) { c += 5000; break; }
+    for (const o of inp.obstacles) c += overlap(b, o) * 1.0;
+    const e = boxEdgePoint(s, b);
+    for (const l of inp.leaders) if (segmentsCross(s, e, l.a, l.b)) c += 140;
+    // own vector: penalise a label in the quadrant the vector points into
+    if ((dx + w / 2 > 0 ? vx > 0 : vx < 0) && (dy + h / 2 < 0 ? vy < 0 : vy > 0)) c += 150;
+    const ix = Math.max(0, Math.min(b.x + w, inp.bounds.w - 2) - Math.max(b.x, 2)), iy = Math.max(0, Math.min(b.y + h, inp.bounds.h - 2) - Math.max(b.y, inp.bounds.top));
+    const out = w * h - ix * iy;
+    if (out > 0.5) c += offPen + out * 4;
+    if (inp.bounds.reserved) for (const r of inp.bounds.reserved) { const o = overlap(b, r); if (o > 0) c += offPen / 2 + o * 4; }
+    if (inp.prev && Math.abs(inp.prev.dx - dx) < 1 && Math.abs(inp.prev.dy - dy) < 1) c -= 90;
+    if (c < best.cost) best = { dx, dy, cost: c };
+  }
+  return best;
+}
+
+/** Closest point of approach of two straight-line tracks (NM, kt, true track). t is clamped to [0, 180] s. */
+export function cpaLinear(A: { p: XY; trk: number; gs: number }, B: { p: XY; trk: number; gs: number }): { t: number; d: number; pa: XY; pb: XY } {
+  const v = (a: { trk: number; gs: number }) => ({ x: Math.sin(a.trk * Math.PI / 180) * a.gs / 3600, y: Math.cos(a.trk * Math.PI / 180) * a.gs / 3600 });
+  const va = v(A), vb = v(B);
+  const dp = { x: B.p.x - A.p.x, y: B.p.y - A.p.y }, dv = { x: vb.x - va.x, y: vb.y - va.y };
+  const vv = dv.x * dv.x + dv.y * dv.y;
+  const tc = vv > 1e-12 ? Math.min(180, Math.max(0, -(dp.x * dv.x + dp.y * dv.y) / vv)) : 0;
+  const pa = { x: A.p.x + va.x * tc, y: A.p.y + va.y * tc }, pb = { x: B.p.x + vb.x * tc, y: B.p.y + vb.y * tc };
+  return { t: Math.round(tc), d: dist(pa, pb), pa, pb };
+}
+
+/** Where a polygon's corner label goes: the top-left-most vertex on screen, nudged a little toward the centroid. */
+export function cornerLabelPoint(pts: XY[], nudge = 10): XY {
+  let cx = 0, cy = 0;
+  for (const p of pts) { cx += p.x / pts.length; cy += p.y / pts.length; }
+  let best = pts[0], bs = Infinity;
+  for (const p of pts) { const s = p.x + p.y * 1.4; if (s < bs) { bs = s; best = p; } }
+  const dx = cx - best.x, dy = cy - best.y, L = Math.hypot(dx, dy) || 1;
+  return { x: best.x + (dx / L) * nudge, y: best.y + (dy / L) * nudge };
+}
+
+/** Fraction of the way from the previous plot to the current one, given wall-clock time since the plot and the observed update interval. */
+export const interpFraction = (sincePlotMs: number, intervalMs: number) => (intervalMs <= 0 ? 1 : Math.max(0, Math.min(1, sincePlotMs / intervalMs)));
+
+/** True when the aircraft passes the level filter (feet). An open bound passes everything on that side. */
+export const passesLevelFilter = (alt: number, f?: { lo?: number; hi?: number }) => !f || ((f.lo === undefined || alt >= f.lo) && (f.hi === undefined || alt <= f.hi));
+
+/** Alpha and radius of history dot i of n (0 = oldest): a tail that fades and thins toward the past. */
+export const tailDot = (i: number, n: number) => { const k = n <= 1 ? 1 : (i + 1) / n; return { alpha: 0.12 + 0.5 * k * k, r: 0.9 + 0.7 * k }; };
+
+/** Time in seconds to a fix at the current ground speed, or undefined when stopped. */
+export const timeToFix = (from: XY, fix: XY, gs: number) => (gs > 20 ? (dist(from, fix) / gs) * 3600 : undefined);
 
 export class Scope {
   ctx: CanvasRenderingContext2D;
@@ -153,6 +245,23 @@ export class Scope {
   private staged?: { cs: string; f: 'lvl' | 'spd'; opts: QuickOption[]; idx: number; idx0: number };
   private hdg?: { cs: string; to: XY; item?: Item; text: string; sub: string; snap: 'hdg' | 'int' | 'dct' | 'none'; key: string; pts?: PredPt[]; lastMove: number; still: boolean; timer?: number; last: XY };
   private relief?: XY[][];
+  // ---- 2.0 display state
+  /** Display options; change them directly (the UI keeps them in sync with its settings). */
+  opts: ScopeOptions = { ...DEFAULT_SCOPE_OPTIONS };
+  /** Interpolation between radar plots: the previous and current plot and when the current one arrived. */
+  private plotState = new Map<string, { px: number; py: number; cx: number; cy: number; at: number; interval: number }>();
+  /** One-second position samples of every aircraft for the trail replay (last 60 s). */
+  private samples = new Map<string, { t: number; x: number; y: number; alt: number }[]>();
+  private lastSampleT = -1;
+  private replay?: { cs: string; t0: number; dur: number };
+  private hoverFix?: string;
+  private reduceMotion = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  private lastRange = 0;
+  private frameCount = 0;
+  // scratch, reused every frame so the draw loop does not allocate
+  private scratchRects: Rect[] = [];
+  private scratchSyms: XY[] = [];
+  private scratchLeaders: { a: XY; b: XY }[] = [];
 
   constructor(public canvas: HTMLCanvasElement, public sim: Sim, public settings: Settings, public ev: ScopeEvents) {
     this.ctx = canvas.getContext('2d')!;
@@ -165,15 +274,34 @@ export class Scope {
     canvas.addEventListener('pointercancel', (e) => { this.pointers.delete(e.pointerId); this.cancelDrag(); });
     canvas.addEventListener('wheel', (e) => this.wheel(e), { passive: false });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.classList.add('scope');
+    this.syncSkinClass();
   }
 
-  get skin(): Skin { return SKIN[this.settings.brightness]; }
+  /** The skin in use: the option, or the brightness setting. */
+  get skinName(): SkinName { return (this.opts.skin ?? (this.settings.brightness as SkinName)) in SKIN ? (this.opts.skin ?? (this.settings.brightness as SkinName)) : 'night'; }
+  get skin(): Skin { return skinFor(this.skinName); }
+  private syncSkinClass() {
+    const host = this.canvas.parentElement;
+    if (host && host.dataset.skin !== this.skinName) host.dataset.skin = this.skinName;
+  }
+  /** True when the picture should be decluttered: the option, or auto on a small screen or a crowded picture. */
+  get decluttered(): boolean {
+    if (this.opts.declutter !== 'auto') return this.opts.declutter === 'on';
+    return this.w < 700 || this.symbols.size > 16;
+  }
+  /** Start the 60-second trail replay of an aircraft (about four seconds on screen). */
+  startReplay(cs: string, durMs = 4000) { if (this.samples.has(cs)) this.replay = { cs, t0: performance.now(), dur: durMs }; }
+  stopReplay() { if (this.replay) { const cs = this.replay.cs; this.replay = undefined; this.ev.replayDone?.(cs); } }
+  /** Step the range rings: 5, 10, 20 NM. */
+  cycleRingStep() { this.opts.ringStep = this.opts.ringStep === 5 ? 10 : this.opts.ringStep === 10 ? 20 : 5; }
   get fontPx() { return this.settings.labelSize === 'S' ? 11 : this.settings.labelSize === 'L' ? 14.5 : 12.5; }
 
   resize() {
     const r = this.canvas.getBoundingClientRect();
-    this.dpr = Math.min(window.devicePixelRatio || 1, 3);
     this.w = Math.max(10, r.width); this.h = Math.max(10, r.height);
+    // phones report dpr 3: two device pixels per CSS pixel keeps the text crisp and halves the paint work
+    this.dpr = Math.min(window.devicePixelRatio || 1, this.w < 700 ? 2 : 3);
     this.canvas.width = Math.round(this.w * this.dpr);
     this.canvas.height = Math.round(this.h * this.dpr);
   }
@@ -195,6 +323,8 @@ export class Scope {
     this.center = { x: this.center.x + before.x - after.x, y: this.center.y + before.y - after.y };
   }
   zoom(f: number) { this.animateTo(Math.max(2.2, Math.min(60, this.scale * f)), { ...this.center }); }
+  /** Animate to a range (NM from the centre to the nearest edge). */
+  setRange(nm: number) { this.animateTo(Math.min(this.w, this.h) / (2 * nm), { ...this.center }, 320); }
   clearRbls() { this.rbls = []; }
   /** Close the radial menu, ladder and any staged wheel value. */
   closeTransient() { this.radialMenu = undefined; this.ladder = undefined; this.staged = undefined; }
@@ -203,8 +333,49 @@ export class Scope {
   /** Cached prediction for an aircraft (assumed traffic, plus the selected one at 4 min). */
   predictionFor(cs: string): PredPt[] | undefined { return this.predSel?.cs === cs ? this.predSel.pts : this.pred.get(cs); }
 
-  /** Position shown on the scope: the last radar plot. */
-  plot(ac: Aircraft): XY { return ac.history[ac.history.length - 1] ?? ac.p; }
+  /**
+   * Position shown on the scope. With `opts.smooth` the symbol moves from the previous radar plot to the
+   * latest one over the observed update interval (about 4 s at 1x); otherwise it is the latest plot.
+   */
+  plot(ac: Aircraft): XY {
+    const last = ac.history[ac.history.length - 1] ?? ac.p;
+    const st = this.plotState.get(ac.cs);
+    if (!st || !this.opts.smooth) return last;
+    const k = interpFraction(this.frameNow - st.at, st.interval);
+    if (k >= 1) return last;
+    return { x: st.px + (st.cx - st.px) * k, y: st.py + (st.cy - st.py) * k };
+  }
+  private frameNow = 0;
+  /** Latest radar plot, regardless of interpolation. */
+  lastPlot(ac: Aircraft): XY { return ac.history[ac.history.length - 1] ?? ac.p; }
+  /** Track the plot updates for interpolation and sample positions for the replay. Called once per frame. */
+  private updatePlots(now: number) {
+    const sim = this.sim;
+    for (const ac of sim.aircraft) {
+      const last = ac.history[ac.history.length - 1] ?? ac.p;
+      let st = this.plotState.get(ac.cs);
+      if (!st) { st = { px: last.x, py: last.y, cx: last.x, cy: last.y, at: now, interval: sim.radarRefresh * 1000 }; this.plotState.set(ac.cs, st); continue; }
+      if (last.x !== st.cx || last.y !== st.cy) {
+        const dt = now - st.at;
+        // learn the interval the plots arrive at (sim speed changes it); never slower than the nominal refresh at 1x
+        if (dt > 30 && dt < 20000) st.interval = st.interval * 0.5 + Math.min(dt, sim.radarRefresh * 1000) * 0.5;
+        st.px = st.cx; st.py = st.cy; st.cx = last.x; st.cy = last.y; st.at = now;
+      }
+    }
+    if (sim.t !== this.lastSampleT) {
+      this.lastSampleT = sim.t;
+      for (const ac of sim.aircraft) {
+        if (ac.landed || ac.remove) continue;
+        let arr = this.samples.get(ac.cs);
+        if (!arr) { arr = []; this.samples.set(ac.cs, arr); }
+        arr.push({ t: sim.t, x: ac.p.x, y: ac.p.y, alt: ac.alt });
+        while (arr.length && arr[0].t < sim.t - 60) arr.shift();
+      }
+    }
+    if (this.frameCount % 120 === 0) {
+      for (const cs of this.plotState.keys()) if (!sim.find(cs)) { this.plotState.delete(cs); this.samples.delete(cs); }
+    }
+  }
 
   // ================= interaction =================
   private hitAircraft(x: number, y: number, r = 24): string | undefined {
@@ -328,6 +499,8 @@ export class Scope {
     const x = e.offsetX, y = e.offsetY;
     if (e.pointerType === 'mouse') {
       this.hover = { x, y };
+      this.hoverFix = undefined;
+      if (!this.drag && this.opts.cursorReadout) for (const f of this.visibleFixes()) { const s = this.toS(f.p); if (Math.hypot(s.x - x, s.y - y) < 10) { this.hoverFix = f.id; break; } }
       if (this.staged) { const b = this.labels.get(this.staged.cs); if (!b || !inRect(x, y, b, 40)) this.staged = undefined; }
     }
     if (this.radialMenu && (!this.drag || this.drag.kind === 'radial' || e.pointerType === 'mouse')) this.radialMenu.hover = this.radialSector(x, y);
@@ -567,29 +740,41 @@ export class Scope {
 
   visibleFixes() {
     const pack = this.sim.pack;
-    const ids = new Set<string>(['ALHUV', 'LNO', 'GIREL', 'GSY', 'RUDIX', 'GILOM']);
+    const ids = new Set<string>();
+    if (pack.spec.stackFix) ids.add(pack.spec.stackFix);
+    for (const [id, f] of pack.fixes) if (f.kind === 'vor' || f.kind === 'ndb') ids.add(id);
+    for (const h of pack.holds) ids.add(h.fix);
+    for (const s of pack.stars) if (s.legs[0]) ids.add(s.legs[0].fix);
     const rw = this.sim.runway;
     for (const t of pack.transitions) if (t.runways.includes(rw)) t.legs.forEach((l) => ids.add(l.fix));
     for (const s of pack.stars) if (s.runways.includes(rw)) s.legs.forEach((l) => ids.add(l.fix));
     for (const s of pack.sids) if (s.runways.includes(rw)) s.legs.forEach((l) => ids.add(l.fix));
     const r = pack.runways.get(rw)!;
-    ids.add(r.faf);
+    ids.add(r.faf); ids.add(r.ifFix);
     for (const [id, f] of pack.fixes) if (f.kind === 'vfr') ids.add(id);
     return [...ids].map((id) => pack.fixes.get(id)!).filter(Boolean);
   }
+  /** The fixes a label marks in bold: the stack fix, the IF and the FAF of the runway in use. */
+  keyFixes(): Set<string> {
+    const rw = this.sim.rwy, out = new Set<string>([rw.ifFix, rw.faf]);
+    if (this.sim.pack.spec.stackFix) out.add(this.sim.pack.spec.stackFix);
+    return out;
+  }
 
-  // ================= static video map (cached) =================
+  // ================= static video map (offscreen canvas, redrawn only when the view or the map state changes) =================
   private path(ctx: CanvasRenderingContext2D, pts: XY[], close = true) {
     ctx.beginPath();
-    pts.forEach((p, i) => { const s = this.toS(p); if (i) ctx.lineTo(s.x, s.y); else ctx.moveTo(s.x, s.y); });
+    for (let i = 0; i < pts.length; i++) { const p = pts[i]; const x = this.w / 2 + (p.x - this.center.x) * this.scale, y = this.h / 2 - (p.y - this.center.y) * this.scale; if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); }
     if (close) ctx.closePath();
   }
   private ll(lat: number, lon: number): XY { return this.sim.pack.proj.toXY({ lat, lon }); }
-  /** Relief polylines in NM, densified and jittered once so they read as hand-drawn contours. */
+  private lls(lat: string, lon: string): XY { return this.sim.pack.proj.toXY(parseLatLon(lat, lon)); }
+  /** Relief polylines in NM from the pack's terrain, densified and jittered once so they read as hand-drawn contours. */
   private reliefLines(): XY[][] {
     if (this.relief) return this.relief;
     const rng = new Rng(4242);
-    this.relief = RELIEF.map((c) => {
+    const contours = this.sim.pack.spec.terrain?.contours ?? [];
+    this.relief = contours.map((c) => {
       const pts = c.pts.map(([la, lo]) => this.ll(la, lo));
       if (c.closed) pts.push(pts[0]);
       const out: XY[] = [];
@@ -617,56 +802,90 @@ export class Scope {
     ctx.lineTo(s[s.length - 1].x, s[s.length - 1].y);
   }
   private lvlTag(l: Level) { return l.fl !== undefined ? `FL${String(l.fl).padStart(3, '0')}` : l.ft === 0 ? 'GND' : `${l.ft} ft`; }
+  private onScreenPt(s: XY, pad = 30) { return s.x >= -pad && s.y >= -pad && s.x <= this.w + pad && s.y <= this.h + pad; }
+  /** Places with a rank: from the pack's `places`, else the fixes of kind 'town' at rank 2. */
+  private places(): { p: XY; name: string; rank: number }[] {
+    if (this.placeCache) return this.placeCache;
+    const pack = this.sim.pack;
+    const out: { p: XY; name: string; rank: number }[] = [];
+    if (pack.spec.places?.length) for (const pl of pack.spec.places) out.push({ p: this.lls(pl.lat, pl.lon), name: pl.name, rank: pl.rank });
+    else for (const [, f] of pack.fixes) if (f.kind === 'town') out.push({ p: f.p, name: f.note ?? f.id, rank: 2 });
+    this.placeCache = out;
+    return out;
+  }
+  private placeCache?: { p: XY; name: string; rank: number }[];
+  private airportCache?: { p: XY; icao: string; kind: string }[];
+  private airports() {
+    if (this.airportCache) return this.airportCache;
+    this.airportCache = (this.sim.pack.spec.airports ?? []).map((a) => ({ p: this.lls(a.lat, a.lon), icao: a.icao, kind: a.kind ?? 'civil' }));
+    return this.airportCache;
+  }
 
   private renderMap() {
-    const sim = this.sim, pack = sim.pack, S = this.skin;
-    const key = [this.w, this.h, this.dpr, this.center.x.toFixed(3), this.center.y.toFixed(3), this.scale.toFixed(3), sim.runway, [...sim.tsaOn].join(','), this.settings.showMva, this.settings.showProcedures, this.settings.brightness].join('|');
+    const sim = this.sim, pack = sim.pack, S = this.skin, o = this.opts;
+    const declutter = this.decluttered;
+    const key = [this.w, this.h, this.dpr, this.center.x.toFixed(3), this.center.y.toFixed(3), this.scale.toFixed(3), sim.runway, [...sim.tsaOn].join(','), [...sim.tsaPending.keys()].join(','), this.settings.showMva, this.settings.showProcedures, this.skinName, o.ringStep, o.showRings, o.mapDetail, declutter, sim.lvp, this.showRuler, sim.utc().slice(0, 2)].join('|');
     if (key === this.mapKey) return;
     this.mapKey = key;
+    this.syncSkinClass();
     const c = this.map;
     if (c.width !== this.canvas.width || c.height !== this.canvas.height) { c.width = this.canvas.width; c.height = this.canvas.height; }
     const ctx = c.getContext('2d')!;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     const range = this.rangeNm();
+    const full = o.mapDetail === 'full';
 
+    // ground: a soft vignette so the frame text and the edges sit a step darker than the centre
     const g = ctx.createRadialGradient(this.w * 0.5, this.h * 0.46, 0, this.w * 0.5, this.h * 0.5, Math.max(this.w, this.h) * 0.8);
     g.addColorStop(0, S.bg1); g.addColorStop(1, S.bg0);
     ctx.fillStyle = g; ctx.fillRect(0, 0, this.w, this.h);
 
-    // relief: contour lines, spot heights and region names
+    // ---- terrain: contours, spot heights and region names (lowest layer)
     ctx.strokeStyle = S.contour; ctx.lineWidth = 0.8;
     for (const l of this.reliefLines()) { this.smooth(ctx, l); ctx.stroke(); }
-    if (this.scale > 3.2) {
+    const terrain = pack.spec.terrain;
+    if (terrain && this.scale > 3.2 && !declutter) {
       ctx.fillStyle = S.contourText; ctx.font = mono(8.5);
-      for (const sp of SPOTS) {
-        const s = this.toS(this.ll(sp.ll[0], sp.ll[1]));
+      for (const sp of terrain.spots) {
+        const s = this.toS(this.ll(sp.lat, sp.lon));
         ctx.beginPath(); ctx.moveTo(s.x, s.y - 3); ctx.lineTo(s.x + 3, s.y + 2); ctx.lineTo(s.x - 3, s.y + 2); ctx.closePath(); ctx.fill();
-        ctx.fillText(sp.t, s.x + 5, s.y + 3);
+        ctx.fillText(sp.text, s.x + 5, s.y + 3);
       }
-      ctx.font = sans(10, 600);
-      for (const a of AREA_NAMES) { const s = this.toS(this.ll(a.ll[0], a.ll[1])); ctx.fillText(a.t, s.x - ctx.measureText(a.t).width / 2, s.y); }
     }
+    if (terrain && !declutter) {
+      ctx.font = sans(10, 600); ctx.fillStyle = S.contourText;
+      for (const a of terrain.regions) { const s = this.toS(this.ll(a.lat, a.lon)); const t = a.name.toUpperCase().split('').join(' '); ctx.fillText(t, s.x - ctx.measureText(t).width / 2, s.y); }
+    }
+
+    // ---- MVA cells: faint fill by altitude, dashed outline, altitude (hundreds of feet) in the top-left corner
     if (this.settings.showMva) {
       for (const m of pack.mva) { this.path(ctx, m.poly); ctx.fillStyle = `${S.mvaFill}${m.alt >= 3500 ? 0.07 : m.alt >= 3000 ? 0.045 : 0.02})`; ctx.fill(); }
       ctx.strokeStyle = S.mva; ctx.lineWidth = 1; ctx.setLineDash([2, 4]);
       for (const m of pack.mva) { this.path(ctx, m.poly); ctx.stroke(); }
       ctx.setLineDash([]);
-      ctx.fillStyle = S.mva; ctx.font = mono(12, 600);
+      ctx.fillStyle = S.mvaText; ctx.font = mono(11, 600);
       for (const m of pack.mva) {
-        const cpt = m.poly.reduce((a, p) => ({ x: a.x + p.x / m.poly.length, y: a.y + p.y / m.poly.length }), { x: 0, y: 0 });
-        const s = this.toS(cpt); ctx.fillText(String(m.alt / 100), s.x - 8, s.y);
+        const scr = m.poly.map((p) => this.toS(p));
+        const vis = scr.filter((s) => this.onScreenPt(s, -4));
+        const at = cornerLabelPoint(vis.length >= 3 ? vis : scr, 14);
+        const t = String(m.alt / 100);
+        ctx.fillText(t, Math.max(6, Math.min(this.w - 24, at.x)), Math.max(34, Math.min(this.h - 8, at.y + 4)));
       }
     }
 
-    // range rings every 5 NM; compass rose on the 25 NM ring unless zoomed far out
+    // ---- range rings and compass rose
     const arp = this.toS({ x: 0, y: 0 });
-    for (let r = 5; r <= 60; r += 5) {
-      ctx.strokeStyle = r % 10 ? S.ring : S.ring10; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.arc(arp.x, arp.y, r * this.scale, 0, Math.PI * 2); ctx.stroke();
-      if (r % 10 === 0) { ctx.fillStyle = S.ringText; ctx.font = mono(10); ctx.fillText(String(r), arp.x + 3, arp.y - r * this.scale - 3); }
+    if (o.showRings) {
+      const step = o.ringStep;
+      for (let r = step; r <= 80; r += step) {
+        const major = (r / step) % 2 === 0;
+        ctx.strokeStyle = major ? S.ring10 : S.ring; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(arp.x, arp.y, r * this.scale, 0, Math.PI * 2); ctx.stroke();
+        if (major || step >= 10) { ctx.fillStyle = S.ringText; ctx.font = mono(10); ctx.fillText(String(r), arp.x + 3, arp.y - r * this.scale - 3); }
+      }
     }
-    if (range <= 40) {
+    if (range <= 40 && !declutter) {
       const roseR = 25 * this.scale, mv = pack.meta.magVar;
       ctx.strokeStyle = S.rose; ctx.fillStyle = S.ringText; ctx.font = mono(10);
       for (let m = 0; m < 360; m += 5) {
@@ -678,53 +897,95 @@ export class Scope {
       }
     }
 
-    // borders, motorways, river
-    for (const l of pack.mapLines) {
+    // ---- lines: motorways under rivers under rail under borders under coast
+    const order: Record<string, number> = { road: 0, river: 1, rail: 2, border: 3, coast: 4 };
+    const lines = [...pack.mapLines].sort((a, b) => (order[a.style] ?? 0) - (order[b.style] ?? 0));
+    for (const l of lines) {
+      if (l.style === 'rail' && !full) continue;
       if (l.style === 'border') { ctx.strokeStyle = S.border; ctx.lineWidth = 1; ctx.setLineDash([10, 4, 2, 4]); }
-      else if (l.style === 'road') { ctx.strokeStyle = S.road; ctx.lineWidth = 2.2; ctx.setLineDash([]); }
-      else { ctx.strokeStyle = S.river; ctx.lineWidth = 1.6; ctx.setLineDash([]); }
+      else if (l.style === 'road') { ctx.strokeStyle = S.road; ctx.lineWidth = this.scale > 6 ? 2.4 : 1.8; ctx.setLineDash([]); }
+      else if (l.style === 'rail') { ctx.strokeStyle = S.rail; ctx.lineWidth = 1; ctx.setLineDash([6, 3]); }
+      else if (l.style === 'coast') { ctx.strokeStyle = S.coast; ctx.lineWidth = 1.4; ctx.setLineDash([]); }
+      else { ctx.strokeStyle = S.river; ctx.lineWidth = this.scale > 6 ? 1.8 : 1.3; ctx.setLineDash([]); }
       this.path(ctx, l.pts, false); ctx.stroke();
     }
     ctx.setLineDash([]);
-    ctx.font = sans(10.5, 600); ctx.fillStyle = S.road.replace(/0\.\d+\)$/, '0.32)');
-    for (const l of pack.mapLines) if (l.style === 'road' && this.scale > 5) { const mid = l.pts[Math.floor(l.pts.length / 2)]; const s = this.toS(mid); ctx.fillText(l.name, s.x + 4, s.y + 12); }
-    ctx.font = sans(11); ctx.fillStyle = S.town;
-    for (const [, f] of pack.fixes) if (f.kind === 'town') { const s = this.toS(f.p); ctx.fillText(f.note ?? f.id, s.x + 4, s.y - 3); ctx.fillRect(s.x - 1.5, s.y - 1.5, 3, 3); }
+    if (this.scale > 5 && !declutter) {
+      ctx.font = sans(10.5, 600); ctx.fillStyle = S.roadText;
+      for (const l of pack.mapLines) if (l.style === 'road') { const mid = l.pts[Math.floor(l.pts.length / 2)]; const s = this.toS(mid); ctx.fillText(l.name, s.x + 4, s.y + 12); }
+      ctx.font = sans(10, 400); ctx.fillStyle = S.river;
+      for (const l of pack.mapLines) if (l.style === 'river' && l.pts.length > 2) { const mid = l.pts[Math.floor(l.pts.length / 3)]; const s = this.toS(mid); ctx.fillText(l.name, s.x - 6, s.y - 5); }
+    }
 
-    // TMA and CTR
-    ctx.strokeStyle = S.tma; ctx.lineWidth = 1; ctx.setLineDash([7, 6]); this.path(ctx, pack.tma.poly); ctx.stroke(); ctx.setLineDash([]);
-    // published TMA sub-areas (Two to Five), fainter; the night-only ones only when they are active (2200-0500 UTC)
+    // ---- places: rank 1 always, rank 2 from 40 NM range, rank 3 when zoomed in (and never when decluttered)
+    for (const pl of this.places()) {
+      if (pl.rank === 2 && (range > 42 || !full || (declutter && range > 25))) continue;
+      if (pl.rank === 3 && (this.scale < 6.5 || declutter || !full)) continue;
+      const s = this.toS(pl.p);
+      if (!this.onScreenPt(s)) continue;
+      const col = pl.rank === 1 ? S.town1 : pl.rank === 2 ? S.town2 : S.town3;
+      const r = pl.rank === 1 ? 2.2 : pl.rank === 2 ? 1.7 : 1.3;
+      ctx.fillStyle = col; ctx.fillRect(s.x - r, s.y - r, r * 2, r * 2);
+      ctx.font = sans(pl.rank === 1 ? 12 : pl.rank === 2 ? 11 : 10, pl.rank === 1 ? 500 : 400);
+      ctx.fillText(pl.name, s.x + 5, s.y - 3);
+    }
+
+    // ---- other aerodromes: a circle with a runway bar (military: a second ring), code beside it
+    if (full && !(declutter && this.scale < 5)) for (const ap of this.airports()) {
+      const s = this.toS(ap.p);
+      if (!this.onScreenPt(s)) continue;
+      ctx.strokeStyle = S.airport; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(s.x, s.y, 4, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(s.x - 6, s.y); ctx.lineTo(s.x + 6, s.y); ctx.stroke();
+      if (ap.kind === 'mil') { ctx.beginPath(); ctx.arc(s.x, s.y, 6.5, 0, Math.PI * 2); ctx.stroke(); }
+      if (ap.kind === 'glider') { ctx.beginPath(); ctx.moveTo(s.x, s.y - 4); ctx.lineTo(s.x, s.y + 4); ctx.stroke(); }
+      if (this.scale > 3 && !declutter) { ctx.fillStyle = S.airportText; ctx.font = mono(9.5, 500); ctx.fillText(ap.icao, s.x + 8, s.y + 3.5); }
+    }
+
+    // ---- TMA and CTR with class-specific fills (A to C a thin wash, D a little more, E/F/G almost none)
+    const clsAlpha = (cls?: string) => (cls === 'D' ? 1.6 : cls === 'E' || cls === 'F' || cls === 'G' ? 0.5 : 1);
+    this.path(ctx, pack.tma.poly); ctx.fillStyle = withAlpha(S.tmaFill, 0.018 * clsAlpha(pack.tma.cls)); ctx.fill();
+    ctx.strokeStyle = S.tma; ctx.lineWidth = 1; ctx.setLineDash([7, 6]); ctx.stroke(); ctx.setLineDash([]);
+    // published TMA sub-areas, fainter; the night-only ones only when they are active (2200-0500 UTC)
     if (pack.tmaParts?.length) {
-      const hhmm = Number(this.sim.utc().slice(0, 5).replace(':', ''));
+      const hhmm = Number(sim.utc().slice(0, 5).replace(':', ''));
       const night = hhmm >= 2200 || hhmm < 500;
-      ctx.save(); ctx.globalAlpha = 0.55; ctx.setLineDash([3, 6]);
+      ctx.strokeStyle = S.tmaPart; ctx.setLineDash([3, 6]);
       for (const part of pack.tmaParts) {
         if (part.name === pack.tma.name) continue;
         const nightOnly = /2200/.test(part.hours ?? '');
         if (nightOnly && !night) continue;
         this.path(ctx, part.poly); ctx.stroke();
       }
-      ctx.restore(); ctx.setLineDash([]);
+      ctx.setLineDash([]);
     }
-    ctx.strokeStyle = S.ctr; ctx.lineWidth = 1.2; this.path(ctx, pack.ctr.poly); ctx.stroke();
-    // TSAs, labelled at the centroid with their vertical limits
+    this.path(ctx, pack.ctr.poly); ctx.fillStyle = withAlpha(S.ctrFill, 0.035 * clsAlpha(pack.ctr.cls)); ctx.fill();
+    ctx.strokeStyle = S.ctr; ctx.lineWidth = 1.2; ctx.stroke();
+    if (this.scale > 4 && !declutter) {
+      ctx.font = mono(9, 500); ctx.fillStyle = S.tma;
+      const sc = cornerLabelPoint(pack.ctr.poly.map((p) => this.toS(p)), 12);
+      ctx.fillText(`${pack.ctr.name}${pack.ctr.cls ? ' ' + pack.ctr.cls : ''}`, sc.x, sc.y + 3);
+    }
+    // reserved areas (TSA, TRA, ED-R): active ones filled and hatched, pending ones dashed in the active colour, the rest faint
     for (const t of pack.tsas) {
-      const on = sim.tsaOn.has(t.name);
+      const on = sim.tsaOn.has(t.name), pending = !on && sim.tsaPending.has(t.name);
       this.path(ctx, t.poly);
       if (on) { ctx.fillStyle = S.tsaFill; ctx.fill(); this.hatch(ctx, t.poly, S.tsaOn); }
-      ctx.strokeStyle = on ? S.tsaOn : S.tsaOff; ctx.lineWidth = on ? 1.6 : 1; ctx.setLineDash(on ? [] : [3, 5]); ctx.stroke(); ctx.setLineDash([]);
+      ctx.strokeStyle = on || pending ? S.tsaOn : S.tsaOff; ctx.lineWidth = on ? 1.6 : 1; ctx.setLineDash(on ? [] : pending ? [6, 4] : [3, 5]); ctx.stroke(); ctx.setLineDash([]);
       const cpt = t.poly.reduce((a, p) => ({ x: a.x + p.x / t.poly.length, y: a.y + p.y / t.poly.length }), { x: 0, y: 0 });
       const s = this.toS(cpt);
-      ctx.fillStyle = on ? S.tsaOn : S.tsaOff;
+      ctx.fillStyle = on || pending ? S.tsaOn : S.tsaOff;
       ctx.font = mono(10.5, on ? 600 : 500);
-      const n = `${t.name}${on ? ' ACT' : ''}`;
+      const n = `${t.name}${on ? ' ACT' : pending ? ' PENDING' : ''}`;
       ctx.fillText(n, s.x - ctx.measureText(n).width / 2, s.y - 2);
-      ctx.font = mono(9.5);
-      const v = `${this.lvlTag(t.floor)}–${this.lvlTag(t.ceiling)}`;
-      ctx.fillText(v, s.x - ctx.measureText(v).width / 2, s.y + 10);
+      if (!declutter) {
+        ctx.font = mono(9.5);
+        const v = `${this.lvlTag(t.floor)} - ${this.lvlTag(t.ceiling)}`;
+        ctx.fillText(v, s.x - ctx.measureText(v).width / 2, s.y + 10);
+      }
     }
 
-    // procedures and holds; names along the paths when zoomed in
+    // ---- procedures as faint spines, named at their first fix; holds as racetracks with the inbound track
     if (this.settings.showProcedures) {
       ctx.lineWidth = 1;
       ctx.strokeStyle = S.proc;
@@ -736,28 +997,45 @@ export class Scope {
       ctx.setLineDash([]);
       ctx.strokeStyle = S.hold; ctx.lineWidth = 1.1;
       for (const h of pack.holds) this.racetrack(ctx, h.p, h.inbound, h.turn);
-      if (range < 20) {
+      if (this.scale > 3.4 && !declutter) {
+        ctx.font = mono(9.5, 500); ctx.fillStyle = S.holdText;
+        for (const h of pack.holds) {
+          const mag = Math.round(norm360(h.inbound - pack.meta.magVar)) || 360;
+          const mid = move(h.p, h.inbound + 180, 1.75);
+          const s = this.toS(move(mid, h.inbound + (h.turn === 'R' ? -90 : 90), 0.9));
+          const t = `${String(mag).padStart(3, '0')}°`;
+          ctx.fillText(t, s.x - ctx.measureText(t).width / 2, s.y + 3);
+        }
+      }
+      if (range < 30 && !declutter) {
         ctx.font = mono(9.5, 500); ctx.fillStyle = S.procText;
         const used: Rect[] = [];
+        const named = new Map<string, string[]>();
         for (const t of [...arrs, ...sids]) {
-          let bi = -1, bl = 0;
-          for (let i = 0; i < t.legs.length - 1; i++) { const L = dist(t.legs[i].p, t.legs[i + 1].p); if (L > bl) { bl = L; bi = i; } }
-          if (bi < 0 || bl * this.scale < ctx.measureText(t.name).width + 30) continue;
-          const a = this.toS(t.legs[bi].p), b = this.toS(t.legs[bi + 1].p);
-          const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-          const box = { x: mx - 40, y: my - 10, w: 80, h: 20 };
+          const first = t.legs[0];
+          if (!first) continue;
+          // SIDs are named at the last fix instead (their first fix is the runway)
+          const at = pack.sids.includes(t as never) ? t.legs[t.legs.length - 1] : first;
+          const k = at.fix;
+          const g = named.get(k) ?? [];
+          if (!g.includes(t.name)) g.push(t.name);
+          named.set(k, g);
+        }
+        for (const [fix, names] of named) {
+          const f = pack.fixes.get(fix);
+          if (!f) continue;
+          const s = this.toS(f.p);
+          const text = names.length > 2 ? `${names.slice(0, 2).join(' ')} +${names.length - 2}` : names.join(' ');
+          const w = ctx.measureText(text).width;
+          const box = { x: s.x + 8, y: s.y + 7, w, h: 11 };
           if (used.some((u) => overlap(u, box) > 0)) continue;
           used.push(box);
-          let ang = Math.atan2(b.y - a.y, b.x - a.x);
-          if (ang > Math.PI / 2) ang -= Math.PI; else if (ang < -Math.PI / 2) ang += Math.PI;
-          ctx.save(); ctx.translate(mx, my); ctx.rotate(ang);
-          ctx.fillText(t.name, -ctx.measureText(t.name).width / 2, -4);
-          ctx.restore();
+          ctx.fillText(text, box.x, box.y + 9);
         }
       }
     }
 
-    // extended centrelines: active runway with 1 NM ticks, the opposite end faint
+    // ---- extended centrelines: active runway with 1 NM ticks (longer every 5), the opposite end faint
     const rw = sim.rwy;
     const fin = (r: typeof rw, d: number) => this.toS(move(r.thr, r.crs + 180, d));
     for (const [, r] of pack.runways) {
@@ -767,12 +1045,12 @@ export class Scope {
     }
     ctx.strokeStyle = S.centreline; ctx.lineWidth = 1;
     ctx.setLineDash([5, 5]);
-    { const a = fin(rw, 0), b = fin(rw, 18); ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); }
+    { const a = fin(rw, 0), b = fin(rw, 20); ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); }
     ctx.setLineDash([]);
-    ctx.font = mono(9.5); ctx.fillStyle = S.ringText;
-    for (let d = 1; d <= 18; d++) {
+    ctx.strokeStyle = S.tick; ctx.font = mono(9.5); ctx.fillStyle = S.ringText;
+    for (let d = 1; d <= 20; d++) {
       const cpt = move(rw.thr, rw.crs + 180, d);
-      const len = d % 5 === 0 ? 0.6 : 0.25;
+      const len = d % 5 === 0 ? 0.6 : d % 2 === 0 || this.scale > 8 ? 0.3 : 0.18;
       const p1 = this.toS(move(cpt, rw.crs + 90, len)), p2 = this.toS(move(cpt, rw.crs - 90, len));
       ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
       if (d % 5 === 0 && this.scale > 6 && !this.showRuler) { const lp = this.toS(move(cpt, rw.crs + 90, 1)); ctx.fillText(String(d), lp.x - 4, lp.y + 3); }
@@ -792,23 +1070,35 @@ export class Scope {
     ctx.font = mono(10.5, 600); ctx.fillStyle = S.fixText;
     const thrS = this.toS(move(rw.thr, rw.crs + 180, 0.6)); ctx.fillText(rw.id, thrS.x + 6, thrS.y + 12);
 
-    const key2 = new Set(['ALHUV', rw.ifFix, rw.faf]);
-    const showText = this.scale > 4;
+    // ---- fixes: triangles, VOR hexagons, NDB circles, VFR squares; key fixes brighter and always named
+    const key2 = this.keyFixes();
+    const showText = this.scale > 4 && !(declutter && this.scale < 7);
     for (const f of this.visibleFixes()) {
       const s = this.toS(f.p);
-      if (s.x < -30 || s.y < -30 || s.x > this.w + 30 || s.y > this.h + 30) continue;
+      if (!this.onScreenPt(s)) continue;
       const k = key2.has(f.id);
       ctx.strokeStyle = k ? S.fixKey : S.fix; ctx.lineWidth = k ? 1.3 : 1;
       ctx.beginPath();
       if (f.kind === 'vor') { for (let i = 0; i < 6; i++) { const a = (i / 6) * Math.PI * 2; const px = s.x + Math.cos(a) * 5.5, py = s.y + Math.sin(a) * 5.5; if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py); } ctx.closePath(); ctx.moveTo(s.x + 1, s.y); ctx.arc(s.x, s.y, 1, 0, Math.PI * 2); }
+      else if (f.kind === 'ndb') { ctx.arc(s.x, s.y, 4.5, 0, Math.PI * 2); ctx.moveTo(s.x + 1.2, s.y); ctx.arc(s.x, s.y, 1.2, 0, Math.PI * 2); }
       else if (f.kind === 'vfr') { ctx.rect(s.x - 3, s.y - 3, 6, 6); }
       else { ctx.moveTo(s.x, s.y - 5); ctx.lineTo(s.x + 4.5, s.y + 3.2); ctx.lineTo(s.x - 4.5, s.y + 3.2); ctx.closePath(); }
       ctx.stroke();
       if (showText || k) { ctx.fillStyle = k ? S.fixKey : S.fixText; ctx.font = mono(10, k ? 600 : 400); ctx.fillText(f.id, s.x + 7, s.y + 3.5); }
     }
+
+    // ---- low visibility: a haze over the field when LVP are in force
+    if (sim.lvp) {
+      const r = 7 * this.scale;
+      const hz = ctx.createRadialGradient(arp.x, arp.y, 0, arp.x, arp.y, r);
+      hz.addColorStop(0, `${S.haze}0.16)`); hz.addColorStop(0.55, `${S.haze}0.08)`); hz.addColorStop(1, `${S.haze}0)`);
+      ctx.fillStyle = hz; ctx.beginPath(); ctx.arc(arp.x, arp.y, r, 0, Math.PI * 2); ctx.fill();
+      ctx.font = mono(9.5, 600); ctx.fillStyle = S.warn;
+      ctx.fillText('LVP', arp.x - 10, arp.y + r * 0.72);
+    }
   }
 
-  /** Published holding pattern: inbound leg of one minute (~3.5 NM) into the fix. */
+  /** Published holding pattern: inbound leg of one minute (~3.5 NM) into the fix, with an arrow on the inbound leg. */
   private racetrack(ctx: CanvasRenderingContext2D, fix: XY, inbound: number, turn: 'L' | 'R') {
     const leg = 3.5, R = 1.3, side = turn === 'R' ? 1 : -1;
     const back = move(fix, inbound + 180, leg);
@@ -825,6 +1115,11 @@ export class Scope {
     const a2 = Math.atan2(S3.y - c2.y, S3.x - c2.x), a2e = Math.atan2(S2.y - c2.y, S2.x - c2.x);
     ctx.arc(c2.x, c2.y, rr, a2, a2e, side < 0);
     ctx.stroke();
+    // arrow on the inbound leg
+    const m = this.toS(move(fix, inbound + 180, 1.2));
+    const a = Math.atan2(S1.y - m.y, S1.x - m.x);
+    ctx.beginPath(); ctx.moveTo(m.x, m.y); ctx.lineTo(m.x - Math.cos(a - 0.5) * 5, m.y - Math.sin(a - 0.5) * 5);
+    ctx.moveTo(m.x, m.y); ctx.lineTo(m.x - Math.cos(a + 0.5) * 5, m.y - Math.sin(a + 0.5) * 5); ctx.stroke();
   }
 
   private hatch(ctx: CanvasRenderingContext2D, pts: XY[], color: string) {
@@ -839,9 +1134,9 @@ export class Scope {
   }
 
   // ================= weather radar returns =================
-  /** Procedural precipitation texture: fractal noise inside a soft cell, banded into three intensities. */
+  /** Procedural precipitation texture: fractal noise inside a soft cell, banded into two intensities (moderate, heavy) like a weather radar overlay. */
   private wxTexture(i: number): HTMLCanvasElement {
-    const tk = `${i}:${this.settings.brightness}`;
+    const tk = `${i}:${this.skinName}`;
     const cached = this.wxTex.get(tk);
     if (cached) return cached;
     const N = 128;
@@ -868,7 +1163,7 @@ export class Scope {
       const fall = Math.max(0, 1 - (dx * dx + dy * dy));
       let n = 0; for (const o of octs) n += val(o, u, v) * o.w;
       const I = fall * (0.35 + n * 0.95);
-      const lvl = I > 0.78 ? 2 : I > 0.55 ? 1 : I > 0.3 ? 0 : -1;
+      const lvl = I > 0.74 ? 2 : I > 0.42 ? 1 : -1;
       const k = (y * N + x) * 4;
       if (lvl < 0) { img.data[k + 3] = 0; continue; }
       const col = cols[lvl];
@@ -881,6 +1176,7 @@ export class Scope {
   private drawWeather() {
     const { ctx, sim } = this;
     const S = this.skin;
+    if (!this.opts.showWeather || !sim.storms.length) return;
     ctx.imageSmoothingEnabled = true;
     sim.storms.forEach((st, i) => {
       const s = this.toS(st.p);
@@ -904,8 +1200,27 @@ export class Scope {
       ctx.moveTo(e.x, e.y); ctx.lineTo(e.x - Math.cos(ang - 0.4) * 8, e.y - Math.sin(ang - 0.4) * 8);
       ctx.moveTo(e.x, e.y); ctx.lineTo(e.x - Math.cos(ang + 0.4) * 8, e.y - Math.sin(ang + 0.4) * 8);
       ctx.stroke();
-      if (L > 30) this.haloText(`+10 · ${Math.round(v)} kt`, e.x + st.r * this.scale * 0.72, e.y - st.r * this.scale * 0.72, mono(9.5, 500), S.wxLine);
+      if (L > 30) this.haloText(`+10 min ${Math.round(v)} kt`, e.x + st.r * this.scale * 0.72, e.y - st.r * this.scale * 0.72, mono(9.5, 500), S.wxLine);
     });
+  }
+
+  /** Optional sweep: one turn per radar update, a faint trailing wedge. Off with reduced motion. */
+  private drawSweep(now: number) {
+    if (!this.opts.sweep || this.reduceMotion) return;
+    const { ctx, sim } = this;
+    const S = this.skin;
+    const arp = this.toS({ x: 0, y: 0 });
+    const period = sim.radarRefresh * 1000;
+    const a = ((now % period) / period) * Math.PI * 2 - Math.PI / 2;
+    const R = Math.hypot(this.w, this.h);
+    const wedge = ctx.createConicGradient ? ctx.createConicGradient(a, arp.x, arp.y) : undefined;
+    if (wedge) {
+      wedge.addColorStop(0, `${S.sweep}0.10)`); wedge.addColorStop(0.08, `${S.sweep}0.0)`); wedge.addColorStop(1, `${S.sweep}0)`);
+      ctx.fillStyle = wedge;
+      ctx.beginPath(); ctx.moveTo(arp.x, arp.y); ctx.arc(arp.x, arp.y, R, a - Math.PI * 0.16, a + 0.01); ctx.closePath(); ctx.fill();
+    }
+    ctx.strokeStyle = `${S.sweep}0.35)`; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(arp.x, arp.y); ctx.lineTo(arp.x + Math.cos(a) * R, arp.y + Math.sin(a) * R); ctx.stroke();
   }
 
   // ================= prediction cache =================
@@ -946,6 +1261,8 @@ export class Scope {
   draw(now: number) {
     const { ctx, sim } = this;
     const S = this.skin;
+    this.frameNow = now; this.frameCount++;
+    this.updatePlots(now);
     if (this.anim) {
       const a = this.anim, k = Math.min(1, (performance.now() - a.t0) / a.dur), e = 1 - Math.pow(1 - k, 3);
       this.scale = a.s0 + (a.s1 - a.s0) * e;
@@ -961,8 +1278,12 @@ export class Scope {
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
 
     this.drawWeather();
+    this.drawSweep(now);
     this.refreshPredictions();
     this.updateCallers(now);
+    const declutter = this.decluttered;
+    const rangeNow = this.rangeNm();
+    if (rangeNow !== this.lastRange) { this.lastRange = rangeNow; this.ev.rangeChanged?.(rangeNow); }
 
     const obstacles: Rect[] = [];
     if (this.showProfile) obstacles.push({ x: 0, y: this.h - this.profileH() - 10, w: this.w, h: this.profileH() + 10 });
@@ -975,7 +1296,7 @@ export class Scope {
     const flash = Math.floor(now / 500) % 2 === 0;
 
     // ---- track pass 1: classify and position
-    type TR = { ac: Aircraft; s: XY; col: string; urgent: boolean; alerting: boolean; emer: boolean; sel: boolean; next: boolean; queue?: number; stacked: boolean; vEnd: XY };
+    type TR = { ac: Aircraft; s: XY; col: string; urgent: boolean; alerting: boolean; emer: boolean; sel: boolean; next: boolean; queue?: number; stacked: boolean; vEnd: XY; filtered: boolean };
     const callers = sim.callers().filter((a) => a.state === 'assumed' && sim.t >= (a.awaitingSince ?? 0));
     const qpos = new Map(callers.map((a, i) => [a.cs, i + 1]));
     const holdGroups = new Map<string, Aircraft[]>();
@@ -996,7 +1317,10 @@ export class Scope {
       if (urgent && (ac.state === 'assumed' || emer)) col = S.urgent;
       const sel = ac.cs === this.selected;
       const next = ac.cs === this.nextCs;
-      const tr: TR = { ac, s, col, urgent, alerting, emer, sel, next, queue: !next ? qpos.get(ac.cs) : undefined, stacked: stackedFix.has(ac.cs) && !sel && !urgent && !next, vEnd: this.toS(move(pos, ac.trk, (ac.gs * this.settings.speedVectorMin) / 60)) };
+      // level filter: traffic outside the band is dimmed, unless it needs you
+      const filtered = !passesLevelFilter(ac.alt, this.opts.levelFilter) && !sel && !urgent && !next && !qpos.has(ac.cs);
+      if (filtered) col = S.filtered;
+      const tr: TR = { ac, s, col, urgent, alerting, emer, sel, next, queue: !next ? qpos.get(ac.cs) : undefined, stacked: stackedFix.has(ac.cs) && !sel && !urgent && !next, vEnd: this.toS(move(pos, ac.trk, (ac.gs * this.settings.speedVectorMin) / 60)), filtered };
       if (s.x < -40 || s.y < -40 || s.x > this.w + 40 || s.y > this.h + 40) { if (sel || emer || (qpos.has(ac.cs) && ac.state === 'assumed')) offscreen.push(tr); }
       if (s.x < -200 || s.y < -200 || s.x > this.w + 200 || s.y > this.h + 200) continue;
       this.symbols.set(ac.cs, s);
@@ -1021,7 +1345,7 @@ export class Scope {
     // ---- ghosts
     if (this.showGhosts) for (const tr of trs) {
       const pts = this.pred.get(tr.ac.cs);
-      if (!pts || tr.sel) continue;
+      if (!pts || tr.sel || tr.filtered) continue;
       this.drawGhosts(tr.ac, pts, tr.col, 120, false, obstacles);
     }
     if (sel && this.predSel && !this.hdg) {
@@ -1030,8 +1354,10 @@ export class Scope {
     }
 
     // ---- conflicts: separation bubbles and CPA
-    const pills: { text: string; mid: XY; box?: Rect }[] = [];
-    for (const al of alerts) {
+    const pills: { text: string; mid: XY; box?: Rect; d: number }[] = [];
+    // the picture shows at most six conflict readouts (nearest first); the safety-net list has them all
+    const alertsShown = alerts.length > 6 ? [...alerts].sort((p, q) => { const A = sim.find(p.a), B = sim.find(p.b), C = sim.find(q.a), D = sim.find(q.b); return (A && B ? dist(A.p, B.p) : 99) - (C && D ? dist(C.p, D.p) : 99); }).slice(0, 6) : alerts;
+    for (const al of alertsShown) {
       const A = sim.find(al.a), B = sim.find(al.b);
       if (!A || !B) continue;
       const pa = this.toS(this.plot(A)), pb = this.toS(this.plot(B));
@@ -1054,7 +1380,7 @@ export class Scope {
         mid = { x: (ca.x + cb.x) / 2, y: (ca.y + cb.y) / 2 };
       }
       const d = cpa ? cpa.d : dist(A.p, B.p), v = cpa ? cpa.v : Math.abs(A.alt - B.alt), t = cpa ? cpa.t : 0;
-      pills.push({ text: `${d.toFixed(1)} NM · ${Math.round(v / 100) * 100} ft · ${t > 0 ? fmtT(t) : 'now'}`, mid });
+      pills.push({ text: `${d.toFixed(1)} NM  ${Math.round(v / 100) * 100} ft  ${t > 0 ? fmtT(t) : 'now'}`, mid, d });
     }
     ctx.font = mono(11, 600);
     const cw11 = ctx.measureText('M').width;
@@ -1075,9 +1401,12 @@ export class Scope {
     // ---- RBLs under the tracks
     this.drawRbls();
 
+    // ---- trail replay under the tracks
+    this.drawReplay(now);
+
     // ---- tracks: history, vector, symbol (emergencies last)
     trs.sort((a, b) => Number(a.emer) - Number(b.emer) || Number(a.sel) - Number(b.sel));
-    for (const tr of trs) this.drawTrack(tr.ac, tr.s, tr.col, tr.vEnd, tr.emer, tr.sel, now);
+    for (const tr of trs) this.drawTrack(tr.ac, tr.s, tr.col, tr.vEnd, tr.emer, tr.sel, now, tr.filtered);
 
     // ---- hold stack chips
     this.stackHits = [];
@@ -1114,6 +1443,9 @@ export class Scope {
     this.labels = new Map();
     this.chips = [];
     const placedLabels: { tr: TR; box: Rect; lines: Seg[][]; armed?: { chips: Chip[]; head: Seg[]; detail: Seg[]; hh: number } }[] = [];
+    this.scratchLeaders.length = 0;
+    this.scratchSyms.length = 0;
+    for (const [, sy] of this.symbols) this.scratchSyms.push(sy);
     for (const tr of byPrio) {
       const ac = tr.ac;
       if (!tr.sel) placePills();
@@ -1128,7 +1460,9 @@ export class Scope {
       } else {
         lines = this.labelLines(ac, false);
         if (this.wxAhead.has(ac.cs)) lines[0].push({ t: ' WX', c: 'warn', b: true });
-        if ((this.scale < 4.6 || this.rangeNm() > 40) && !tr.urgent && !tr.next) lines = lines.slice(0, 2);
+        const prioTrack = tr.urgent || tr.next || tr.alerting || tr.emer;
+        if (tr.filtered) lines = [[lines[0][0]], lines[1].slice(0, 1)];
+        else if ((this.scale < 4.6 || rangeNow > 40 || declutter) && !prioTrack) lines = lines.slice(0, 2);
         const wch = Math.max(...lines.map((l) => this.segW(l, 1)));
         const bw = wch * cw + 6, bh = lines.length * lh + 4;
         // room for the queue number in front of the callsign
@@ -1137,6 +1471,7 @@ export class Scope {
         if (qw) { box = { ...box, x: box.x + qw, w: box.w - qw }; if (!this.userLabels.has(ac.cs)) ac.label = { dx: ac.label.dx + qw, dy: ac.label.dy }; }
       }
       obstacles.push(box);
+      this.scratchLeaders.push({ a: tr.s, b: boxEdgePoint(tr.s, box) });
       this.labels.set(ac.cs, { ...box, lines: armed ? 1 + armed.chips.length : lines.length, lh });
       placedLabels.push({ tr, box, lines, armed });
     }
@@ -1164,6 +1499,7 @@ export class Scope {
 
 
     this.drawMarks(now);
+    this.drawCursorReadout();
     if (this.showProfile) this.drawProfile();
     this.drawHdgDrag();
     this.drawLadder();
@@ -1176,7 +1512,9 @@ export class Scope {
     // frame text and scale bar
     const head = this.w < 560 ? `APP ${sim.pack.meta.appFreq}  ${sim.runway}  ${sim.atis}  Q${sim.qnh}` : `${sim.pack.meta.appCallsign.toUpperCase()} ${sim.pack.meta.appFreq}  RWY ${sim.runway}  ATIS ${sim.atis}  QNH ${sim.qnh}  TL${String(sim.tl).padStart(3, '0')}`;
     this.haloText(head, 10, 18, mono(11), S.ringText);
-    const rng = this.w < 560 ? `${this.rblMode ? 'RBL ' : ''}${this.rangeNm()} NM` : `${this.rblMode ? 'RBL  ' : ''}RANGE ${this.rangeNm()}  ${sim.radarRefresh}s`;
+    const lf = this.opts.levelFilter;
+    const lfText = lf && (lf.lo !== undefined || lf.hi !== undefined) ? `  LVL ${lf.lo !== undefined ? Math.round(lf.lo / 100) : '---'}/${lf.hi !== undefined ? Math.round(lf.hi / 100) : '---'}` : '';
+    const rng = this.w < 560 ? `${this.rblMode ? 'RBL ' : ''}${rangeNow} NM` : `${this.rblMode ? 'RBL  ' : ''}RANGE ${rangeNow}  RINGS ${this.opts.ringStep}  ${sim.radarRefresh}s${lfText}`;
     ctx.font = mono(11);
     this.haloText(rng, this.w - ctx.measureText(rng).width - 10, 18, mono(11), this.rblMode ? S.rbl : S.ringText);
     const nm = this.scale > 14 ? 2 : this.scale > 6 ? 5 : 10;
@@ -1230,53 +1568,62 @@ export class Scope {
     }
     return this.resv.r;
   }
-  private placeLabel(tr: { ac: Aircraft; s: XY; sel: boolean; vEnd: XY }, bw: number, bh: number, obstacles: Rect[], prev: Rect | undefined, armed: boolean): Rect {
+  private placeLabel(tr: { ac: Aircraft; s: XY; sel: boolean; vEnd: XY; emer?: boolean; alerting?: boolean; next?: boolean }, bw: number, bh: number, obstacles: Rect[], prev: Rect | undefined, armed: boolean): Rect {
     const { ac, s } = tr;
     if (this.userLabels.has(ac.cs)) return { x: s.x + ac.label.dx, y: s.y + ac.label.dy, w: bw, h: bh };
-    const ring1 = [[16, -bh - 8], [16, 8], [-bw - 16, -bh - 8], [-bw - 16, 8], [18, -bh / 2], [-bw - 18, -bh / 2], [-bw / 2, -bh - 18], [-bw / 2, 18]];
-    const ring2 = [[40, -bh - 30], [40, 30], [-bw - 40, -bh - 30], [-bw - 40, 30], [50, -bh / 2], [-bw - 50, -bh / 2], [-bw / 2, -bh - 50], [-bw / 2, 50]];
-    const vx = tr.vEnd.x - s.x, vy = tr.vEnd.y - s.y;
-    let best = { dx: ring1[0][0], dy: ring1[0][1] }, bs = Infinity;
-    const offPen = armed || tr.sel ? 3000 : 300;
-    [...ring1, ...ring2].forEach(([dx, dy], i) => {
-      const b = { x: s.x + dx, y: s.y + dy, w: bw, h: bh };
-      let sc = (i % 8) * 3 + (i >= 8 ? 60 : 0);
-      for (const o of obstacles) sc += overlap(b, o);
-      for (const [, sy] of this.symbols) if ((sy.x !== s.x || sy.y !== s.y) && inRect(sy.x, sy.y, b, 8)) sc += 500;
-      // keep clear of own speed vector and ghost path
-      if ((dx + bw / 2 > 0 ? vx > 0 : vx < 0) && (dy + bh / 2 < 0 ? vy < 0 : vy > 0)) sc += 160;
-      sc += this.offCost(b, offPen);
-      if (this.showProfile && b.y + bh > this.h - this.profileH() - 10) sc += offPen / 2;
-      if (prev && Math.abs(prev.x - b.x) < 24 && Math.abs(prev.y - b.y) < 24) sc -= 90;
-      if (sc < bs) { bs = sc; best = { dx, dy }; }
-    });
-    ac.label = best;
-    return { x: s.x + best.dx, y: s.y + best.dy, w: bw, h: bh };
+    const priority = tr.sel || armed ? 0 : tr.emer ? 1 : tr.alerting ? 2 : tr.next ? 3 : 5;
+    const bounds = this.scratchBounds;
+    bounds.w = this.w; bounds.h = this.showProfile ? this.h - this.profileH() - 10 : this.h; bounds.top = 24; bounds.reserved = this.reservedRects();
+    const r = solveLabel({ s, w: bw, h: bh, obstacles, symbols: this.scratchSyms, leaders: this.scratchLeaders, vEnd: tr.vEnd, bounds, prev: prev ? { dx: prev.x - s.x, dy: prev.y - s.y } : undefined, priority });
+    ac.label.dx = r.dx; ac.label.dy = r.dy;
+    return { x: s.x + r.dx, y: s.y + r.dy, w: bw, h: bh };
   }
+  private scratchBounds: { w: number; h: number; top: number; reserved?: Rect[] } = { w: 0, h: 0, top: 24 };
 
-  private drawTrack(ac: Aircraft, s: XY, col: string, vEnd: XY, emer: boolean, sel: boolean, now: number) {
+  private drawTrack(ac: Aircraft, s: XY, col: string, vEnd: XY, emer: boolean, sel: boolean, now: number, filtered = false) {
     const { ctx } = this;
     const S = this.skin;
     const pos = this.plot(ac);
-    ctx.fillStyle = col;
     const hist = ac.history;
-    for (let i = 0; i < hist.length - 1; i++) {
-      const hs = this.toS(hist[i]); ctx.globalAlpha = 0.16 + (0.5 * (i + 1)) / (hist.length - 1);
-      ctx.fillRect(hs.x - 1.2, hs.y - 1.2, 2.4, 2.4);
+    // history: a fading tail of the last radar plots (their spacing is the ground speed)
+    const n = Math.min(this.opts.trailLen, hist.length - 1);
+    if (n > 0 && !filtered) {
+      ctx.fillStyle = col;
+      for (let i = hist.length - 1 - n, k = 0; i < hist.length - 1; i++, k++) {
+        const p = hist[i];
+        const hx = this.w / 2 + (p.x - this.center.x) * this.scale, hy = this.h / 2 - (p.y - this.center.y) * this.scale;
+        const d = tailDot(k, n);
+        ctx.globalAlpha = d.alpha;
+        ctx.fillRect(hx - d.r, hy - d.r, d.r * 2, d.r * 2);
+      }
+      ctx.globalAlpha = 1;
     }
-    ctx.globalAlpha = 1;
+    // the latest plot, when the symbol is still on its way there
+    if (this.opts.smooth && !filtered) {
+      const lp = hist[hist.length - 1];
+      if (lp && (Math.abs(lp.x - pos.x) > 1e-4 || Math.abs(lp.y - pos.y) > 1e-4)) {
+        const gx = this.w / 2 + (lp.x - this.center.x) * this.scale, gy = this.h / 2 - (lp.y - this.center.y) * this.scale;
+        ctx.strokeStyle = S.ghost; ctx.lineWidth = 1;
+        ctx.strokeRect(gx - 3, gy - 3, 6, 6);
+      }
+    }
     const vmin = this.settings.speedVectorMin;
-    ctx.strokeStyle = col; ctx.lineWidth = 1;
+    ctx.strokeStyle = col; ctx.lineWidth = filtered ? 0.8 : 1; ctx.fillStyle = col;
     ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(vEnd.x, vEnd.y); ctx.stroke();
-    for (let m = 1; m < vmin; m++) { const t = this.toS(move(pos, ac.trk, (ac.gs * m) / 60)); ctx.fillRect(t.x - 1.5, t.y - 1.5, 3, 3); }
-    // symbol: shape by flight rules; heavy = thicker stroke; super (RECAT A) = filled
+    if (!filtered) for (let m = 1; m < vmin; m++) { const t = this.toS(move(pos, ac.trk, (ac.gs * m) / 60)); ctx.fillRect(t.x - 1.5, t.y - 1.5, 3, 3); }
+    // symbol: shape by flight rules; heavy = thicker stroke; super (RECAT A) = filled. The IFR square turns with the track.
     const heavy = ac.perf.wake === 'H' || (ac.perf.wake as string) === 'J';
     const sup = ac.perf.recat === 'A' || (ac.perf.wake as string) === 'J';
     ctx.lineWidth = (ac.state === 'assumed' ? 1.6 : 1.2) + (heavy ? 0.9 : 0);
     ctx.beginPath();
     if (ac.rules === 'VFR') ctx.arc(s.x, s.y, 3.8, 0, Math.PI * 2);
     else if (ac.rules === 'OAT') { ctx.moveTo(s.x, s.y - 5.2); ctx.lineTo(s.x + 5.2, s.y); ctx.lineTo(s.x, s.y + 5.2); ctx.lineTo(s.x - 5.2, s.y); ctx.closePath(); }
-    else ctx.rect(s.x - 3.8, s.y - 3.8, 7.6, 7.6);
+    else {
+      const a = (ac.trk * Math.PI) / 180, cs = Math.cos(a) * 3.8, sn = Math.sin(a) * 3.8;
+      // square with one side facing the direction of flight (screen y is down, so the track vector is (sin, -cos))
+      ctx.moveTo(s.x + sn - cs, s.y - cs - sn); ctx.lineTo(s.x + sn + cs, s.y - cs + sn);
+      ctx.lineTo(s.x - sn + cs, s.y + cs + sn); ctx.lineTo(s.x - sn - cs, s.y + cs - sn); ctx.closePath();
+    }
     if (sup) ctx.fill();
     ctx.stroke();
     if (emer) {
@@ -1288,9 +1635,11 @@ export class Scope {
     if (sel) {
       ctx.strokeStyle = S.select; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(s.x, s.y, 11, 0, Math.PI * 2); ctx.stroke();
-      ctx.globalAlpha = 0.3 + 0.2 * Math.sin(now / 300); ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.arc(s.x, s.y, 15 + 1.5 * Math.sin(now / 300), 0, Math.PI * 2); ctx.stroke();
-      ctx.globalAlpha = 1;
+      if (!this.reduceMotion) {
+        ctx.globalAlpha = 0.3 + 0.2 * Math.sin(now / 300); ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(s.x, s.y, 15 + 1.5 * Math.sin(now / 300), 0, Math.PI * 2); ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
     }
     // ping: a new call from the next caller
     const p0 = this.pingAt.get(ac.cs);
@@ -1299,6 +1648,63 @@ export class Scope {
       if (k >= 1) this.pingAt.delete(ac.cs);
       else if (k >= 0) { ctx.strokeStyle = S.warn; ctx.globalAlpha = 0.9 * (1 - k); ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(s.x, s.y, 8 + 22 * (1 - Math.pow(1 - k, 2)), 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1; }
     }
+  }
+
+  // ================= 2.0 tools: trail replay and cursor readout =================
+  /** Replay of the selected aircraft's last 60 s: the sampled trail, with a marker running along it. */
+  private drawReplay(now: number) {
+    const r = this.replay;
+    if (!r) return;
+    const arr = this.samples.get(r.cs);
+    if (!arr || arr.length < 2) { this.stopReplay(); return; }
+    const k = Math.min(1, (now - r.t0) / r.dur);
+    const { ctx } = this, S = this.skin;
+    const t0 = arr[0].t, t1 = arr[arr.length - 1].t, tNow = t0 + (t1 - t0) * k;
+    ctx.lineWidth = 2; ctx.strokeStyle = S.select; ctx.globalAlpha = 0.55;
+    ctx.beginPath();
+    let mx = 0, my = 0, malt = 0;
+    for (let i = 0; i < arr.length; i++) {
+      const p = arr[i];
+      if (p.t > tNow) break;
+      const sx = this.w / 2 + (p.x - this.center.x) * this.scale, sy = this.h / 2 - (p.y - this.center.y) * this.scale;
+      if (i) ctx.lineTo(sx, sy); else ctx.moveTo(sx, sy);
+      mx = sx; my = sy; malt = p.alt;
+    }
+    ctx.stroke(); ctx.globalAlpha = 1;
+    ctx.fillStyle = S.select;
+    ctx.beginPath(); ctx.arc(mx, my, 4.5, 0, Math.PI * 2); ctx.fill();
+    this.haloText(`${r.cs}  -${Math.round(t1 - tNow)} s  ${levelShort(this.sim.levelFor(Math.round(malt / 100) * 100))}`, mx + 10, my - 8, mono(10.5, 600), S.select);
+    if (k >= 1) this.replayDoneAt = this.replayDoneAt || now;
+    if (this.replayDoneAt && now - this.replayDoneAt > 900) { this.replayDoneAt = 0; this.stopReplay(); }
+  }
+  private replayDoneAt = 0;
+
+  /** Bearing and range from the aerodrome under the mouse; a fix under the cursor gives the selected aircraft's time to it. */
+  private drawCursorReadout() {
+    if (!this.opts.cursorReadout || !this.hover || this.touch || this.drag || this.radialMenu) return;
+    const { ctx, sim } = this, S = this.skin;
+    const p = this.toW(this.hover.x, this.hover.y);
+    const brg = Math.round(norm360(bearing({ x: 0, y: 0 }, p) - sim.pack.meta.magVar)) || 360;
+    const d = Math.hypot(p.x, p.y);
+    let text = `${String(brg).padStart(3, '0')}° ${d.toFixed(1)} NM`;
+    let col = S.cursor;
+    const sel = this.selected ? sim.find(this.selected) : undefined;
+    if (this.hoverFix) {
+      const f = sim.pack.fixes.get(this.hoverFix);
+      if (f) {
+        text = `${f.id}  ${text}`;
+        if (sel && !sel.landed) {
+          const secs = timeToFix(sel.p, f.p, sel.gs);
+          if (secs !== undefined) { text += `  ${sel.cs} ${dist(sel.p, f.p).toFixed(1)} NM ${fmtT(secs)}`; col = S.select; }
+        }
+        const s = this.toS(f.p);
+        ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(s.x, s.y, 9, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+    ctx.font = mono(10.5, 500);
+    const w = ctx.measureText(text).width;
+    const by = this.showProfile ? this.h - this.profileH() - 22 : this.h - 12;
+    this.haloText(text, this.w - w - 10, by + 4, mono(10.5, 500), col);
   }
 
   private drawLabel(tr: { ac: Aircraft; s: XY; col: string; urgent: boolean; alerting: boolean; emer: boolean; sel: boolean; next: boolean; queue?: number }, box: Rect, lines: Seg[][], armed: { chips: Chip[]; head: Seg[]; detail: Seg[]; hh: number } | undefined, cw: number, lh: number, fp: number, now: number, flash: boolean) {
