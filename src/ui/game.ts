@@ -16,6 +16,11 @@ import { Scope, type QuickOption, type RadialKey } from './scope';
 import { Mic, Radio } from './audio';
 import { GLOSSARY } from './glossary';
 import { saveSettings, type Settings } from '../store';
+import { Attention } from './commands/attention';
+import { Halo, stackFixOf } from './commands/halo';
+import { Readback } from './commands/readback';
+import { Staging } from './commands/staging';
+import { Cmdline } from './commands/cmdline';
 
 const h = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, html?: string) => {
   const e = document.createElement(tag);
@@ -70,7 +75,6 @@ export class Game {
   private hint?: Hint;
   private hintMuted = new Set<string>();
   private hintTimer = 0;
-  private suggestions: Suggestion[] = [];
   private suggestSig = '';
   private barSig = '';
   /** fired after every transmission by the player (tutorial hooks) */
@@ -82,6 +86,19 @@ export class Game {
   onBeforeSend?: (cl: Clearance) => string | undefined;
   /** Tutorial hook: show supervisor hints even though the scenario is a tutorial (the coach turns this on for the lessons that teach the SUP line). */
   coachHints = false;
+  // ---- 2.0 commands module (src/ui/commands): composed here, each owns one element ----
+  /** who needs what next, with its one-tap action (the NEXT button and Tab walk it) */
+  attention!: Attention;
+  /** direct manipulation round the selected aircraft; `halo.enabled` is false in tutorial scenarios until a lesson turns it on */
+  halo!: Halo;
+  /** the last clearances until their readback comes; a wrong one carries its correction */
+  readback!: Readback;
+  /** clearances queued for several aircraft, sent in order */
+  staging!: Staging;
+  /** history and callsign hints for the typed line */
+  cmdline!: Cmdline;
+  /** the next-call chips on offer for the selected aircraft */
+  suggestions: Suggestion[] = [];
 
   constructor(public pack: Pack, public sc: Scenario, public settings: Settings, mount: HTMLElement, radio: Radio, public opts: GameOpts) {
     this.radio = radio;
@@ -120,6 +137,7 @@ export class Game {
     });
     this.sim.onTx.push((tx) => this.onTx(tx));
     this.sim.onQueue.push((tx) => { if (this.speed === 1 && tx.from === 'PILOT') this.radio.prepare(tx.speech, tx.cs); });
+    this.buildCommands();
     for (const tx of this.sim.log.slice(-12)) this.appendComms(tx);
     this.ro = new ResizeObserver(() => this.scope.resize());
     this.ro.observe(canvas);
@@ -143,6 +161,7 @@ export class Game {
     this.scope.closeTransient();
     this.scope.clearRbls();
     this.sim.onTx.push((tx) => this.onTx(tx));
+    this.readback.reset(); this.staging.reset(); this.attention.update();
     this.seenLandings = 0; this.seenRel.clear(); this.knownAlerts.clear(); this.icomSig = ''; this.endedShown = false;
     this.hint = undefined; this.renderHint();
     this.els.comms.innerHTML = '';
@@ -157,6 +176,7 @@ export class Game {
     this.destroyed = true;
     this.ro?.disconnect();
     this.ptt?.destroy();
+    this.halo?.destroy(); this.attention?.destroy(); this.readback?.destroy(); this.staging?.destroy(); this.cmdline?.destroy();
     this.mic.abort();
     this.coach?.destroy();
     cancelAnimationFrame(this.raf);
@@ -178,7 +198,7 @@ export class Game {
         <div class="tx" data-e="tx" title="Frequency in use"><span></span>119.280</div>
         <div class="stats mono" data-e="stats" title="Landed · sequence chain · delay"></div>
         <div class="grow"></div>
-        <button class="tb-btn callers" data-a="next" data-e="callers">CALLS 0</button>
+        <button class="tb-btn callers" data-a="next" data-e="callers" title="Who needs you next (Tab)">NEXT</button>
         <div class="speed" data-e="speed">
           <button data-s="0" aria-label="Pause">❚❚</button><button data-s="1" class="on">1×</button><button data-s="2">2×</button><button data-s="4">4×</button><button data-s="8" class="skip" title="Fast forward. Drops back to 1× when anyone calls.">8×</button>
         </div>
@@ -206,16 +226,20 @@ export class Game {
       </main>
       <footer class="bar" data-e="bar">
         <div class="ticker mono" data-e="ticker"></div>
+        <div class="att" data-e="att" hidden></div>
         <div class="hint" data-e="hint" hidden></div>
         <div class="bar-head">
           <div class="who" data-e="who"></div>
           <div class="req" data-e="req"></div>
           <button class="kbd-btn" data-a="kbd" aria-label="Type a command">⌨</button>
+          <button class="q-btn" data-a="queue" data-e="queueBtn" title="Queue this clearance and build the next (Q)" aria-label="Queue for later">Q</button>
           <button class="mic" data-a="mic" data-e="mic" aria-label="Push to talk">🎙</button>
           <button class="x" data-a="clear" aria-label="Clear">✕</button>
         </div>
         <div class="sugg" data-e="sugg"></div>
+        <div class="rb" data-e="rb" hidden></div>
         <div class="bar-mid" data-e="mid"><div class="chips" data-e="chips"></div><div class="phrase" data-e="phrase"></div></div>
+        <div class="stq" data-e="stq" hidden></div>
         <div class="bar-grid" data-e="grid">
           <button data-p="hdg">HDG</button><button data-p="lvl">LVL</button><button data-p="spd">SPD</button><button data-p="dct">DCT</button><button data-a="app" data-e="appBtn" class="wide-only">ILS</button>
           <button data-p="trans" class="wide-only">TRANS</button><button data-a="hold" class="wide-only">HOLD</button><button data-a="twr" class="wide-only">TWR</button><button data-a="bru" class="wide-only">BRU</button><button data-p="more">MORE</button>
@@ -259,6 +283,58 @@ export class Game {
     return root;
   }
 
+  /** Compose the 2.0 commands module round the bar and the scope. */
+  private buildCommands() {
+    const host = this.root.querySelector<HTMLElement>('.scope-wrap')!;
+    this.halo = new Halo(this, host);
+    this.halo.enabled = !this.sc.tutorial;
+    this.attention = new Attention(this, this.els.att);
+    this.readback = new Readback(this, this.els.rb);
+    this.staging = new Staging(this, this.els.stq);
+    this.cmdline = new Cmdline(this, this.els.cmd as HTMLInputElement);
+    this.onSent.push((cl) => this.readback.sent(cl));
+  }
+  /** Enter: transmit what is staged; else the first queued clearance; else accept the attention row's action for the selected aircraft (Tab, Enter). */
+  enter() {
+    if (this.items.length) { this.send(); return; }
+    if (this.staging.length) { this.staging.send(0); return; }
+    const row = this.cs ? this.attention.rows.find((r) => r.cs === this.cs) : undefined;
+    if (row?.action) {
+      if (row.action.icom) this.sendIcom(row.cs, row.action.items); else { this.quick(row.cs, row.action.items); this.armUndo(row.cs, row.action.label); }
+      return;
+    }
+    this.send();
+  }
+  /** True while a picker sheet is open (the halo steps aside). */
+  pickerOpen() { return !this.els.picker.hidden; }
+  /** Drop whatever is staged or typed for the selected aircraft. */
+  clearComposer() { this.items = []; this.voiceText = ''; this.typed = undefined; this.armedSig = ''; (this.els.cmd as HTMLInputElement).value = ''; this.renderBar(); }
+  /** Send a whole clearance through the bar's path (tutorial veto, warnings, readback card). Returns true when it went out. */
+  sendClearance(cl: Clearance): boolean {
+    if (this.sim.isIntercomAnswer(cl) || cl.items.some((i) => i.k === 'rel' || i.k === 'relhold')) { this.sendIcom(cl.cs, cl.items); return true; }
+    if (!this.sim.find(cl.cs)) return false;
+    const before = this.sim.cmdLog.length;
+    this.select(cl.cs, true);
+    this.items = [];
+    for (const it of cl.items) this.items = mergeItem(this.items, it);
+    this.send(true);
+    return this.sim.cmdLog.length > before;
+  }
+  /** Answer Tower, Brussels or the military on the intercom with these items (release, hold, approve, unable). */
+  sendIcom(cs: string, items: Item[]) {
+    const veto = this.onBeforeSend?.({ cs, items });
+    if (veto) { this.toast(veto); return; }
+    const r = this.sim.issue({ cs, items });
+    if (!r.ok) { this.toast(r.warnings.join('; ')); return; }
+    for (const f of this.onSent) f({ cs, items });
+    this.icomSig = ''; this.coordSig = '';
+    this.renderIcom(); this.renderPanels(); this.renderBar();
+  }
+  /** Two-second undo for a clearance just sent (Backspace, or the Undo button on the scope). */
+  armUndo(cs: string, label: string) { this.halo.armUndo(cs, label); }
+  /** The airport's stack fix (ALHUV at Liège). */
+  stackFix() { return stackFixOf(this.sim); }
+
   private onClick(e: Event) {
     const t = (e.target as HTMLElement).closest('button, .strip, [data-pick]') as HTMLElement | null;
     if (!t) { const el = e.target as HTMLElement; if (!el.closest('.picker') && el.tagName !== 'CANVAS') this.closePicker(); return; }
@@ -288,7 +364,8 @@ export class Game {
       case 'menu': this.openPicker('menu'); break;
       case 'next': this.nextCaller(); break;
       case 'drawer': this.root.classList.toggle('drawer-open'); break;
-      case 'clear': this.items = []; this.voiceText = ''; this.typed = undefined; (this.els.cmd as HTMLInputElement).value = ''; this.renderBar(); break;
+      case 'clear': this.clearComposer(); break;
+      case 'queue': this.staging.queueCurrent(); break;
       case 'send': this.send(); break;
       case 'roger': if (ac) this.quick(ac.cs, [{ k: 'roger' }]); break;
       case 'sayagain': if (ac) this.quick(ac.cs, [{ k: 'sayagain' }]); break;
@@ -296,7 +373,7 @@ export class Game {
       case 'stby': if (ac) this.quick(ac.cs, [{ k: 'standby' }]); break;
       case 'kbd': { const on = this.root.classList.toggle('kbd'); if (on) (this.els.cmd as HTMLInputElement).focus(); break; }
       case 'app': if (ac) this.addItem({ k: 'app', app: 'ILS', rwy: this.sim.runway }); else this.toast('Select an aircraft first'); break;
-      case 'hold': if (ac) this.addItem({ k: 'hold', fix: 'ALHUV' }); else this.toast('Select an aircraft first'); break;
+      case 'hold': if (ac) this.addItem({ k: 'hold', fix: this.stackFix() }); else this.toast('Select an aircraft first'); break;
       case 'twr': if (ac) this.addItem({ k: 'xfr', unit: 'TWR' }); else this.toast('Select an aircraft first'); break;
       case 'bru': if (ac) this.addItem({ k: 'xfr', unit: 'BRU' }); else this.toast('Select an aircraft first'); break;
       case 'chip': { const i = Number(t.dataset.i); this.items.splice(i, 1); this.renderBar(); break; }
@@ -309,10 +386,12 @@ export class Game {
   private onKey = (e: KeyboardEvent) => {
     const inInput = (e.target as HTMLElement).tagName === 'INPUT';
     if (e.key === 'Tab') { e.preventDefault(); this.nextCaller(); return; }
-    if (e.key === 'Escape') { this.closePicker(); this.scope.closeTransient(); this.items = []; this.typed = undefined; (this.els.cmd as HTMLInputElement).value = ''; this.renderBar(); return; }
+    if (e.key === 'Escape') { this.closePicker(); this.scope.closeTransient(); this.clearComposer(); return; }
     if (inInput) return;
     if (e.key === ' ') { if (this.settings.pttKey === 'Space' && !e.shiftKey) return; e.preventDefault(); this.setSpeed(this.speed ? 0 : 1); return; }
-    if (e.key === 'Enter') { this.send(); return; }
+    if (e.key === 'Enter') { this.enter(); return; }
+    if (e.key === 'Backspace' && !e.metaKey && !e.ctrlKey) { if (this.halo.undo()) e.preventDefault(); return; }
+    if ((e.key === 'q' || e.key === 'Q') && !e.metaKey && !e.ctrlKey && !e.altKey && this.items.length) { e.preventDefault(); this.staging.queueCurrent(); return; }
     const ac = this.cs ? this.sim.find(this.cs) : undefined;
     if (ac && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
       e.preventDefault();
@@ -363,15 +442,16 @@ export class Game {
     for (const it of items) this.items = mergeItem(this.items, it);
     this.send();
   }
+  /** Tab and the NEXT button: walk the attention queue (who needs what next), the oldest caller first. */
   private nextCaller() {
-    const c = this.waiting();
-    if (!c.length) { this.toast('Nobody is waiting for you'); return; }
-    const idx = c.findIndex((a) => a.cs === this.cs);
-    const nxt = c[(idx + 1) % c.length];
-    this.select(nxt.cs, true);
-    this.keepVisible(nxt.cs);
+    this.attention.update();
+    const row = this.attention.next();
+    if (!row) { this.toast('Nobody needs you right now'); return; }
+    if (this.sim.find(row.cs)) { this.select(row.cs, true); this.keepVisible(row.cs); }
+    else this.select(undefined);
+    this.attention.reveal();
   }
-  private waiting() { return this.sim.callers().filter((a) => a.state === 'assumed' && this.sim.t >= (a.awaitingSince ?? 0)); }
+  waiting() { return this.sim.callers().filter((a) => a.state === 'assumed' && this.sim.t >= (a.awaitingSince ?? 0)); }
   private send(confirmed = false) {
     if (!this.cs || !this.items.length) return;
     const cl: Clearance = { cs: this.cs, items: sortItems(this.items) };
@@ -406,14 +486,14 @@ export class Game {
   }
 
   // ---------------- typed commands with live preview ----------------
-  private parseCtx() {
+  parseCtx() {
     return {
-      callsigns: [...this.sim.aircraft.map((a) => a.cs), ...this.sim.releases.map((r) => r.cs), ...this.sim.coordReqs.filter((r) => r.state === 'pending').map((r) => r.cs)], selected: this.cs, runway: this.sim.runway, tl: this.sim.tl,
+      callsigns: [...this.sim.aircraft.filter((a) => !a.remove).map((a) => a.cs), ...this.sim.releases.filter((r) => r.state !== 'airborne').map((r) => r.cs), ...this.sim.coordReqs.filter((r) => r.state === 'pending').map((r) => r.cs)], selected: this.cs, runway: this.sim.runway, tl: this.sim.tl,
       fixes: new Set([...this.sim.pack.fixes.keys()]), transitions: new Set(this.sim.pack.transitions.map((t) => t.name)),
-      stars: new Set(this.sim.pack.stars.map((t) => t.name)),
+      stars: new Set(this.sim.pack.stars.map((t) => t.name)), holdFix: this.stackFix(),
     };
   }
-  private previewCmd() {
+  previewCmd() {
     const txt = (this.els.cmd as HTMLInputElement).value.trim();
     if (!txt) { this.typed = undefined; this.renderBar(); return; }
     const res = parseShorthand(txt, this.parseCtx());
@@ -421,10 +501,10 @@ export class Game {
     if (res.cs && res.cs !== this.cs && this.sim.find(res.cs)) { this.cs = res.cs; this.scope.selected = res.cs; this.items = []; }
     this.renderBar();
   }
-  private submitCmd() {
+  submitCmd() {
     const inp = this.els.cmd as HTMLInputElement;
     const txt = inp.value.trim();
-    if (!txt) { this.send(); return; }
+    if (!txt) { this.enter(); return; }
     const res = parseShorthand(txt, this.parseCtx());
     if (res.errors.length) { this.toast(res.errors.join('; ')); return; }
     const cs = res.cs ?? this.cs;
@@ -445,6 +525,7 @@ export class Game {
     inp.value = '';
     this.typed = undefined;
     this.armedSig = '';
+    this.cmdline.remember(txt);
     if (isRel) {
       const rq = this.sim.releases.find((r) => r.cs === cs && r.state !== 'airborne');
       const plain = res.items.length === 1 && res.items[0].k === 'rel' && !(res.items[0] as any).after && (res.items[0] as any).hdg === undefined && !(res.items[0] as any).lvl;
@@ -520,7 +601,7 @@ export class Game {
       case 'SPD': this.openPicker('spd', at); break;
       case 'DCT': this.openPicker('dct', at); break;
       case 'ILS': this.addItem({ k: 'app', app: 'ILS', rwy: this.sim.runway }); break;
-      case 'HOLD': this.addItem({ k: 'hold', fix: 'ALHUV' }); break;
+      case 'HOLD': this.addItem({ k: 'hold', fix: this.stackFix() }); break;
       case 'TWR': this.addItem({ k: 'xfr', unit: ac.kind === 'dep' ? 'BRU' : 'TWR' }); break;
       default: this.openPicker('more', at);
     }
@@ -614,7 +695,7 @@ export class Game {
           grid = 'g3';
           rows.push('<div class="sub span">Common</div>');
           opt(`T ${(this.sim.transitionsFor(sim.runway)[0]?.name) ?? ''}`, 'TRANS…', 'special');
-          opt(`ILS ${sim.runway}`, `ILS ${sim.runway}`, 'special'); opt('HOLD ALHUV', 'Hold ALHUV', 'special');
+          opt(`ILS ${sim.runway}`, `ILS ${sim.runway}`, 'special'); opt(`HOLD ${this.stackFix()}`, `Hold ${this.stackFix()}`, 'special');
           opt('XTWR', 'Tower 118.130', 'special'); opt('XBRU', 'Brussels', 'special'); opt('XMIL', 'Military', 'special');
           rows.push('<div class="sub span">Other</div>');
         }
@@ -713,7 +794,7 @@ export class Game {
   }
   private closePicker() { this.els.picker.hidden = true; }
   /** Pan so a selected aircraft is on screen. */
-  private keepVisible(cs: string) {
+  keepVisible(cs: string) {
     const ac = this.sim.find(cs);
     if (!ac) return;
     const s = this.scope.toS(ac.p);
@@ -773,10 +854,12 @@ export class Game {
       while (this.acc >= 1) { this.acc -= 1; this.sim.step(); }
     }
     this.scope.draw(now);
+    this.halo.update();
     this.panelTimer += dt;
     if (this.panelTimer > 0.5) {
       this.panelTimer = 0;
       this.renderIcom(); this.renderPanels(); this.renderBarLive(); this.checkAlerts(); this.renderLive(); this.checkLandings();
+      this.attention.update(); this.readback.update(); this.staging.update();
       this.hintTimer += 1;
       if (this.hintTimer >= 4) { this.hintTimer = 0; this.updateHint(); }
     }
@@ -833,6 +916,7 @@ export class Game {
   // ---------------- comms ----------------
   private onTx(tx: Tx) {
     this.appendComms(tx);
+    this.readback?.onTx(tx);
     if (tx.channel !== 'icom') {
       this.els.last.innerHTML = `<b>${esc(tx.from === 'ATC' ? 'YOU' : tx.cs)}</b> ${esc(tx.text)}`;
       const led = this.els.rxled; const cls = tx.from === 'ATC' ? 'tx' : 'rx';
@@ -1005,7 +1089,7 @@ export class Game {
     if (!ac) {
       const c = this.waiting();
       const touch = touchFirst();
-      who.innerHTML = `<div class="cs mono dim">— — —</div><div class="meta">${c.length ? `${c.length} waiting · tap ☎${touch ? '' : ' or press Tab'}` : 'Tap an aircraft, its label or its strip'}</div>`;
+      who.innerHTML = `<div class="cs mono dim">— — —</div><div class="meta">${c.length ? `${c.length} waiting · tap ☎${touch ? '' : ' or press Tab'}` : 'Tap an aircraft, its label, its strip or a row above'}</div>`;
       req.innerHTML = '';
       sugg.innerHTML = c.length ? c.slice(0, 4).map((a) => `<button class="sg caller" data-cs-pick="${esc(a.cs)}"><b class="mono">${esc(a.cs)}</b><small>${Math.round(this.sim.t - a.awaitingSince!)} s</small></button>`).join('') : '';
       sugg.querySelectorAll<HTMLElement>('[data-cs-pick]').forEach((b) => b.addEventListener('click', () => { this.select(b.dataset.csPick, true); this.keepVisible(b.dataset.csPick!); }));
@@ -1037,6 +1121,8 @@ export class Game {
     mid.classList.toggle('empty', !items.length && !this.voiceText && !this.typed);
     const blocked = this.settings.trainingWheels && warn.length > 0;
     this.sends().forEach((b) => { b.disabled = !this.items.length || blocked; b.classList.toggle('warned', warn.length > 0); });
+    (this.els.queueBtn as HTMLButtonElement).disabled = !this.items.length;
+    this.halo?.update();
   }
   private typedChips() {
     if (!this.typed) return '';
@@ -1083,9 +1169,10 @@ export class Game {
     this.els.twind.textContent = `WIND ${String(Math.round(((sim.weather.windDir - sim.pack.meta.magVar + 360) % 360) / 10) * 10).padStart(3, '0')}/${sim.weather.windKt}`;
     const tsa = [...sim.tsaOn][0] ?? [...sim.tsaPending.keys()][0]; this.els.ttsa.hidden = !tsa; if (tsa) this.els.ttsa.textContent = `${tsa} ${sim.tsaOn.has(tsa) ? 'ACTIVE' : 'SOON'}`;
     const callers = this.waiting();
-    this.els.callers.textContent = window.innerWidth < 600 ? `☎ ${callers.length}` : `CALLS ${callers.length}`;
-    this.els.callers.classList.toggle('hot', callers.length > 0);
-    this.els.callers.classList.toggle('urgent', callers.some((a) => sim.t - a.awaitingSince! > 15 || a.emergency));
+    const n = this.attention?.rows.length ?? callers.length;
+    this.els.callers.textContent = window.innerWidth < 600 ? `☎ ${n}` : `NEXT ${n || ''}`.trim();
+    this.els.callers.classList.toggle('hot', n > 0);
+    this.els.callers.classList.toggle('urgent', callers.some((a) => sim.t - a.awaitingSince! > 15 || a.emergency) || (this.attention?.rows[0]?.urgency ?? 0) >= 90);
     if (this.root.classList.contains('drawer-open') || window.innerWidth >= 900) {
       this.renderCoord();
       this.renderInfo();
@@ -1170,6 +1257,7 @@ export class Game {
         <span class="f cfl mono ${sflOff ? 'off' : ''}">${cfl}</span>
         <span class="f vx"><i class="mono">${hdg}</i><i class="mono">${spd}</i></span>
         <span class="f ap mono">${esc(app)}</span>
+        ${waiting ? `<span class="s-wait mono" data-w0="${a.awaitingSince}">${mmss(sim.t - a.awaitingSince!)}</span>` : ''}
         ${a.request ? `<span class="s-req">REQ ${esc(a.request.text)}</span>` : ''}${a.emergency ? `<span class="s-req emer">${a.sqk} ${esc(a.emergencyText ?? a.emergency.toUpperCase())}</span>` : ''}
       </button>`;
   }
@@ -1187,7 +1275,7 @@ export class Game {
     const other = live.filter((a) => a.state === 'assumed' && a.kind !== 'arr' && a.kind !== 'dep');
     const xfr = live.filter((a) => a.state === 'transferred').slice(-4);
     const sig = JSON.stringify([seq.map((a) => a.cs), sim.sequence, this.cs, Math.floor(sim.t / 2)]);
-    if (sig === this.stripSig && !this.dragging) return;
+    if (sig === this.stripSig && !this.dragging) { this.els.strips.querySelectorAll<HTMLElement>('.s-wait[data-w0]').forEach((e) => { const w = sim.t - Number(e.dataset.w0); e.textContent = mmss(w); e.classList.toggle('late', w > 15); }); return; }
     if (this.dragging) return;
     this.stripSig = sig;
     const bay = (title: string, n: number | string, body: string, cls = '') => body ? `<div class="bayh ${cls}"><span>${title}</span><b class="mono">${n}</b></div>${body}` : '';

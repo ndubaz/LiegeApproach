@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseShorthand, voiceToShorthand } from '../src/engine/parser';
+import { matchCallsigns, parseShorthand, resolveCallsign, resolveFix, voiceToShorthand } from '../src/engine/parser';
 const ctx = { callsigns: ['DHK7', 'QTR8125', 'QTR8152', 'CHG201'], runway: '22L', tl: 55, fixes: new Set(['LIBVA', 'ALHUV', 'GIKLI']), transitions: new Set(['ALHUV1A']) };
 describe('shorthand', () => {
   it('parses a three-part clearance', () => {
@@ -32,6 +32,56 @@ describe('shorthand', () => {
     expect(parseShorthand('DHK7 BRK L040 A30', ctx).items).toEqual([{ k: 'brk' }, { k: 'hdg', hdg: 40, dir: 'L' }, { k: 'lvl', lvl: { ft: 3000 } }]);
     expect(parseShorthand('DHK7 ATIS', ctx).items).toEqual([{ k: 'atis' }]);
     expect(parseShorthand('DHK7 MIL', ctx).items).toEqual([{ k: 'xfr', unit: 'MIL' }]);
+  });
+});
+describe('command line (2.0): fuzzy callsigns and fixes', () => {
+  const css = ['DHK7', 'QTR8125', 'QTR8152', 'CHG201', 'TAY4EK', 'AZG7321', 'CLX7HK'];
+  it('digits pick the aircraft when they fit one callsign', () => {
+    expect(resolveCallsign('812', css)).toBe('QTR8125');
+    expect(resolveCallsign('12', css)).toBe('QTR8125');
+    expect(resolveCallsign('8152', css)).toBe('QTR8152');
+    expect(resolveCallsign('201', css)).toBe('CHG201');
+    expect(resolveCallsign('4ek', css)).toBe('TAY4EK');
+    expect(resolveCallsign('7hk', css)).toBe('CLX7HK');
+    expect(resolveCallsign('21', css)).toBe('AZG7321');
+    expect(resolveCallsign('dhk', css)).toBe('DHK7');
+  });
+  it('refuses an ambiguous token rather than guessing', () => {
+    expect(resolveCallsign('qtr', css)).toBeUndefined();
+    expect(resolveCallsign('81', css)).toBeUndefined(); // 8125 and 8152 both start with 81
+    expect(resolveCallsign('7', css)).toBeUndefined();  // one character
+    expect(resolveCallsign('zz', css)).toBeUndefined();
+  });
+  it('ranks candidates for the live preview, best first', () => {
+    expect(matchCallsigns('qtr', css)).toEqual(['QTR8125', 'QTR8152']);
+    expect(matchCallsigns('81', css)).toEqual(['QTR8125', 'QTR8152']);
+    expect(matchCallsigns('7', css)).toEqual([]);
+    expect(matchCallsigns('7hk', css)[0]).toBe('CLX7HK');
+  });
+  it('fixes: exact, unique prefix, then the closest sound', () => {
+    const fixes = new Set(['LIBVA', 'ALHUV', 'GIKLI', 'GILOM', 'GIREL', 'LNO', 'LG008']);
+    expect(resolveFix('LIBVA', fixes)).toBe('LIBVA');
+    expect(resolveFix('lib', fixes)).toBe('LIBVA');
+    expect(resolveFix('gilo', fixes)).toBe('GILOM');
+    expect(resolveFix('alhuf', fixes)).toBe('ALHUV');
+    expect(resolveFix('gi', fixes)).toBeUndefined();   // GIKLI, GILOM, GIREL
+    expect(resolveFix('l', fixes)).toBeUndefined();
+    expect(resolveFix('zzzzz', fixes)).toBeUndefined();
+  });
+  it('the grammar is unchanged: digits-first callsign, fuzzy DCT and HOLD fixes, holdFix from the pack', () => {
+    const c = { ...ctx, callsigns: css.filter((x) => x !== 'QTR8152'), fixes: new Set(['LIBVA', 'ALHUV', 'GIKLI', 'GILOM', 'GIREL']) };
+    expect(parseShorthand('81 d70', c)).toEqual({ cs: 'QTR8125', items: [{ k: 'lvl', lvl: { fl: 70 } }], errors: [] });
+    expect(parseShorthand('4ek s180', c)).toEqual({ cs: 'TAY4EK', items: [{ k: 'spd', spd: 180, until: undefined }], errors: [] });
+    expect(parseShorthand('81 >lib', c).items).toEqual([{ k: 'dct', fix: 'LIBVA' }]);
+    expect(parseShorthand('81 dct gilo', c).items).toEqual([{ k: 'dct', fix: 'GILOM' }]);
+    const c2 = { ...c, callsigns: css };
+    expect(parseShorthand('8152 hold gir a50', c2).items).toEqual([{ k: 'hold', fix: 'GIREL' }, { k: 'lvl', lvl: { ft: 5000 } }]);
+    expect(parseShorthand('8152 hold a50', c2).items).toEqual([{ k: 'hold', fix: 'ALHUV' }, { k: 'lvl', lvl: { ft: 5000 } }]);
+    expect(parseShorthand('8152 hold', { ...c2, holdFix: 'GIREL' }).items).toEqual([{ k: 'hold', fix: 'GIREL' }]);
+    expect(parseShorthand('81 >zzz', c).errors).toEqual(['Unknown fix ZZZ']);
+    // a command word is never taken for a callsign
+    expect(parseShorthand('ILS', c).cs).toBeUndefined();
+    expect(parseShorthand('S180', c).items).toEqual([{ k: 'spd', spd: 180, until: undefined }]);
   });
 });
 describe('voice', () => {
