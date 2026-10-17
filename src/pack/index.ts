@@ -1,12 +1,14 @@
 import type { PackSpec } from './types';
 import { loadPack, type Pack } from './load';
 import { EBLG } from './eblg';
+import { EDDL } from './eddl';
 
 // The location packs the game can run. Each entry is a factory so a pack's data is only built when it is asked for.
 // The lead adds Düsseldorf here: EDDL: () => EDDL.
 
 export const PACKS: Record<string, () => PackSpec> = {
   EBLG: () => EBLG,
+  EDDL: () => EDDL,
 };
 export const DEFAULT_PACK = 'EBLG';
 

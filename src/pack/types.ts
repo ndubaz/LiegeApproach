@@ -172,6 +172,10 @@ export interface PackSpec {
   places?: PlaceSpec[];
   /** Other aerodromes in the area, drawn as small symbols with their ICAO code. */
   airports?: AirportSpec[];
+  /** Night flight restriction as published (AD 2.20), local clock times "HH:MM"; the sim starves demand between them. */
+  curfew?: { fromLocal: string; toLocal: string; note?: string };
+  /** Segregated parallel operations (AD 2.22): which runway lands and which departs when both are in use, per direction. */
+  parallelOps?: { arrivals: string; departures: string; note?: string }[];
 }
 
 export interface TerrainSpec {
@@ -200,7 +204,11 @@ export interface UnitSpec {
   say?: string;
 }
 
-export interface OperatorSpec { op: string; types: string[]; w: number; kind?: 'arr' | 'dep' | 'both'; telephony?: string }
+export interface OperatorSpec {
+  op: string; types: string[]; w: number; kind?: 'arr' | 'dep' | 'both'; telephony?: string;
+  /** accent groups of this operator's crews when the engine's casting table has none (voice casting) */
+  voices?: string[];
+}
 export interface TrafficSpec {
   /** operators and the fleet they fly here, with weights, by period of the day */
   cargo: OperatorSpec[];
@@ -237,6 +245,10 @@ export interface TrafficSpec {
   diversion?: { from: string; icao?: string; brg: number };
   /** Registration marks for GA callsigns: prefix plus random letters to this length (Belgium OO-xxx; Germany D-Exxx). Default: the first `gaPrefixes` entry, 5 letters. */
   registration?: { prefix: string; length: number };
+  /** arrival STARs and their share of the inbound flow (replaces the engine's Liège STAR tables) */
+  arrStars?: { name: string; w: number }[];
+  /** departure SIDs per runway id and their share of the outbound flow */
+  depSids?: Record<string, { name: string; w: number }[]>;
 }
 
 export interface PhaseSpec { from: number; to: number; phase: string; label: string; paxShare: number }
