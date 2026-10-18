@@ -1109,7 +1109,15 @@ const L_SPACING: Lesson = {
     },
     {
       id: 'land', title: 'Tower chips for both, then watch the gap', run: 4,
-      body: (g) => { const a = find(g, 'CLX7HK'), b = find(g, 'TAY4EK'); const gap = a?.app?.locCap && b?.app?.locCap ? `Gap ${(g.sim.dthr(b) - g.sim.dthr(a)).toFixed(1)} NM. ` : ''; return `${gap}Hand each one to Tower with its chip once it shows LOC22L. The landing strip at the top reports each gap at touchdown.`; },
+      body: (g) => {
+        const a = find(g, 'CLX7HK'), b = find(g, 'TAY4EK');
+        const gap = a?.app?.locCap && b?.app?.locCap ? `Gap ${(g.sim.dthr(b) - g.sim.dthr(a)).toFixed(1)} NM. ` : '';
+        // a go-around or a hold puts one back on frequency: say so, or the student waits for a landing that is not coming
+        const c = [a, b].find((x) => x && x.awaitingSince !== undefined);
+        const call = c ? `${c.cs} is calling you: tap NEXT and take its bright chip. ` : '';
+        return `${call}${gap}Hand each one to Tower with its chip once it shows LOC22L. The landing strip at the top reports each gap at touchdown.`;
+      },
+      mark: (g) => { const c = ['CLX7HK', 'TAY4EK'].map((cs) => find(g, cs)).find((x) => x && x.awaitingSince !== undefined); return c ? { cs: c.cs } : undefined; },
       done: (g) => g.sim.landings.length >= 2,
       until: (g) => g.sim.aircraft.some((a) => a.state === 'assumed' && a.app?.locCap) || g.sim.landings.length >= 2,
     },

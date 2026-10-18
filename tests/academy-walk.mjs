@@ -147,11 +147,12 @@ for (const id of ids) {
   log(`\n=== ${id}`);
   await page.evaluate((lid) => window.__lgg.lesson(lid), id);
   await wait(800);
-  let last = '', stuck = 0, shotN = 0, fallbacks = 0;
+  let last = '', stuck = 0, shotN = 0, fallbacks = 0, lastT = -1, still = 0;
   const acted = new Set();
   for (let k = 0; k < 900; k++) {
     const st = await state();
     if (!st) { problems.push(`${id}: coach vanished`); break; }
+    if (st.t !== lastT) { lastT = st.t; still = 0; } else still++;
     const key = `${st.phase}:${st.step}`;
     if (key !== last) {
       last = key; stuck = 0;
@@ -179,11 +180,11 @@ for (const id of ids) {
     // a step that wants typing: type what its title says ("Type 4ek D70 S210, Enter")
     if (stuck === 6) {
       const typed = await page.evaluate(() => { const t = document.querySelector('.coach h4')?.textContent ?? ''; const m = t.match(/^Type (.+?),? (?:then )?Enter/i); return m ? m[1] : null; });
-      if (typed) { await tapLoc(page.locator('[data-a="kbd"], [data-e="cmd"]').first()); await page.keyboard.type(typed); await page.keyboard.press('Enter'); await wait(500); notes.push(`${id}/${st.step}: typed "${typed}"`); continue; }
+      if (typed) { if (!(await page.locator('[data-e="cmd"] >> visible=true').count())) await tapLoc(page.locator('[data-a="kbd"]').first()); await page.locator('[data-e="cmd"]').first().focus(); await page.locator('[data-e="cmd"]').first().fill(''); await page.keyboard.type(typed); await page.keyboard.press('Enter'); await wait(500); notes.push(`${id}/${st.step}: typed "${typed}"`); continue; }
     }
     // a drag-only step (dial, drag from an aircraft, ruler, strip order): the walker cannot drag, so it skips and says so
-    if (stuck === 70 && (await page.locator('.coach [data-c="skip"] >> visible=true').count())) { notes.push(`${id}/${st.step}: skipped (gesture the walker cannot make)`); await tapLoc(page.locator('.coach [data-c="skip"] >> visible=true').first()); await wait(500); continue; }
-    if (stuck > 120) { problems.push(`${id}: stuck at ${st.step}`); await page.screenshot({ path: `${OUT}/${id}-STUCK-${st.step}.png` }); break; }
+    if (stuck >= 70 && still >= 40 && (await page.locator('.coach [data-c="skip"] >> visible=true').count())) { notes.push(`${id}/${st.step}: skipped (gesture the walker cannot make)`); await tapLoc(page.locator('.coach [data-c="skip"] >> visible=true').first()); await wait(500); continue; }
+    if ((stuck > 160 && still > 60) || stuck > 600) { problems.push(`${id}: stuck at ${st.step}`); await page.screenshot({ path: `${OUT}/${id}-STUCK-${st.step}.png` }); break; }
     await wait(300);
   }
 }
