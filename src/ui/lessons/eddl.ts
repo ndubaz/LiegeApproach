@@ -13,7 +13,7 @@ import { suggest } from '../../engine/suggest';
 import { alongTrack, dist } from '../../geo';
 import {
   A, D, G, K, WHY, LVL, flow, sg, halo, scFactory, type Lesson,
-  find, isCalling, calling, sentTo, sentAny, staged, heardFrom, isLvl, gone, landed, fmtLvl, mmss, towerWhenEstablished, acc, dueTower, tlText, offCl,
+  find, isCalling, calling, sentTo, sentAny, staged, heardFrom, isLvl, gone, landed, fmtLvl, mmss, towerWhenEstablished, acc, dueTower, markDue, tlText, offCl,
 } from './kit';
 
 // Winter, a westerly: 23 in use. The parallel lessons land on 23R and depart on 23L (AD 2.22).
@@ -288,6 +288,7 @@ const L_STACK: Lesson = {
       id: 'twr', title: 'Both to Tower when established', run: 4,
       body: `Hand each to Tower with its chip when line 4 reads LOC23R. Skip ahead if you like.`,
       done: (g) => ['EWG1AB', 'DLH4KT'].every((cs) => gone(g.sim, cs) || landed(g.sim, cs)),
+      mark: markDue(['EWG1AB', 'DLH4KT']),
       until: (g) => ['EWG1AB', 'DLH4KT'].some((cs) => dueTower(g.sim, cs)),
     },
     {
@@ -524,6 +525,7 @@ const L_RUNWAY05: Lesson = {
       id: 'land', title: 'Bring both in on 05L', run: 4,
       body: `Keep taking the lead chips as they come: the transition and the ILS 05L, then Tower when established. Skip ahead if you like.`,
       done: (g) => ['EWG1AB', 'RYR8CD'].every((cs) => gone(g.sim, cs) || landed(g.sim, cs)),
+      mark: markDue(['EWG1AB', 'RYR8CD']),
       until: (g) => ['EWG1AB', 'RYR8CD'].some((cs) => dueTower(g.sim, cs) || (leadOf(g.sim, cs)?.items.some((i) => i.k === 'trans') ?? false)),
     },
     {
@@ -599,6 +601,7 @@ const L_SEQUENCE: Lesson = {
       id: 'gap', title: 'Watch the gap ruler, use speed', run: 4,
       body: (g) => { const fin = g.sim.aircraft.filter((a) => a.app?.locCap).sort((a, b) => g.sim.dthr(a) - g.sim.dthr(b)); return `${fin.length >= 2 ? `Gap on final: ${(g.sim.dthr(fin[1]) - g.sim.dthr(fin[0])).toFixed(1)} NM. ` : ''}Behind the A330 the A320 needs 4 NM; 180 kt on the follower holds a gap, 160 kt opens it. Hand each to Tower established (its chip). Skip ahead if you like.`; },
       done: (g) => ['THY5MK', 'EWG1AB', 'CFG2PL'].every((cs) => gone(g.sim, cs) || landed(g.sim, cs)),
+      mark: markDue(['THY5MK', 'EWG1AB', 'CFG2PL']),
       until: (g) => ['THY5MK', 'EWG1AB', 'CFG2PL'].some((cs) => dueTower(g.sim, cs)) || g.sim.aircraft.some((a) => isCalling(g.sim, a.cs) && a.mode === 'HOLD'),
     },
     {
@@ -686,6 +689,7 @@ const L_EMERGENCY: Lesson = {
       id: 'land', title: 'UAE57 to Tower when established, then the rest', run: 4,
       body: `Hand the emergency to Tower established, then clear TUI3LK its transition and bring it in. Skip ahead if you like.`,
       done: (g) => ['UAE57', 'TUI3LK', 'EWG1AB'].every((cs) => gone(g.sim, cs) || landed(g.sim, cs)),
+      mark: markDue(['UAE57', 'TUI3LK', 'EWG1AB']),
       until: (g) => ['UAE57', 'TUI3LK', 'EWG1AB'].some((cs) => dueTower(g.sim, cs)) || (!!leadOf(g.sim, 'TUI3LK') && leadOf(g.sim, 'TUI3LK')!.items.some((i) => i.k === 'trans')),
     },
   ],

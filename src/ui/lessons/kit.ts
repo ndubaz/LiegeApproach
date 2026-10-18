@@ -127,6 +127,11 @@ export const costly = (sim: Sim, from = 0) => sim.events.filter((e) => e.t >= fr
 export const mmss = (s: number) => `${Math.floor(Math.max(0, s) / 60)}:${String(Math.floor(Math.max(0, s) % 60)).padStart(2, '0')}`;
 /** the aircraft is established and still yours: the Tower handoff is due */
 export const dueTower = (sim: Sim, cs: string) => { const a = sim.find(cs); return !!a && a.state === 'assumed' && !!a.app?.locCap && !sim.readbackPending(cs); };
+/** For a step that runs until one of several aircraft needs the student: ring the first that is calling or due to Tower. */
+export const markDue = (list: string[]) => (g: Game) => {
+  const cs = list.find((c) => { const a = g.sim.find(c); return !!a && a.state === 'assumed' && !g.sim.readbackPending(c) && (a.awaitingSince !== undefined || dueTower(g.sim, c)); });
+  return cs ? { cs } : undefined;
+};
 /** a clearance matches these items by kind */
 export const sameItems = (a: Item[], b: Item[]) => a.length === b.length && a.every((x) => b.some((y) => JSON.stringify(x) === JSON.stringify(y)));
 

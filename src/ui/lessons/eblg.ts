@@ -14,7 +14,7 @@ import { attentionRows } from '../commands/attention';
 import {
   A, D, G, K, WHY, LVL, SPD, MORE, flow, sg, att, halo, scFactory, type Lesson, type StepCtx,
   find, isCalling, calling, sentTo, sentAny, staged, heardFrom, heardAny, pickerKind, magHdg, inRange, isLvl, isHdg, offCl, alongFinal,
-  gone, landed, pastFix, fmtLvl, costly, mmss, towerWhenEstablished, acc, twr, freq, app, dueTower, type Once, type Say,
+  gone, landed, pastFix, fmtLvl, costly, mmss, towerWhenEstablished, acc, twr, freq, app, dueTower, markDue, type Once, type Say,
 } from './kit';
 
 const sc = scFactory({ icao: 'EBLG', metar: 'EBLG 121405Z 22006KT 9999 FEW040 15/07 Q1018 NOSIG', runway: '22L', startUtc: '14:05' });
@@ -860,6 +860,7 @@ const L_RUNWAY: Lesson = {
       id: 'land', title: 'Bring them in on 04R', run: 4,
       body: `Keep clearing the lead chips as they come (transition and ILS, then Tower when established). Skip ahead if you like.`,
       done: (g) => ['CLX7HK', 'TAY4EK'].every((cs) => gone(g.sim, cs) || landed(g.sim, cs)),
+      mark: markDue(['CLX7HK', 'TAY4EK']),
       until: (g) => ['CLX7HK', 'TAY4EK'].some((cs) => dueTower(g.sim, cs) || (leadOf(g.sim, cs)?.items.some((i) => i.k === 'trans') ?? false)),
     },
     {

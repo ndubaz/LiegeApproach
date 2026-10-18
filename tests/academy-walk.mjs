@@ -145,6 +145,7 @@ async function flyExam(id) {
 
 for (const id of ids) {
   log(`\n=== ${id}`);
+  const before = results.length + problems.length;
   await page.evaluate((lid) => window.__lgg.lesson(lid), id);
   await wait(800);
   let last = '', stuck = 0, shotN = 0, fallbacks = 0, lastT = -1, still = 0;
@@ -187,6 +188,7 @@ for (const id of ids) {
     if ((stuck > 160 && still > 60) || stuck > 600) { problems.push(`${id}: stuck at ${st.step}`); await page.screenshot({ path: `${OUT}/${id}-STUCK-${st.step}.png` }); break; }
     await wait(300);
   }
+  if (results.length + problems.length === before) { const st = await state(); problems.push(`${id}: walker gave up at ${st?.phase}:${st?.step}`); }
 }
 log('\n=== Results'); for (const r of results) log(r);
 log('\n=== Notes'); for (const n of notes) log(n);
