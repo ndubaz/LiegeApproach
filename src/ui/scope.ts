@@ -809,7 +809,7 @@ export class Scope {
     const pack = this.sim.pack;
     const out: { p: XY; name: string; rank: number }[] = [];
     if (pack.spec.places?.length) for (const pl of pack.spec.places) out.push({ p: this.lls(pl.lat, pl.lon), name: pl.name, rank: pl.rank });
-    else for (const [, f] of pack.fixes) if (f.kind === 'town') out.push({ p: f.p, name: f.note ?? f.id, rank: 2 });
+    else for (const [, f] of pack.fixes) if (f.kind === 'town') out.push({ p: f.p, name: (f.note ?? f.id).replace(/\s*\(.*\)\s*$/, ''), rank: 2 }); // the note's bracketed source remark is not part of the name
     this.placeCache = out;
     return out;
   }
@@ -1568,8 +1568,11 @@ export class Scope {
     }
     return this.resv.r;
   }
+  /** Screen boxes of the command halo (set by the halo each frame): other aircraft's labels keep off them. */
+  haloRects: Rect[] = [];
   private placeLabel(tr: { ac: Aircraft; s: XY; sel: boolean; vEnd: XY; emer?: boolean; alerting?: boolean; next?: boolean }, bw: number, bh: number, obstacles: Rect[], prev: Rect | undefined, armed: boolean): Rect {
     const { ac, s } = tr;
+    if (!tr.sel && this.haloRects.length) obstacles = obstacles.concat(this.haloRects);
     if (this.userLabels.has(ac.cs)) return { x: s.x + ac.label.dx, y: s.y + ac.label.dy, w: bw, h: bh };
     const priority = tr.sel || armed ? 0 : tr.emer ? 1 : tr.alerting ? 2 : tr.next ? 3 : 5;
     const bounds = this.scratchBounds;

@@ -174,7 +174,7 @@ const L_CONTACT: Lesson = {
       return { pass: true, stars: worst <= 8 ? 3 : worst <= 14 ? 2 : 1, why: `All three answered; the longest wait was ${Math.round(worst)} s.` };
     },
     solution: (sim, once, say) => {
-      for (const cs of ['EWG1AB', 'CFG2PL', 'THY5MK']) if (callingClear(sim, cs) && sim.t - sim.find(cs)!.awaitingSince! >= 3 && once(cs, true)) { const a = sim.find(cs)!; const s = suggest(sim, a).find((x) => x.label.startsWith('Descend')); say(cs, s?.items ?? [{ k: 'lvl', lvl: sim.levelFor(sim.ftOf(a.cflSys ?? a.cleared) - 2000) }], 'Oldest caller first, with its next level down.'); }
+      for (const cs of ['EWG1AB', 'CFG2PL', 'THY5MK']) if (callingClear(sim, cs) && sim.t - sim.find(cs)!.awaitingSince! >= 3 && once(cs, true)) { const a = sim.find(cs)!; const s = suggest(sim, a).find((x) => x.label.startsWith('Descend')); say(cs, s?.items ?? [{ k: 'lvl', lvl: sim.levelFor(Math.round((sim.ftOf(a.cflSys ?? a.cleared) - 2000) / 1000) * 1000) }], 'Oldest caller first, with its next level down.'); }
     },
   },
 };

@@ -131,7 +131,8 @@ export class Game {
       item: (cs, it) => { this.select(cs); this.addItem(it); },
       field: (cs, f, at) => { this.select(cs); this.openPicker(f === 'lvl' ? 'lvl' : f === 'spd' ? 'spd' : f === 'hdg' ? 'hdg' : f === 'app' ? 'app' : 'more', at); },
       longPress: (cs) => { this.select(cs); this.openPicker('more'); },
-      emptyTap: () => this.closePicker(),
+      // a tap on empty scope closes an open picker first; with nothing open it drops the selection (and its halo)
+      emptyTap: () => { if (this.pickerOpen()) this.closePicker(); else if (this.cs) this.select(undefined); },
       // the scope's own ladder and drag sends get the two-second undo too (only when the clearance went out)
       onQuick: (cs, it) => { const n = this.sim.cmdLog.length; this.quick(cs, [it]); if (this.sim.cmdLog.length > n) this.armUndo(cs, itemChip(it)); },
       stage: (cs, it) => { this.select(cs); this.addItem(it, false); },
@@ -441,7 +442,14 @@ export class Game {
   private onKey = (e: KeyboardEvent) => {
     const inInput = (e.target as HTMLElement).tagName === 'INPUT';
     if (e.key === 'Tab') { e.preventDefault(); this.nextCaller(); return; }
-    if (e.key === 'Escape') { this.closePicker(); this.scope.closeTransient(); this.clearComposer(); return; }
+    if (e.key === 'Escape') {
+      // Escape steps back: an open picker, then a composed clearance, then the selection
+      if (this.pickerOpen()) this.closePicker();
+      else if (this.items.length || (this.els.cmd as HTMLInputElement).value) this.clearComposer();
+      else if (this.cs) this.select(undefined);
+      this.scope.closeTransient();
+      return;
+    }
     if (inInput) return;
     if (e.key === ' ') { if (this.settings.pttKey === 'Space' && !e.shiftKey) return; e.preventDefault(); this.setSpeed(this.speed ? 0 : 1); return; }
     if (e.key === 'Enter') { this.enter(); return; }
@@ -503,7 +511,12 @@ export class Game {
     const row = this.attention.next();
     if (!row) { this.toast('Nobody needs you right now'); return; }
     if (this.sim.find(row.cs)) { this.select(row.cs, true); this.keepVisible(row.cs); }
-    else this.select(undefined);
+    else {
+      // a release or a request about an aircraft not on the scope: point at its card instead of dropping the player nowhere
+      this.select(undefined);
+      const card = [...this.root.querySelectorAll<HTMLElement>(`[data-rel="${CSS.escape(row.cs)}"]`)].map((b) => b.closest<HTMLElement>('.ic-card')).find((c) => c && c.getClientRects().length);
+      if (card) { card.scrollIntoView({ block: 'nearest' }); card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash'); }
+    }
     this.attention.reveal();
   }
   waiting() { return this.sim.callers().filter((a) => a.state === 'assumed' && this.sim.t >= (a.awaitingSince ?? 0)); }

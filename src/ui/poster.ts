@@ -111,7 +111,7 @@ export function drawVideoMap(ctx: CanvasRenderingContext2D, pack: Pack, v: View,
     ctx.fillStyle = S.fixText; ctx.fillText(id, s.x + 6 * k, s.y + 3 * k);
   }
   // places by rank, then other aerodromes
-  const places = pack.spec.places?.length ? pack.spec.places.map((p) => ({ p: pack.proj.toXY(parseLatLon(p.lat, p.lon)), name: p.name, rank: p.rank })) : [...pack.fixes.values()].filter((f) => f.kind === 'town').map((f) => ({ p: f.p, name: f.note ?? f.id, rank: 2 as const }));
+  const places = pack.spec.places?.length ? pack.spec.places.map((p) => ({ p: pack.proj.toXY(parseLatLon(p.lat, p.lon)), name: p.name, rank: p.rank })) : [...pack.fixes.values()].filter((f) => f.kind === 'town').map((f) => ({ p: f.p, name: (f.note ?? f.id).replace(/\s*\(.*\)\s*$/, ''), rank: 2 as const }));
   for (const pl of places) {
     if (pl.rank === 3) continue;
     const s = toS(v, pl.p);

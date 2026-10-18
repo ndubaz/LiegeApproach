@@ -62,6 +62,6 @@ The 25 % CPU phone target is met for the JavaScript share (about 17 % of a 5 s w
 
 ## Unfinished
 
-- The settings UI does not yet offer the amber skin, the ring step, the level filter, the sweep, the trail length or the replay; the options exist on the scope and are listed above.
+- The halo is large on a 320 px phone: it covers most of the scope while an aircraft is selected. Other labels move off it where they can.
 - Precipitation moves with the storm cells but the cells themselves do not grow, split or decay.
 - Hardware measurements on an iPad and a phone.

@@ -65,6 +65,10 @@ export class Readback {
   cardFor(cs: string) { return this.cards.find((c) => c.cs === cs); }
   update() {
     const sim = this.g.sim;
+    // a clearance taken back (Undo, CORRECTION) is no longer due a readback: its card goes, and the pilot's "Roger" is not one
+    const corr: typeof sim.cmdLog = [];
+    for (let i = sim.cmdLog.length - 1; i >= 0 && sim.t - sim.cmdLog[i].t < 60; i--) if (sim.cmdLog[i].op === 'correct') corr.push(sim.cmdLog[i]);
+    if (corr.length) this.cards = this.cards.filter((c) => !(c.state === 'pending' && corr.some((e) => e.cl.cs === c.cs && e.t >= c.t0 - 0.01)));
     for (const c of this.cards) {
       const ac = sim.find(c.cs);
       if (!ac) { if (c.state === 'pending') { c.state = 'ok'; c.tState = sim.t; } continue; }

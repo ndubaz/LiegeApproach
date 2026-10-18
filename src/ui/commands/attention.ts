@@ -129,9 +129,14 @@ export class Attention {
   /** Next row after the selected aircraft, round the queue. */
   next(): AttentionRow | undefined {
     if (!this.rows.length) return undefined;
-    const i = this.rows.findIndex((r) => r.cs === this.g.cs);
-    return this.rows[(i + 1) % this.rows.length];
+    // walk from the row Tab went to last (a release row selects no aircraft), unless the player picked another aircraft since
+    let i = this.rows.findIndex((r) => r.key === this.cursor);
+    if (i < 0 || (this.g.cs && this.rows[i].cs !== this.g.cs)) i = this.rows.findIndex((r) => r.cs === this.g.cs);
+    const row = this.rows[(i + 1) % this.rows.length];
+    this.cursor = row.key;
+    return row;
   }
+  private cursor?: string;
   /** Show every row for a few seconds (phone: the bar shows only the top row otherwise). */
   reveal(ms = 4000) {
     this.expanded = true; this.el.classList.add('open');

@@ -299,12 +299,14 @@ export function legacyRankIndex(l: Logbook, best: Record<string, Grade>): number
   return i;
 }
 
-/** Tutorial exams passed (read straight from the tutorial's own key). */
-export function lessonsPassed(): number {
+/** The airport a lesson belongs to, from its id: Liège ids are bare ('contact'), other airports' carry the ICAO code ('eddl-contact'). */
+export const lessonAirport = (id: string) => /^[a-z]{4}-/.test(id) ? id.slice(0, 4).toUpperCase() : DEFAULT_PACK;
+/** Tutorial exams passed at an airport (read straight from the tutorial's own key). */
+export function lessonsPassed(icao = activeAirport): number {
   try {
     const raw = JSON.parse(localStorage.getItem('lgg.tutorial') ?? '{}');
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 0;
-    return Object.values(raw).filter((r: any) => r && r.pass).length;
+    return Object.entries(raw).filter(([id, r]: [string, any]) => r && r.pass && lessonAirport(id) === icao).length;
   } catch { return 0; }
 }
 
@@ -328,7 +330,7 @@ export const saveCareer = (c: CareerData, icao = activeAirport) => put(airportKe
 
 /** Career status at an airport: its own checkride ladder, shifts, best grades and hours. */
 export function careerNow(l = loadLogbook(), best = loadBest(), icao = activeAirport): CareerStatus {
-  return careerStatus({ log: logbookFor(icao, l), best, career: loadCareer(icao), lessonsPassed: lessonsPassed() }, checkridesFor(icao));
+  return careerStatus({ log: logbookFor(icao, l), best, career: loadCareer(icao), lessonsPassed: lessonsPassed(icao) }, checkridesFor(icao));
 }
 
 /** Rank and what the next promotion needs (the checkride is the last line). */

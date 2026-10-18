@@ -1,6 +1,6 @@
 import { createPtt } from './ptt';
 import './menu.css';
-import { CHALLENGES, TIER_NAMES, challengesFor, unlockedTiers } from '../engine/scenarios';
+import { CHALLENGES, TIER_NAMES, challengesFor, tierName as tierNameFor, unlockedTiers } from '../engine/scenarios';
 import type { Aircraft, Comp, Scenario, SimEvent } from '../engine/types';
 import { dailyShift, templatesOf, utcPlus, type FreePlayOpts } from '../engine/traffic';
 import { COMPS, COMP_NAMES, COMP_PLAIN, GRADE_NAMES, type Grade, type Result } from '../engine/assess';
@@ -364,7 +364,7 @@ export function renderBriefing(root: HTMLElement, pack: Pack, sc: Scenario, hd: 
   }
   const best = bestGrade(sc.id);
   const serial = String(sc.seed % 10000).padStart(4, '0');
-  const kindName = { challenge: `Challenge · Tier ${sc.tier ?? 1} ${TIER_NAMES[sc.tier ?? 1] ?? ''}`, free: 'Free play', daily: 'Daily shift', shift: 'Free play · night shift', checkride: `Checkride · for ${RANKS[ride?.to ?? 1]}`, drill: `Drill · variation ${drillP?.variant ?? 1}` }[kind];
+  const kindName = { challenge: `Challenge · Tier ${sc.tier ?? 1} ${tierNameFor(sc.tier ?? 1, sc.icao ?? pack.meta.icao)}`, free: 'Free play', daily: 'Daily shift', shift: 'Free play · night shift', checkride: `Checkride · for ${RANKS[ride?.to ?? 1]}`, drill: `Drill · variation ${drillP?.variant ?? 1}` }[kind];
   const brief = sc.briefing ? `${sc.briefing}` : '';
 
   root.innerHTML = shell(`
@@ -1102,7 +1102,7 @@ export function renderDebrief(root: HTMLElement, r: Result, hd: { replay(t: numb
   const pips = (v: number | null) => v === null ? '<span class="na">n/a, no evidence</span>' : `<span class="pips" aria-label="${v} of 5">${[1, 2, 3, 4, 5].map((i) => `<i class="${i <= v ? 'on' : ''} r${v}"></i>`).join('')}</span><b class="mono">${v}</b>`;
   const end = data?.endReason === 'complete' ? 'Traffic complete' : data?.endReason === 'time' ? 'Session time up' : data?.endReason === 'manual' ? 'Ended by you' : '';
   const g: Grade = extra?.drill ? (extra.drill.verdict.pass ? 'pass' : 'fail') : r.grade;
-  const sug = r.suggested ? CHALLENGES.find((c) => c.id === r.suggested) : undefined;
+  const sug = r.suggested ? CHALLENGES.find((c) => c.id === r.suggested && (c.icao ?? 'EBLG') === (r.icao ?? 'EBLG')) : undefined;
   const objs = r.objectives ?? [];
   root.innerHTML = `
   <div class="menu debrief">

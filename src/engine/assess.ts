@@ -66,9 +66,16 @@ const median = (xs: number[]) => {
 const clamp5 = (v: number) => Math.max(1, Math.min(5, Math.round(v)));
 const fmtFt = (ft: number) => `${Math.round(ft / 100) * 100}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
-const NEXT_FOR: Record<Comp, string> = {
-  SEPC: 'cross-streams', SITU: 'fighters', TRAF: 'trombone', COMM: 'similar-callsigns',
-  CORD: 'flow', WORK: 'night-bank', NONR: 'smoke', SPP: 'first-freighter',
+/** The challenge that works the weakest competency, per airport (an airport without a list suggests nothing). */
+const NEXT_FOR: Record<string, Record<Comp, string>> = {
+  EBLG: {
+    SEPC: 'cross-streams', SITU: 'fighters', TRAF: 'trombone', COMM: 'similar-callsigns',
+    CORD: 'flow', WORK: 'night-bank', NONR: 'smoke', SPP: 'first-freighter',
+  },
+  EDDL: {
+    SEPC: 'dus-super', SITU: 'dus-storms', TRAF: 'dus-morning-rush', COMM: 'dus-holiday-wave',
+    CORD: 'dus-koeln', WORK: 'dus-full-hour', NONR: 'dus-emergency-return', SPP: 'dus-runway-change',
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -464,7 +471,7 @@ export function assess(sim: Sim): Result {
       r -= unanswered; // each call left hanging for 25 s costs a full point
       ratings.WORK = clamp5(r);
     }
-    evidence.WORK = `median response ${respMed?.toFixed(1) ?? '—'} s, ${unanswered} unanswered calls`;
+    evidence.WORK = `${respMed === null ? 'no calls answered' : `median response ${respMed.toFixed(1)} s`}, ${unanswered} unanswered calls`;
   }
   {
     if (!sim.emergencies.length) { ratings.NONR = null; evidence.NONR = 'no emergencies this session'; }
@@ -572,7 +579,7 @@ export function assess(sim: Sim): Result {
   if (unanswered && respMed === null) narrative.push(`${unanswered} pilot call${unanswered > 1 ? 's' : ''} went unanswered and you answered none. Every call needs a reply, even a short one.`);
   if (seqBest >= 3) narrative.push(`Best run: ${seqBest} landings in a row right on the minimum spacing.`);
 
-  const suggested = weakest ? NEXT_FOR[weakest] : undefined;
+  const suggested = weakest ? NEXT_FOR[sim.pack.meta.icao]?.[weakest] : undefined;
   return {
     id: `${Date.now()}`, scenarioId: sim.sc.id, title: sim.sc.title, date: new Date().toISOString(), durationMin: Math.round(sim.t / 60), seed: sim.sc.seed,
     gate, ratings, evidence, metrics, costliest, pass, narrative, suggested, landed: sim.landings.length, arrivals: sim.arrivalsSpawned,

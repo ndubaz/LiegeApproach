@@ -19,7 +19,7 @@ export interface HaloHost {
   sim: Sim;
   cs?: string;
   items: Item[];
-  scope: { toS(p: { x: number; y: number }): { x: number; y: number }; plot(ac: Aircraft): { x: number; y: number }; w: number; h: number; scale: number; center: { x: number; y: number }; animateTo(s: number, c: { x: number; y: number }, dur?: number): void; canvas: HTMLCanvasElement; labels: Map<string, { x: number; y: number; w: number; h: number }> };
+  scope: { toS(p: { x: number; y: number }): { x: number; y: number }; plot(ac: Aircraft): { x: number; y: number }; w: number; h: number; scale: number; center: { x: number; y: number }; animateTo(s: number, c: { x: number; y: number }, dur?: number): void; canvas: HTMLCanvasElement; labels: Map<string, { x: number; y: number; w: number; h: number }>; haloRects: { x: number; y: number; w: number; h: number }[] };
   levelOptions(cs: string): QuickOption[];
   speedOptions(cs: string): QuickOption[];
   /** send one item now (merged with anything staged) */
@@ -135,8 +135,10 @@ export class Halo {
   update() {
     const g = this.g;
     const ac = g.cs ? g.sim.find(g.cs) : undefined;
-    const show = this.enabled && !!ac && (ac.state === 'assumed') && !ac.radioFail && !g.pickerOpen();
-    if (!show) { if (!this.el.hidden) { this.el.hidden = true; this.sig = ''; } return; }
+    // the phone drawer covers the lower scope: the halo would sit on top of it and catch taps meant for the strips
+    const drawer = window.innerWidth < 900 && !!this.el.closest('.drawer-open');
+    const show = this.enabled && !!ac && (ac.state === 'assumed') && !ac.radioFail && !g.pickerOpen() && !drawer;
+    if (!show) { if (!this.el.hidden) { this.el.hidden = true; this.sig = ''; } this.g.scope.haloRects = []; return; }
     const sim = g.sim;
     if (this.el.hidden || this.shownFor !== ac!.cs) { this.shownAt = performance.now(); this.shownFor = ac!.cs; }
     const sig = [ac!.cs, lvlKey(ac!.cflSys ?? ac!.cleared), ac!.spdAssigned ?? '', ac!.spdMin ? 1 : 0, ac!.app ? 1 : 0, ac!.mode, g.items.map(itemChip).join(','), sim.runway, Math.round(ac!.ias / 10)].join('|');
@@ -171,9 +173,23 @@ export class Halo {
     }
     if (x + left < 4) left = 4 - x;
     if (x + right + 58 > W - 52) right = W - 52 - 58 - x;
+    // the edge clamp can push a ladder back onto the label: then both ladders go on the label's other side, side by side
+    if (lab) {
+      const lx0 = lab.x - x, lx1 = lab.x + lab.w - x, ly0 = lab.y - y, ly1 = lab.y + lab.h - y;
+      const onLad = (l: number) => lx1 > l && lx0 < l + 58 && ly1 > -178 && ly0 < 36;
+      if (onLad(left) || onLad(right)) {
+        if (x + lx1 + 6 + 120 <= W - 52) { left = lx1 + 6; right = left + 62; }
+        else if (x + lx0 - 6 - 120 >= 4) { right = lx0 - 6 - 58; left = right - 62; }
+      }
+    }
     if (lvlEl) lvlEl.style.left = `${left}px`;
     if (spdEl) spdEl.style.left = `${right}px`;
-    this.el.classList.toggle('up', up && y > 150);
+    const isUp = up && y > 150;
+    this.el.classList.toggle('up', isUp);
+    // tell the scope where the halo is, so the other aircraft's labels move off it
+    const lt = isUp ? -36 : -178, lh = 213; // five 41 px rungs and their gaps
+    const rows = short ? [] : isUp ? [{ x: x - 118, y: y - 144, w: 236, h: 86 }] : [{ x: x - 118, y: y + 42, w: 236, h: 86 }];
+    g.scope.haloRects = [{ x: x + left, y: y + lt, w: 58, h: lh }, { x: x + right, y: y + lt, w: 58, h: lh }, ...rows];
     const hdg = norm360(ac!.hdg - sim.pack.meta.magVar);
     (this.el.querySelector('.halo-ring') as HTMLElement | null)?.style.setProperty('--hdg', `${hdg.toFixed(0)}deg`);
     this.el.hidden = false;
