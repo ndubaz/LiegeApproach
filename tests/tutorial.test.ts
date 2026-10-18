@@ -1,34 +1,40 @@
 import { describe, expect, it } from 'vitest';
-import { loadPack } from '../src/pack/load';
-import { EBLG } from '../src/pack/eblg';
+import { loadPackById } from '../src/pack/index';
 import { Sim } from '../src/engine/sim';
 import { suggest, levelList } from '../src/engine/suggest';
 import { hints } from '../src/engine/hints';
 import { autoControl } from '../src/engine/autopilot';
 import { mergeItem, sortItems, type Item } from '../src/engine/clearance';
-import { LESSONS, examMem, examVerdict, isCalling, type Lesson, type Step, type StepCtx, type Verdict } from '../src/ui/tutorial';
+import {
+  LESSONS, ALL_LESSONS, lessonsFor, lessonById, STAGES, examMem, examVerdict, isCalling, bestInstructorSync, narrate, drillOfTheDay, curriculumProgress,
+  type Lesson, type Step, type StepCtx, type Verdict,
+} from '../src/ui/tutorial';
 import { GLOSSARY } from '../src/ui/glossary';
 import { alongTrack, crossTrack, dist, norm360 } from '../src/geo';
 
 // Every lesson is flown here the way its coach tells a student to: each step's
 // action uses the control the coach names (a suggestion chip must really be on
 // offer with that label; a picker value must really be in the picker), then the
-// step's done-condition must come true. Every exam is flown well (it must pass)
-// and, for several, ignored or flown badly (it must fail).
+// step's done-condition must come true. Every exam is flown by its instructor (the
+// lesson's solution, or the engine's scripted controllers) and must pass; several are
+// also ignored or flown badly and must fail.
 
-const pack = loadPack(EBLG);
-const L = (id: string) => LESSONS.find((l) => l.id === id)!;
+const packOf = (l: Lesson) => loadPackById(l.icao);
+const L = (id: string) => lessonById(id)!;
 const ILS: Item = { k: 'app', app: 'ILS', rwy: '22L' };
 
 // ---------------------------------------------------------------- a stand-in for the game screen
-interface Fake { sim: Sim; cs?: string; items: Item[]; coachHints: boolean; scope: any; settings: any; els: any; root: any; select(cs?: string): void; setSpeed(n: number): void }
+interface Fake { sim: Sim; cs?: string; items: Item[]; coachHints: boolean; scope: any; settings: any; els: any; root: any; halo: { enabled: boolean }; staging: { queue: { cs: string; items: Item[] }[]; length: number }; select(cs?: string): void; setSpeed(n: number): void }
 function fake(sim: Sim): Fake {
+  const cls = new Set<string>();
   const f: Fake = {
     sim, items: [], coachHints: false,
     scope: { scale: 8, rbls: [], marks: [], reserved: [], rblMode: false, w: 390, h: 577, toW: (x: number, y: number) => ({ x, y }), plot: (a: any) => a.p, fit() {}, focus() {}, animateTo() {} },
     settings: { showMva: false },
     els: { picker: { hidden: true, dataset: {} as Record<string, string> } },
-    root: { querySelector: () => null, querySelectorAll: () => [] },
+    root: { querySelector: () => null, querySelectorAll: () => [], classList: { contains: (c: string) => cls.has(c), add: (c: string) => cls.add(c), toggle: (c: string) => (cls.has(c) ? (cls.delete(c), false) : (cls.add(c), true)) } },
+    halo: { enabled: false },
+    staging: { queue: [], get length() { return this.queue.length; } },
     select(cs?: string) { if (cs !== f.cs) f.items = []; f.cs = cs; },
     setSpeed() {},
   };
@@ -47,7 +53,7 @@ function chip(f: Fake, cs: string, prefix: string) {
 /** Tap the bright (primary) chip. */
 function lead(f: Fake, cs: string, prefix?: string) {
   const s = chips(f.sim, cs)[0];
-  if (!s?.primary || (prefix && !s.label.startsWith(prefix))) throw new Error(`t=${f.sim.t}: lead chip for ${cs} is "${s?.label}" (${s?.primary ? 'primary' : 'not primary'}), expected ${prefix ?? 'a primary'}`);
+  if (!s?.primary || (prefix && !s.label.startsWith(prefix))) throw new Error(`t=${f.sim.t}: lead chip for ${cs} is "${s?.label}" (${s?.primary ? 'primary' : 'not primary'}), expected ${prefix ?? 'a primary'}; offered: ${chips(f.sim, cs).map((x) => x.label).join(' | ')}`);
   f.select(cs);
   f.sim.issue({ cs, items: s.items });
   return s;
@@ -60,13 +66,15 @@ function pick(f: Fake, cs: string, it: Item) {
 }
 function transmit(f: Fake) { expect(f.cs).toBeDefined(); const r = f.sim.issue({ cs: f.cs!, items: sortItems(f.items) }); f.items = []; return r; }
 const say = (f: Fake, cs: string, items: Item[]) => { f.select(cs); return f.sim.issue({ cs, items }); };
+/** A halo rung: the level must be one the halo's ladder could show (any level in the grid). */
+const rung = (f: Fake, cs: string, it: Item) => { if (it.k === 'lvl') expect(levelList(f.sim).some((l) => f.sim.ftOf(l) === f.sim.ftOf(it.lvl))).toBe(true); return say(f, cs, [it]); };
 
 type Act = ((f: Fake, x: StepCtx) => void) | { when: (f: Fake, x: StepCtx) => boolean; do: (f: Fake, x: StepCtx) => void };
 interface WalkOpts { answers?: Record<string, number>; background?: (f: Fake, step: string) => void; maxStepS?: number }
 
 /** Fly a lesson step by step. Returns the fake game so the exam (quizzes) can continue in it. */
 function walk(lesson: Lesson, acts: Record<string, Act>, o: WalkOpts = {}) {
-  const sim = new Sim(pack, lesson.scenario);
+  const sim = new Sim(packOf(lesson), lesson.scenario);
   try { return walk0(lesson, acts, o, sim); } catch (e) {
     const ctx = sim.log.slice(-14).map((t) => `  ${t.t0} ${t.from} ${t.cs}: ${t.text}`).join('\n') + '\n  events: ' + sim.events.map((x) => `${x.t} ${x.kind} ${x.cs ?? ''}`).join(', ') + '\n  aircraft: ' + sim.aircraft.map((a) => `${a.cs} (${a.p.x.toFixed(1)},${a.p.y.toFixed(1)}) ${Math.round(a.alt)} ${a.mode} ${a.state} app=${a.app ? (a.app.locCap ? 'LOC' : 'armed') : '-'}`).join('; ');
     (e as Error).message += `\n${ctx}`;
@@ -119,16 +127,18 @@ function walk0(lesson: Lesson, acts: Record<string, Act>, o: WalkOpts, sim: Sim)
 /** Run an exam scenario with a script. */
 function exam(lesson: Lesson, script: (sim: Sim, once: (k: string, c: boolean) => boolean) => void, maxS = 2400): { v: Verdict | undefined; sim: Sim } {
   const ex = lesson.exam!;
-  const sim = new Sim(pack, ex.scenario!);
+  const sim = new Sim(packOf(lesson), ex.scenario!);
   const m = examMem(sim);
   const did = new Set<string>();
   const once = (k: string, c: boolean) => (c && !did.has(k) ? (did.add(k), true) : false);
   let v: Verdict | undefined;
   while (sim.t < maxS) {
+    const t0 = sim.t;
     sim.step();
     ex.watch?.(sim, m);
     v = examVerdict(ex, sim, m);
     if (v) break;
+    if (sim.t === t0) { v = { pass: false, stars: 0, why: 'The session ended before the exam was complete.' }; break; }
     script(sim, once);
     ex.status?.(sim, m);
   }
@@ -136,63 +146,122 @@ function exam(lesson: Lesson, script: (sim: Sim, once: (k: string, c: boolean) =
   return { v, sim };
 }
 const calling = (sim: Sim, cs: string) => isCalling(sim, cs) && !sim.readbackPending(cs);
-/** Arrivals established on the localizer: 160 kt and Tower, as the "160 to 4 · Tower" chip does. */
-const towerWhenEstablished = (sim: Sim, once: (k: string, c: boolean) => boolean) => {
-  for (const a of sim.aircraft) if (a.kind === 'arr' && a.state === 'assumed' && a.app?.locCap && sim.dthr(a) < 12 && once('twr' + a.cs + a.goArounds, true)) sim.issue({ cs: a.cs, items: [{ k: 'spd', spd: 160, until: 4 }, { k: 'xfr', unit: 'TWR' }] });
-};
 /** the student's Tower handoffs during the steps that say so ("Tower chips for both") */
 const towerIn = (...steps: string[]) => (f: Fake, step: string) => { if (steps.includes(step)) towerFake(f); };
 const towerFake = (f: Fake) => { for (const a of f.sim.aircraft) if (a.kind === 'arr' && a.state === 'assumed' && a.app?.locCap && f.sim.dthr(a) < 12 && !f.sim.readbackPending(a.cs)) chip(f, a.cs, a.ias > 175 ? '160 to 4' : 'Tower'); };
 const penalties = (sim: Sim) => sim.events.filter((e) => e.cost > 0).map((e) => e.text);
 const xt = (sim: Sim, cs: string) => { const a = sim.find(cs)!; return crossTrack(a.p, sim.rwy.thr, sim.rwy.crs); };
 const along = (sim: Sim, cs: string) => { const a = sim.find(cs)!; return alongTrack(a.p, sim.rwy.thr, norm360(sim.rwy.crs + 180)); };
+const established = (f: Fake, cs: string) => !!f.sim.find(cs)?.app?.locCap && !f.sim.readbackPending(cs);
+/** the lead chip when it is on offer (any text), used by the Düsseldorf steps that say "its lead chip" */
+const leadWhenCalling = (cs: string): Act => ({ when: (f) => calling(f.sim, cs), do: (f) => lead(f, cs) });
+/** holders leave the hold on the primary Leave hold chip (what the student does in the long Düsseldorf steps) */
+const releaseHolds = (f: Fake) => { for (const a of f.sim.aircraft) if (a.state === 'assumed' && !f.sim.readbackPending(a.cs) && a.mode === 'HOLD') { const s = chips(f.sim, a.cs).find((x) => x.label.startsWith('Leave hold') && x.primary); if (s) f.sim.issue({ cs: a.cs, items: s.items }); } };
 
-// ---------------------------------------------------------------- text rules
-describe('tutorial text', () => {
+// ---------------------------------------------------------------- text rules and structure
+describe('academy structure and text', () => {
   const texts: [string, string][] = [];
-  for (const l of LESSONS) {
+  for (const l of ALL_LESSONS) {
     texts.push([`${l.id}.title`, l.title], [`${l.id}.summary`, l.summary]);
     for (const s of l.steps) { texts.push([`${l.id}/${s.id}.title`, s.title]); if (typeof s.body === 'string') texts.push([`${l.id}/${s.id}`, s.body]); if (s.ask && typeof s.ask.why === 'string') texts.push([`${l.id}/${s.id}.why`, s.ask.why]); }
     if (l.exam) texts.push([`${l.id}.exam`, l.exam.brief + ' ' + l.exam.rule + ' ' + l.exam.title]);
   }
-  it('has eleven lessons, each ending in an exam, with unique ids', () => {
-    expect(LESSONS.length).toBe(11);
-    expect(new Set(LESSONS.map((l) => l.id)).size).toBe(11);
-    for (const l of LESSONS) { expect(l.exam, l.id).toBeDefined(); expect(new Set(l.steps.map((s) => s.id)).size, l.id).toBe(l.steps.length); }
+  it('has two curricula in three stages, every lesson ending in an exam, with unique ids', () => {
+    expect(LESSONS.length).toBe(15);
+    expect(lessonsFor('EBLG')).toEqual(LESSONS);
+    expect(lessonsFor('EDDL').length).toBe(10);
+    expect(lessonsFor('ZZZZ')).toEqual(LESSONS);
+    expect(new Set(ALL_LESSONS.map((l) => l.id)).size).toBe(ALL_LESSONS.length);
+    for (const l of ALL_LESSONS) {
+      expect(l.exam, l.id).toBeDefined();
+      expect(new Set(l.steps.map((s) => s.id)).size, l.id).toBe(l.steps.length);
+      expect(l.steps.length, l.id).toBeGreaterThanOrEqual(3);
+      expect(l.comps.length, `${l.id} comps`).toBeGreaterThan(0);
+      expect(STAGES.some((s) => s.id === l.stage), l.id).toBe(true);
+      expect(l.scenario.icao).toBe(l.icao);
+      expect(l.exam!.scenario?.icao ?? l.icao).toBe(l.icao);
+    }
+    for (const icao of ['EBLG', 'EDDL']) {
+      const order = lessonsFor(icao).map((l) => STAGES.findIndex((s) => s.id === l.stage));
+      expect(order, `${icao} stages in order`).toEqual([...order].sort((a, b) => a - b));
+      for (const s of STAGES) expect(lessonsFor(icao).some((l) => l.stage === s.id), `${icao} has ${s.id}`).toBe(true);
+    }
   });
   it('uses plain English: no em dashes, none of the banned words', () => {
     for (const [k, t] of texts) {
       expect(t, k).not.toMatch(/—/);
-      expect(t.toLowerCase(), k).not.toMatch(/\b(delve|crucial|furthermore|moreover|testament|beacon|tapestry)\b/);
+      expect(t.toLowerCase(), k).not.toMatch(/\b(delve|crucial|furthermore|moreover|testament|beacon|tapestry|revolutionize)\b/);
     }
   });
   it('only links words that are in the glossary', () => {
-    const all = texts.map(([, t]) => t).join(' ') + LESSONS.flatMap((l) => l.steps.map((s) => (typeof s.body === 'function' ? s.body.toString() : ''))).join(' ');
+    const all = texts.map(([, t]) => t).join(' ') + ALL_LESSONS.flatMap((l) => l.steps.map((s) => (typeof s.body === 'function' ? s.body.toString() : ''))).join(' ');
     const keys = [...all.matchAll(/G\('([^']+)'/g), ...all.matchAll(/data-gloss="([^"]+)"/g)].map((m) => m[1]);
     expect(keys.length).toBeGreaterThan(15);
     for (const k of keys) expect(GLOSSARY[k], k).toBeDefined();
   });
+  it('the Liège lessons speak of Brussels and the Düsseldorf lessons of Langen', () => {
+    const pack = loadPackById('EDDL');
+    const sim = new Sim(pack, L('eddl-departures').scenario);
+    const f = fake(sim);
+    const body = (L('eddl-departures').steps.find((s) => s.id === 'bottrop')!.body as (g: any) => string)(f);
+    expect(body).toContain('Langen');
+    expect(body).not.toContain('Brussels');
+    const simL = new Sim(loadPackById('EBLG'), L('departures').scenario);
+    const bodyL = (L('departures').steps.find((s) => s.id === 'bru')!.body as (g: any) => string)(fake(simL));
+    expect(bodyL).toContain('Brussels');
+  });
+  it('the curriculum progress and the drill of the day read the records', () => {
+    const p = curriculumProgress('EDDL', {}, new Set());
+    expect(p.total).toBe(10); expect(p.next?.id).toBe('eddl-picture');
+    const none = drillOfTheDay('EBLG', [], {});
+    expect(none?.lesson.id).toBe('scope');
+    expect(none?.reason[0]).toMatch(/No sessions/);
+    const rec = (r: Partial<Record<string, number>>) => ({ id: 'x', scenarioId: 'free', title: 'x', date: 'd', durationMin: 30, ratings: { SEPC: 4, SITU: 4, TRAF: 4, COMM: 4, CORD: 4, WORK: 4, NONR: 4, SPP: 4, ...r }, landed: 3, arrivals: 3, gatePass: true } as any);
+    const weakSep = drillOfTheDay('EBLG', [rec({ SEPC: 1.5 }), rec({ SEPC: 2 })], { separation: { pass: true, stars: 3 }, spacing: { pass: true, stars: 1 } });
+    expect(weakSep?.comp).toBe('SEPC');
+    expect(['departures', 'spacing', 'safety']).toContain(weakSep?.lesson.id); // the SEPC lesson with the fewest stars (none passed) wins
+    expect(weakSep?.reason[0]).toMatch(/Keeping aircraft apart/);
+    const weakCord = drillOfTheDay('EDDL', [rec({ CORD: 2 })], {});
+    expect(weakCord?.comp).toBe('CORD');
+    expect(weakCord?.lesson.icao).toBe('EDDL');
+  });
 });
 
-// ---------------------------------------------------------------- lessons
-describe('lessons fly the way the coach says', () => {
-  it('1 the scope, and the quiz exam', () => {
+// ---------------------------------------------------------------- every exam's instructor passes
+describe('the instructor passes every exam', () => {
+  for (const l of ALL_LESSONS) {
+    if (!l.exam?.scenario) continue;
+    it(`${l.id}: ${l.exam.title}`, () => {
+      const r = bestInstructorSync(l.exam!, packOf(l));
+      expect(r.verdict.pass, `${l.id} instructor (${r.name}): ${r.verdict.why}`).toBe(true);
+      expect(r.cmds.length).toBeGreaterThan(0);
+      // narration: every clearance has words; scripted ones carry their reason
+      const sim = new Sim(packOf(l), l.exam!.scenario!);
+      const c = r.cmds[0];
+      while (sim.t < c.t) sim.step();
+      const nar = narrate(sim, c.cl, c.why);
+      expect(nar.words.length).toBeGreaterThan(5);
+      if (l.exam!.solution && c.why) expect(nar.why).toBe(c.why);
+    });
+  }
+});
+
+// ---------------------------------------------------------------- Liège lessons
+describe('Liège lessons fly the way the coach says', () => {
+  it('1 the picture, and the quiz exam', () => {
     const { sim, f } = walk(L('scope'), {
       zoom: (f) => { f.scope.scale *= 1.35 * 1.35; },
       alhuv: (f, x) => { const p = f.sim.pack.fixes.get('ALHUV')!.p; x.tap = { x: p.x + 0.5, y: p.y, t: 1 }; },
       mva: (f, x) => { x.tap = { x: 0, y: -25, t: 2 }; },
       select: (f) => f.select('QTR8125'),
-    }, { answers: { levels: 1 } });
-    // the clock stayed stopped: nobody called
+    }, { answers: { levels: 1, scan: 1 } });
     expect(sim.t).toBeLessThan(5);
     expect(f.settings.showMva).toBe(false);
-    // quiz: right answers pass with three stars, wrong ones fail
     const ex = L('scope').exam!;
     const good = examMem(sim), bad = examMem(sim);
     for (const q of ex.quiz!) { const r = q.answer(sim); good.answers.push(r); good.right++; bad.answers.push((r + 1) % (typeof q.options === 'function' ? q.options(sim) : q.options).length); }
     expect(examVerdict(ex, sim, good)).toMatchObject({ pass: true, stars: 3 });
     expect(examVerdict(ex, sim, bad)?.pass).toBe(false);
-    // the answers are distinct and stable while paused
     const a = sim.find('FDX5203')!;
     expect(Math.hypot(a.p.x, a.p.y)).toBeGreaterThan(15);
     expect(Math.hypot(a.p.x, a.p.y)).toBeLessThan(25);
@@ -207,13 +276,9 @@ describe('lessons fly the way the coach says', () => {
       answer: (f) => { f.select('ETH3721'); lead(f, 'ETH3721'); },
     });
     expect(sim.events.filter((e) => e.kind === 'unanswered').map((e) => e.cs)).toEqual(['ETH3721']);
-    // exam: answer each caller a few seconds after it calls
-    const good = exam(L('contact'), (sim, once) => {
-      for (const cs of ['QTR8125', 'AZG7321', 'FDX5203']) if (calling(sim, cs) && sim.t - sim.find(cs)!.awaitingSince! >= 3 && once(cs, true)) { const s = suggest(sim, sim.find(cs)!).find((x) => x.label.startsWith('Descend'))!; sim.issue({ cs, items: s.items }); }
-    });
-    expect(good.v).toMatchObject({ pass: true, stars: 3 });
     const ignored = exam(L('contact'), () => {});
     expect(ignored.v?.pass).toBe(false);
+    expect(bestInstructorSync(L('contact').exam!, packOf(L('contact'))).verdict.stars).toBe(3);
   });
 
   it('3 turns: dial, drag, and the two-gate exam', () => {
@@ -224,93 +289,77 @@ describe('lessons fly the way the coach says', () => {
       send: (f) => transmit(f),
       drag: (f) => say(f, 'CHG201', [{ k: 'hdg', hdg: 120, dir: 'R' }]),
     }, { answers: { lr: 0 } });
-    const g1 = pack.fixes.get('LG008')!.p;
-    const good = exam(L('turns'), (sim, once) => {
-      const a = sim.find('CHG201'); if (!a) return;
-      if (once('h1', calling(sim, 'CHG201'))) sim.issue({ cs: 'CHG201', items: [{ k: 'hdg', hdg: 65, dir: 'L' }] });
-      if (once('h2', dist(a.p, g1) < 0.9)) sim.issue({ cs: 'CHG201', items: [{ k: 'hdg', hdg: 200, dir: 'R' }] });
-    });
-    expect(good.v?.pass, good.v?.why).toBe(true);
     const straight = exam(L('turns'), (sim, once) => { if (once('a', calling(sim, 'CHG201'))) sim.issue({ cs: 'CHG201', items: [{ k: 'lvl', lvl: { fl: 70 } }] }); });
     expect(straight.v?.pass).toBe(false);
     const cheat = exam(L('turns'), (sim, once) => { if (once('a', calling(sim, 'CHG201'))) sim.issue({ cs: 'CHG201', items: [{ k: 'dct', fix: 'LG008' }] }); });
     expect(cheat.v).toMatchObject({ pass: false });
   });
 
-  it('4 descent planning: the SUP line, and the FL090 exam', () => {
+  it('4 the command halo: rung, undo, stage, and the quick-hands exam', () => {
+    const { sim, f } = walk(L('halo'), {
+      select: (f) => f.select('QTR8125'),
+      rung: (f) => rung(f, 'QTR8125', { k: 'lvl', lvl: { fl: 70 } }),
+      undo: (f) => { expect(say(f, 'QTR8125', [{ k: 'spd', spd: 210 }]).ok).toBe(true); expect(f.sim.correct('QTR8125')).toBe(true); },
+      stage: (f) => { pick(f, 'QTR8125', { k: 'spd', spd: 220 }); transmit(f); },
+      eth: { when: (f) => calling(f.sim, 'ETH3721'), do: (f) => rung(f, 'ETH3721', { k: 'lvl', lvl: { fl: 70 } }) },
+    }, { answers: { words: 1 } });
+    expect(f.halo.enabled).toBe(true);
+    expect(sim.cmdLog.some((c) => c.op === 'correct')).toBe(true);
+    const slow = exam(L('halo'), (sim, once) => { for (const cs of ['QTR8125', 'AZG7321', 'FDX5203']) if (once(cs, calling(sim, cs))) sim.issue({ cs, items: [{ k: 'lvl', lvl: { fl: 60 } }] }); });
+    expect(slow.v?.pass).toBe(false); // levels only, never a speed
+    expect(slow.v?.why).toMatch(/speed/);
+  });
+
+  it('5 the attention queue and readback cards, and the busy minute', () => {
+    const { sim } = walk(L('queue'), {
+      next: (f) => f.select('QTR8125'),
+      go: (f) => lead(f, 'QTR8125'),
+      next2: (f) => lead(f, 'AZG7321'),
+      fix: (f) => lead(f, 'AZG7321', 'Negative'),
+      third: { when: (f) => calling(f.sim, 'FDX5203'), do: (f) => { f.select('FDX5203'); lead(f, 'FDX5203'); } },
+    });
+    expect(sim.events.some((e) => e.kind === 'readback_caught' && e.cs === 'AZG7321')).toBe(true);
+    expect(sim.events.filter((e) => e.kind === 'readback_missed' || e.kind === 'unanswered')).toEqual([]);
+    const ignored = exam(L('queue'), () => {});
+    expect(ignored.v?.pass).toBe(false);
+    // answers everyone but never corrects the wrong readback
+    const deaf = exam(L('queue'), (sim, once) => { for (const cs of ['QTR8125', 'AZG7321', 'FDX5203', 'ETH3721']) if (once(cs, calling(sim, cs))) { const s = suggest(sim, sim.find(cs)!).find((x) => x.label.startsWith('Descend')); if (s) sim.issue({ cs, items: s.items }); } });
+    expect(deaf.v?.pass).toBe(false);
+    expect(deaf.v?.why).toMatch(/wrong readback/i);
+  });
+
+  it('6 command line and staging, and four check-ins', () => {
+    const { sim, f } = walk(L('cmdline'), {
+      open: (f) => f.root.classList.add('kbd'),
+      type: (f) => say(f, 'QTR8125', [{ k: 'lvl', lvl: { fl: 60 } }]),
+      two: (f) => say(f, 'TAY4EK', [{ k: 'lvl', lvl: { fl: 70 } }, { k: 'spd', spd: 210 }]),
+      stage1: (f) => { pick(f, 'CHG201', { k: 'lvl', lvl: { fl: 70 } }); f.staging.queue.push({ cs: 'CHG201', items: f.items }); f.items = []; },
+      stage2: (f) => { pick(f, 'QTR8125', { k: 'spd', spd: 220 }); f.staging.queue.push({ cs: 'QTR8125', items: f.items }); f.items = []; },
+      send: (f) => { for (const q of f.staging.queue.splice(0)) say(f, q.cs, q.items); },
+    }, { answers: { history: 0 } });
+    expect(f.staging.length).toBe(0);
+    expect(sim.cmdLog.filter((c) => c.cl.cs === 'QTR8125').length).toBe(2);
+    expect(exam(L('cmdline'), () => {}).v?.pass).toBe(false);
+  });
+
+  it('7 descent planning: the SUP line, and the FL090 exam', () => {
     let hintSeen = false;
     const { sim } = walk(L('descent'), {
       step: (f) => chip(f, 'TAY4EK', 'Descend FL070'),
       rest: (f) => lead(f, 'TAY4EK', 'ALHUV1B · 3000 · ILS 22L'),
       fix: (f) => { pick(f, 'QTR8152', { k: 'lvl', lvl: { ft: 2500 } }); expect(transmit(f).warnings).toEqual([]); },
-      tayTwr: { when: (f) => !!f.sim.find('TAY4EK')?.app?.locCap && !f.sim.readbackPending('TAY4EK'), do: (f) => chip(f, 'TAY4EK', '160 to 4') },
-      land: { when: (f) => !!f.sim.find('QTR8152')?.app?.locCap && !f.sim.readbackPending('QTR8152'), do: (f) => chip(f, 'QTR8152', '160 to 4') },
-    }, { answers: { need: 1, have: 1 }, background: (f) => {
-      // what the SUP line shows is the most urgent hint: it must be the descent warning when the coach says so
-      const top = hints(f.sim)[0];
-      if (top?.key === 'high:QTR8152') hintSeen = true;
-    } });
+      tayTwr: { when: (f) => established(f, 'TAY4EK'), do: (f) => chip(f, 'TAY4EK', '160 to 4') },
+      land: { when: (f) => established(f, 'QTR8152'), do: (f) => chip(f, 'QTR8152', '160 to 4') },
+    }, { answers: { need: 1, have: 1 }, background: (f) => { if (hints(f.sim)[0]?.key === 'high:QTR8152') hintSeen = true; } });
     expect(hintSeen).toBe(true);
     expect(sim.landings.length + sim.aircraft.filter((a) => a.state === 'transferred').length).toBe(2);
     expect(sim.events.filter((e) => ['goaround', 'los', 'mva', 'stca', 'wake'].includes(e.kind))).toEqual([]);
-    // exam: step down in good time, then the transition
-    const good = exam(L('descent'), (sim, once) => {
-      const a = sim.find('QTR8152'); if (!a) return;
-      if (once('c', calling(sim, 'QTR8152'))) sim.issue({ cs: 'QTR8152', items: [{ k: 'trans', name: 'ALHUV1B' }, { k: 'lvl', lvl: { fl: 60 } }, ILS] });
-      if (once('d', !!a.app && a.alt < 6600)) sim.issue({ cs: 'QTR8152', items: [{ k: 'lvl', lvl: { ft: 2500 } }, { k: 'spd', spd: 210 }] });
-      towerWhenEstablished(sim, once);
-    });
-    expect(good.v?.pass, good.v?.why).toBe(true);
-    expect(good.v!.stars).toBe(3);
-    const ignored = exam(L('descent'), (sim, once) => { if (once('c', calling(sim, 'QTR8152'))) sim.issue({ cs: 'QTR8152', items: [{ k: 'trans', name: 'ALHUV1B' }, ILS] }); towerWhenEstablished(sim, once); });
+    expect(bestInstructorSync(L('descent').exam!, packOf(L('descent'))).verdict.stars).toBe(3);
+    const ignored = exam(L('descent'), (sim, once) => { if (once('c', calling(sim, 'QTR8152'))) sim.issue({ cs: 'QTR8152', items: [{ k: 'trans', name: 'ALHUV1B' }, ILS] }); });
     expect(ignored.v?.pass).toBe(false);
   });
 
-  it('5 vectors, and the exam from the other side', () => {
-    const { sim } = walk(L('vectors'), {
-      downwind: (f) => say(f, 'CHG201', [{ k: 'hdg', hdg: 45, dir: 'L' }]),
-      down: (f) => { pick(f, 'CHG201', { k: 'lvl', lvl: { ft: 3000 } }); pick(f, 'CHG201', { k: 'spd', spd: 210 }); expect(transmit(f).warnings).toEqual([]); },
-      base: (f) => chip(f, 'CHG201', 'Base R135'),
-      intercept: { when: (f) => Math.abs(xt(f.sim, 'CHG201')) < 2.2, do: (f) => chip(f, 'CHG201', 'R195 · ILS 22L') },
-      twr: (f) => chip(f, 'CHG201', '160 to 4'),
-    });
-    expect(sim.landings.map((l) => l.cs)).toEqual(['CHG201']);
-    expect(penalties(sim)).toEqual([]);
-    const good = exam(L('vectors'), (sim, once) => {
-      const a = sim.find('DHK7'); if (!a) return;
-      if (once('dw', calling(sim, 'DHK7'))) sim.issue({ cs: 'DHK7', items: [{ k: 'hdg', hdg: 45, dir: 'R' }, { k: 'lvl', lvl: { ft: 4000 } }] });
-      if (once('lo', sim.t > 60)) sim.issue({ cs: 'DHK7', items: [{ k: 'lvl', lvl: { ft: 3000 } }, { k: 'spd', spd: 210 }] });
-      if (once('base', sim.t > 60 && along(sim, 'DHK7') > 12)) sim.issue({ cs: 'DHK7', items: [{ k: 'hdg', hdg: 315, dir: 'L' }] });
-      if (once('icpt', sim.t > 80 && a.hdgSys !== undefined && norm360(a.hdgSys - 2) > 300 && Math.abs(xt(sim, 'DHK7')) < 2.3)) sim.issue({ cs: 'DHK7', items: [{ k: 'hdg', hdg: 255, dir: 'L' }, ILS] });
-      towerWhenEstablished(sim, once);
-    });
-    expect(good.v?.pass, good.v?.why).toBe(true);
-    const late = exam(L('vectors'), (sim, once) => {
-      if (once('dw', calling(sim, 'DHK7'))) sim.issue({ cs: 'DHK7', items: [{ k: 'hdg', hdg: 45, dir: 'R' }, { k: 'lvl', lvl: { ft: 4000 } }] });
-      if (once('base', sim.t > 60 && along(sim, 'DHK7') > 12)) sim.issue({ cs: 'DHK7', items: [{ k: 'hdg', hdg: 315, dir: 'L' }] });
-      if (once('icpt', sim.t > 80 && Math.abs(xt(sim, 'DHK7')) < 2.3)) sim.issue({ cs: 'DHK7', items: [{ k: 'hdg', hdg: 255, dir: 'L' }, ILS] });
-    }); // never slowed, never handed to Tower
-    expect(late.v?.pass).toBe(false);
-  });
-
-  it('6 separation: the alarm, and two converging pairs', () => {
-    const { sim } = walk(L('separation'), {
-      rbl: (f) => { f.scope.rbls.push({ a: { cs: 'AZG7321' }, b: { cs: 'ETH3721' } }); },
-      act: (f) => chip(f, 'ETH3721', 'Descend FL060'),
-    }, { answers: { cpa: 1 } });
-    expect(sim.events.filter((e) => e.kind === 'stca').length).toBe(1);
-    expect(sim.events.filter((e) => e.kind === 'los')).toEqual([]);
-    const good = exam(L('separation'), (sim, once) => {
-      if (once('p1', calling(sim, 'ETH3721'))) sim.issue({ cs: 'ETH3721', items: [{ k: 'lvl', lvl: { fl: 60 } }] });
-      if (once('p2', calling(sim, 'TAY4EK'))) sim.issue({ cs: 'TAY4EK', items: [{ k: 'lvl', lvl: { fl: 60 } }] });
-      for (const cs of ['CLX7HK', 'FDX5203']) if (once(cs, calling(sim, cs))) sim.issue({ cs, items: [{ k: 'lvl', lvl: { fl: 80 } }] });
-    });
-    expect(good.v).toMatchObject({ pass: true, stars: 3 });
-    const ignored = exam(L('separation'), () => {});
-    expect(ignored.v?.pass).toBe(false);
-  });
-
-  it('7 transitions and the hold, and three for one runway', () => {
+  it('8 transitions and the hold, and three for one runway', () => {
     const { sim } = walk(L('transitions'), {
       trans: (f) => lead(f, 'AZG7321', 'ALHUV1A · 3000 · ILS 22L'),
       hold: (f) => { pick(f, 'QTR8152', { k: 'hold', fix: 'ALHUV' }); transmit(f); },
@@ -321,30 +370,7 @@ describe('lessons fly the way the coach says', () => {
       land: { when: (f) => chips(f.sim, 'QTR8152').some((s) => s.label === 'Tower'), do: (f) => chip(f, 'QTR8152', 'Tower') },
     }, { answers: { tl: 1 } });
     expect(sim.events.filter((e) => ['los', 'wake', 'stack', 'goaround', 'stca', 'mva'].includes(e.kind))).toEqual([]);
-    // exam: the autopilot's sequencing (transition, stack, release in order) passes; doing nothing fails
-    const good = exam(L('transitions'), (sim) => autoControl(sim));
-    expect(good.v?.pass, good.v?.why).toBe(true);
     const ignored = exam(L('transitions'), () => {}, 2000);
-    expect(ignored.v?.pass).toBe(false);
-  });
-
-  it('8 wake spacing: 180 kt holds about 4.4 NM, and the two-gap exam', () => {
-    const { sim } = walk(L('spacing'), {
-      speed: (f) => { pick(f, 'TAY4EK', { k: 'spd', spd: 180 }); transmit(f); },
-    }, { background: towerIn('land') });
-    const gap = sim.spacing.find((s) => s.leader === 'CLX7HK')!;
-    expect(gap.gap).toBeGreaterThanOrEqual(4);
-    expect(gap.gap).toBeLessThan(5);
-    expect(sim.events.filter((e) => e.kind === 'wake' || e.kind === 'goaround')).toEqual([]);
-    // exam: slow each follower when its leader is established
-    const good = exam(L('spacing'), (sim, once) => {
-      const c = sim.find('CLX7HK'), t = sim.find('TAY4EK'), d = sim.find('DHK7');
-      if (t && once('t', !!c?.app?.locCap && sim.dthr(t) < 16)) sim.issue({ cs: 'TAY4EK', items: [{ k: 'spd', spd: 180 }] });
-      if (d && once('d', !!t?.app?.locCap && sim.dthr(d) < 16)) sim.issue({ cs: 'DHK7', items: [{ k: 'spd', spd: SPACING_EXAM_SPD }] });
-      towerWhenEstablished(sim, once);
-    });
-    expect(good.v?.pass, good.v?.why).toBe(true);
-    const ignored = exam(L('spacing'), (sim, once) => towerWhenEstablished(sim, once));
     expect(ignored.v?.pass).toBe(false);
   });
 
@@ -357,63 +383,224 @@ describe('lessons fly the way the coach says', () => {
       bru: { when: (f) => chips(f.sim, 'CHG7302').some((s) => s.label === 'Brussels'), do: (f) => chip(f, 'CHG7302', 'Brussels') },
     });
     expect(sim.events.filter((e) => ['los', 'stca', 'exit_unxfr', 'release_delay', 'airspace'].includes(e.kind))).toEqual([]);
-    const good = exam(L('departures'), (sim, once) => {
-      for (const r of sim.releases) if (r.state === 'pending' && once('rel' + r.cs, sim.t - r.t > 4)) sim.issue({ cs: r.cs, items: [{ k: 'rel' }] });
-      const q = sim.find('QTR8125');
-      if (q && once('q', calling(sim, 'QTR8125'))) sim.issue({ cs: 'QTR8125', items: [{ k: 'lvl', lvl: { fl: 80 } }] });
-      for (const cs of ['CHG7302', 'BCS7']) {
-        const a = sim.find(cs); if (!a || a.state !== 'assumed') continue;
-        if (once('ans' + cs, calling(sim, cs))) sim.issue({ cs, items: [{ k: 'lvl', lvl: { fl: 60 } }] });
-        const clear = !q || q.state !== 'assumed' || dist(a.p, q.p) > 8 && alongTrack(q.p, a.p, a.trk) < 0 || Math.abs(a.p.x - q.p.x) > 15;
-        if (once('cl' + cs, clear && a.alt > 4000 && sentAnyTo(sim, cs))) sim.issue({ cs, items: [{ k: 'lvl', lvl: { fl: 90 } }] });
-        if (once('bru' + cs, Math.hypot(a.p.x, a.p.y) > 20)) sim.issue({ cs, items: [{ k: 'xfr', unit: 'BRU' }] });
-      }
-    });
-    expect(good.v?.pass, good.v?.why).toBe(true);
-    const ignored = exam(L('departures'), () => {});
+    expect(exam(L('departures'), () => {}).v?.pass).toBe(false);
+  });
+
+  it('10 the centre and the runway change, and the wind shift', () => {
+    const { sim } = walk(L('runway'), {
+      early: { when: (f) => f.sim.coordReqs.some((r) => r.state === 'pending'), do: (f) => { const r = f.sim.coordReqs.find((x) => x.state === 'pending')!; say(f, r.cs, [{ k: 'appr' }]); } },
+      calls: { when: (f) => ['CLX7HK', 'TAY4EK'].every((cs) => calling(f.sim, cs) || f.sim.cmdLog.some((c) => c.cl.cs === cs && c.cl.items.some((i) => i.k === 'lvl'))), do: (f) => { for (const cs of ['CLX7HK', 'TAY4EK']) if (calling(f.sim, cs)) chip(f, cs, 'Descend'); } },
+      reclear: (f) => lead(f, 'CLX7HK'),
+      reclear2: { when: (f) => !!chips(f.sim, 'TAY4EK')[0]?.primary && !f.sim.readbackPending('TAY4EK'), do: (f) => lead(f, 'TAY4EK') },
+      land: { when: () => true, do: () => {} },
+    }, { answers: { notice: 1 }, maxStepS: 2400, background: (f, step) => { if (step === 'land') { towerFake(f); for (const cs of ['CLX7HK', 'TAY4EK']) { const a = f.sim.find(cs); if (a && a.state === 'assumed' && !f.sim.readbackPending(cs)) { const s = chips(f.sim, cs)[0]; if (s?.primary && (s.items.some((i) => i.k === 'trans' || i.k === 'xfr'))) f.sim.issue({ cs, items: s.items }); } } } } });
+    expect(sim.runway).toBe('04R');
+    expect(sim.landings.length + sim.aircraft.filter((a) => a.state === 'transferred').length).toBe(2);
+    expect(sim.events.filter((e) => ['los', 'goaround', 'mva', 'coord_unanswered'].includes(e.kind))).toEqual([]);
+    const ignored = exam(L('runway'), () => {});
     expect(ignored.v?.pass).toBe(false);
   });
 
-  it('11 the full position: estimates, sequence, correction, and the short night', () => {
-    const { sim } = walk(L('position'), {
-      seq: (f) => { const order = ['TAY4EK', 'CLX7HK']; f.sim.setSequence(order); },
-      corr: (f) => { const r = say(f, 'CLX7HK', [{ k: 'spd', spd: 220 }]); expect(r.ok).toBe(true); expect(f.sim.correct('CLX7HK')).toBe(true); },
+  it('11 vectors, and the exam from the other side', () => {
+    const { sim } = walk(L('vectors'), {
+      downwind: (f) => say(f, 'CHG201', [{ k: 'hdg', hdg: 45, dir: 'L' }]),
+      down: (f) => { pick(f, 'CHG201', { k: 'lvl', lvl: { ft: 3000 } }); pick(f, 'CHG201', { k: 'spd', spd: 210 }); expect(transmit(f).warnings).toEqual([]); },
+      base: (f) => chip(f, 'CHG201', 'Base R135'),
+      intercept: { when: (f) => Math.abs(xt(f.sim, 'CHG201')) < 2.2, do: (f) => chip(f, 'CHG201', 'R195 · ILS 22L') },
+      twr: (f) => chip(f, 'CHG201', '160 to 4'),
     });
-    expect(sim.events.filter((e) => ['los', 'wake'].includes(e.kind))).toEqual([]);
-    const good = exam(L('position'), (sim) => {
-      autoControl(sim);
-      for (const r of sim.coordReqs) if (r.state === 'pending') sim.issue({ cs: r.cs, items: [{ k: 'appr' }] });
-      for (const r of sim.releases) if (r.state === 'pending' && sim.t - r.t > 3) sim.issue({ cs: r.cs, items: [{ k: 'rel' }] });
+    expect(sim.landings.map((l) => l.cs)).toEqual(['CHG201']);
+    expect(penalties(sim)).toEqual([]);
+    const late = exam(L('vectors'), (sim, once) => {
+      if (once('dw', calling(sim, 'DHK7'))) sim.issue({ cs: 'DHK7', items: [{ k: 'hdg', hdg: 45, dir: 'R' }, { k: 'lvl', lvl: { ft: 4000 } }] });
+      if (once('base', sim.t > 60 && along(sim, 'DHK7') > 12)) sim.issue({ cs: 'DHK7', items: [{ k: 'hdg', hdg: 315, dir: 'L' }] });
+      if (once('icpt', sim.t > 80 && Math.abs(xt(sim, 'DHK7')) < 2.3)) sim.issue({ cs: 'DHK7', items: [{ k: 'hdg', hdg: 255, dir: 'L' }, ILS] });
     });
-    expect(good.v?.pass, good.v?.why).toBe(true);
-    const ignored = exam(L('position'), () => {});
+    expect(late.v?.pass).toBe(false);
+  });
+
+  it('12 separation: the alarm, and two converging pairs', () => {
+    const { sim } = walk(L('separation'), {
+      rbl: (f) => { f.scope.rbls.push({ a: { cs: 'AZG7321' }, b: { cs: 'ETH3721' } }); },
+      act: (f) => chip(f, 'ETH3721', 'Descend FL060'),
+    }, { answers: { cpa: 1 } });
+    expect(sim.events.filter((e) => e.kind === 'stca').length).toBe(1);
+    expect(sim.events.filter((e) => e.kind === 'los')).toEqual([]);
+    expect(bestInstructorSync(L('separation').exam!, packOf(L('separation'))).verdict.stars).toBe(3);
+    expect(exam(L('separation'), () => {}).v?.pass).toBe(false);
+  });
+
+  it('13 wake spacing: 180 kt holds about 4.4 NM, and the two-gap exam', () => {
+    const { sim } = walk(L('spacing'), {
+      speed: (f) => { pick(f, 'TAY4EK', { k: 'spd', spd: 180 }); transmit(f); },
+    }, { background: towerIn('land') });
+    const gap = sim.spacing.find((s) => s.leader === 'CLX7HK')!;
+    expect(gap.gap).toBeGreaterThanOrEqual(4);
+    expect(gap.gap).toBeLessThan(5);
+    expect(sim.events.filter((e) => e.kind === 'wake' || e.kind === 'goaround')).toEqual([]);
+    const ignored = exam(L('spacing'), (sim, once) => { for (const a of sim.aircraft) if (a.kind === 'arr' && a.state === 'assumed' && a.app?.locCap && sim.dthr(a) < 12 && once('twr' + a.cs, true)) sim.issue({ cs: a.cs, items: [{ k: 'spd', spd: 160, until: 4 }, { k: 'xfr', unit: 'TWR' }] }); });
     expect(ignored.v?.pass).toBe(false);
   });
 
-  it('10 safety nets and a MAYDAY, and the checkride', () => {
+  it('14 safety nets and a MAYDAY, and the checkride', () => {
     const { sim } = walk(L('safety'), {
       clear: (f) => chip(f, 'ETH3721', 'Descend FL060'),
       negative: (f) => lead(f, 'ETH3721', 'Negative · FL060'),
       approach: (f) => lead(f, 'ETH3721', 'ALHUV1A · 3000 · ILS 22L'),
       card: (f) => f.select('CLX7HK'),
       priority: (f) => lead(f, 'CLX7HK', 'Direct LIBVA'),
-      ethTwr: { when: (f) => !!f.sim.find('ETH3721')?.app?.locCap && !f.sim.readbackPending('ETH3721'), do: (f) => chip(f, 'ETH3721', '160 to 4') },
-      land: { when: (f) => !!f.sim.find('CLX7HK')?.app?.locCap && !f.sim.readbackPending('CLX7HK'), do: (f) => chip(f, 'CLX7HK', '160 to 4') },
+      ethTwr: { when: (f) => established(f, 'ETH3721'), do: (f) => chip(f, 'ETH3721', '160 to 4') },
+      land: { when: (f) => established(f, 'CLX7HK'), do: (f) => chip(f, 'CLX7HK', '160 to 4') },
     }, { answers: { spot: 1 } });
     expect(sim.events.some((e) => e.kind === 'readback_caught')).toBe(true);
     expect(['CLX7HK', 'ETH3721'].every((cs) => sim.landings.some((l) => l.cs === cs) || sim.find(cs)?.state === 'transferred')).toBe(true);
-    expect(sim.events.filter((e) => ['los', 'goaround', 'readback_missed', 'wake', 'stca', 'mva'].includes(e.kind)).map((e) => e.text + ' @' + e.t + ' ' + JSON.stringify(sim.landings))).toEqual([]);
-    // a careful controller: the autopilot's plan, plus catching every wrong readback with the Negative chip
-    const good = exam(L('safety'), (sim, once) => {
-      for (const a of sim.aircraft) if (a.wrong && !sim.readbackPending(a.cs) && once('neg' + a.cs + a.wrong.t, true)) { const s = suggest(sim, a)[0]; expect(s?.label.startsWith('Negative')).toBe(true); sim.issue({ cs: a.cs, items: s.items }); }
-      autoControl(sim);
-    }, 3000);
-    expect(good.v?.pass, good.v?.why).toBe(true);
-    const ignored = exam(L('safety'), () => {});
-    expect(ignored.v?.pass).toBe(false);
+    expect(sim.events.filter((e) => ['los', 'goaround', 'readback_missed', 'wake', 'stca', 'mva'].includes(e.kind)).map((e) => e.text + ' @' + e.t)).toEqual([]);
+    expect(exam(L('safety'), () => {}).v?.pass).toBe(false);
+  });
+
+  it('15 the full position: estimates, sequence, correction, and half a shift', () => {
+    const { sim } = walk(L('position'), {
+      seq: (f) => { f.sim.setSequence(['TAY4EK', 'CLX7HK']); },
+      corr: (f) => { const r = say(f, 'CLX7HK', [{ k: 'spd', spd: 220 }]); expect(r.ok).toBe(true); expect(f.sim.correct('CLX7HK')).toBe(true); },
+    });
+    expect(sim.events.filter((e) => ['los', 'wake'].includes(e.kind))).toEqual([]);
+    expect(exam(L('position'), () => {}).v?.pass).toBe(false);
   });
 });
 
-const sentAnyTo = (sim: Sim, cs: string) => sim.cmdLog.some((c) => c.cl.cs === cs);
-const SPACING_EXAM_SPD = 180;
+// ---------------------------------------------------------------- Düsseldorf lessons
+describe('Düsseldorf lessons fly the way the coach says', () => {
+  const E = (id: string) => L(`eddl-${id}`);
+  it('1 the picture, and the quiz exam', () => {
+    const { sim, f } = walk(E('picture'), {
+      bikmu: (f, x) => { const p = f.sim.pack.fixes.get('BIKMU')!.p; x.tap = { x: p.x + 0.5, y: p.y, t: 1 }; },
+      mva: (f, x) => { const p = f.sim.pack.fixes.get('WUPPERTAL')?.p ?? { x: 16, y: -6 }; x.tap = { x: p.x, y: p.y, t: 2 }; },
+      select: (f) => f.select('EWG1AB'),
+    }, { answers: { transitions: 0, ta: 1 } });
+    expect(sim.t).toBeLessThan(5);
+    expect(sim.tl).toBe(60);
+    expect(f.halo.enabled).toBe(true);
+    const ex = E('picture').exam!;
+    const good = examMem(sim);
+    for (const q of ex.quiz!) { good.answers.push(q.answer(sim)); good.right++; }
+    expect(examVerdict(ex, sim, good)).toMatchObject({ pass: true, stars: 3 });
+  });
+
+  it('2 first contact at Langen, and three on frequency', () => {
+    const { sim } = walk(E('contact'), {
+      select: (f) => f.select('EWG1AB'),
+      rung: (f) => rung(f, 'EWG1AB', { k: 'lvl', lvl: { fl: 80 } }),
+      cfg: leadWhenCalling('CFG2PL'),
+      thy: { when: (f) => calling(f.sim, 'THY5MK'), do: (f) => rung(f, 'THY5MK', { k: 'lvl', lvl: { fl: 100 } }) },
+    }, { answers: { levels: 1 } });
+    expect(sim.runway).toBe('23R'); expect(sim.depRunway).toBe('23L');
+    expect(sim.events.filter((e) => e.kind === 'unanswered')).toEqual([]);
+    expect(exam(E('contact'), () => {}).v?.pass).toBe(false);
+  });
+
+  it('3 the RNAV transitions: BIKMU23 to REGNO', () => {
+    const { sim } = walk(E('transitions'), {
+      lead: (f) => lead(f, 'EWG1AB', 'BIKMU23 · 3000 · ILS 23R'),
+      twr: (f) => chip(f, 'EWG1AB', '160 to 4'),
+    }, { answers: { speed: 1 } });
+    expect(sim.landings.map((l) => l.cs).concat(sim.aircraft.filter((a) => a.state === 'transferred').map((a) => a.cs))).toContain('EWG1AB');
+    expect(penalties(sim)).toEqual([]);
+    expect(exam(E('transitions'), () => {}, 3000).v?.pass).toBe(false);
+  });
+
+  it('4 holding at the entry fixes: FL060, leave hold', () => {
+    const { sim } = walk(E('stack'), {
+      first: (f) => lead(f, 'EWG1AB', 'BIKMU23'),
+      hold: (f) => { pick(f, 'DLH4KT', { k: 'hold', fix: 'BIKMU' }); pick(f, 'DLH4KT', { k: 'lvl', lvl: { fl: 60 } }); expect(transmit(f).ok).toBe(true); },
+      release: (f) => lead(f, 'DLH4KT', 'Leave hold'),
+      twr: { when: () => true, do: () => {} },
+    }, { answers: { level: 1 }, background: towerIn('twr') });
+    expect(sim.events.filter((e) => ['los', 'stack', 'goaround', 'wake', 'mva'].includes(e.kind)).map((e) => e.text)).toEqual([]);
+    expect(['EWG1AB', 'DLH4KT'].every((cs) => sim.landings.some((l) => l.cs === cs) || sim.find(cs)?.state === 'transferred')).toBe(true);
+    expect(exam(E('stack'), () => {}, 3000).v?.pass).toBe(false);
+  });
+
+  it('5 departures to Langen: release after, climb FL100, Bottrop', () => {
+    const { sim } = walk(E('departures'), {
+      card: { when: (f) => !!f.sim.releases.find((r) => r.cs === 'EWG2KL' && r.state === 'pending'), do: (f) => say(f, 'EWG2KL', [{ k: 'rel', after: 'CFG7HD' }]) },
+      cfg: { when: (f) => chips(f.sim, 'CFG7HD').some((s) => s.label === 'Tower'), do: (f) => chip(f, 'CFG7HD', 'Tower') },
+      climb: (f) => chip(f, 'EWG2KL', 'Climb FL100'),
+      klm: leadWhenCalling('KLM41X'),
+      bottrop: { when: (f) => chips(f.sim, 'EWG2KL').some((s) => s.label === 'Langen'), do: (f) => chip(f, 'EWG2KL', 'Langen') },
+    });
+    expect(sim.departuresHandled).toBe(1);
+    expect(sim.events.filter((e) => ['los', 'stca', 'exit_unxfr', 'release_delay', 'airspace'].includes(e.kind))).toEqual([]);
+    expect(exam(E('departures'), () => {}).v?.pass).toBe(false);
+  });
+
+  it('6 parallel runways: north lands, south departs', () => {
+    const { sim } = walk(E('parallel'), {
+      first: (f) => lead(f, 'EWG1AB', 'BIKMU23'),
+      second: leadWhenCalling('TUI3LK'),
+      release: { when: (f) => f.sim.releases.some((r) => r.cs === 'DLH9PA' && r.state === 'pending'), do: (f) => say(f, 'DLH9PA', [{ k: 'rel' }]) },
+      twr1: { when: (f) => established(f, 'EWG1AB'), do: (f) => chip(f, 'EWG1AB', '160 to 4') },
+      dep: { when: () => true, do: () => {} },
+      twr2: { when: (f) => established(f, 'TUI3LK'), do: (f) => chip(f, 'TUI3LK', '160 to 4') },
+    }, { maxStepS: 2400, background: (f, step) => { if (step === 'dep' || step === 'twr2') releaseHolds(f); if (step === 'dep' || step === 'twr2') { const a = f.sim.find('DLH9PA'); if (a && a.state === 'assumed' && !f.sim.readbackPending('DLH9PA')) { if (calling(f.sim, 'DLH9PA')) chip(f, 'DLH9PA', 'Climb'); else if (chips(f.sim, 'DLH9PA').some((s) => s.label === 'Langen')) chip(f, 'DLH9PA', 'Langen'); } } if (step === 'dep') towerFake(f); } });
+    expect(sim.depRunway).toBe('23L');
+    expect(sim.departuresHandled).toBe(1);
+    expect(sim.events.filter((e) => ['los', 'goaround', 'release_delay', 'exit_unxfr'].includes(e.kind)).map((e) => e.text)).toEqual([]);
+    expect(exam(E('parallel'), () => {}).v?.pass).toBe(false);
+  });
+
+  it('7 runway 05: the change and the re-clearance', () => {
+    const { sim } = walk(E('runway05'), {
+      ewg: { when: (f) => calling(f.sim, 'EWG1AB'), do: (f) => chip(f, 'EWG1AB', 'Descend') },
+      reclear: (f) => lead(f, 'EWG1AB'),
+      ryr: { when: (f) => calling(f.sim, 'RYR8CD'), do: (f) => lead(f, 'RYR8CD') },
+      land: { when: () => true, do: () => {} },
+    }, { answers: { notice: 1 }, maxStepS: 2400, background: (f, step) => { if (step === 'land') { releaseHolds(f); towerFake(f); for (const cs of ['EWG1AB', 'RYR8CD']) { const a = f.sim.find(cs); if (a && a.state === 'assumed' && !f.sim.readbackPending(cs)) { const s = chips(f.sim, cs)[0]; if (s?.primary && s.items.some((i) => i.k === 'trans' || i.k === 'xfr' || i.k === 'star')) f.sim.issue({ cs, items: s.items }); } } } } });
+    expect(sim.runway).toBe('05L'); expect(sim.depRunway).toBe('05R');
+    expect(['EWG1AB', 'RYR8CD'].every((cs) => sim.landings.some((l) => l.cs === cs) || sim.find(cs)?.state === 'transferred')).toBe(true);
+    expect(sim.events.filter((e) => ['los', 'goaround', 'mva'].includes(e.kind)).map((e) => e.text + '@' + e.t)).toEqual([]);
+    expect(exam(E('runway05'), () => {}).v?.pass).toBe(false);
+  });
+
+  it('8 sequencing onto 23R: three fixes, one final', () => {
+    const { sim } = walk(E('sequence'), {
+      thy: (f) => lead(f, 'THY5MK', 'HALME23'),
+      ewg: leadWhenCalling('EWG1AB'),
+      cfg: leadWhenCalling('CFG2PL'),
+      gap: { when: () => true, do: () => {} },
+    }, { maxStepS: 2400, background: (f, step) => { if (step === 'gap') { towerFake(f); releaseHolds(f); } } });
+    expect(sim.events.filter((e) => ['los', 'wake', 'goaround', 'mva'].includes(e.kind)).map((e) => e.text)).toEqual([]);
+    expect(['THY5MK', 'EWG1AB', 'CFG2PL'].every((cs) => sim.landings.some((l) => l.cs === cs) || sim.find(cs)?.state === 'transferred')).toBe(true);
+    expect(exam(E('sequence'), () => {}, 3000).v?.pass).toBe(false);
+  });
+
+  it('9 safety nets at Langen: the card, then the MAYDAY', () => {
+    const { sim } = walk(E('emergency'), {
+      clear: (f) => chip(f, 'EWG1AB', 'Descend'),
+      fix: (f) => lead(f, 'EWG1AB', 'Negative'),
+      approach: { when: (f) => !f.sim.find('EWG1AB')?.wrong && !f.sim.readbackPending('EWG1AB'), do: (f) => lead(f, 'EWG1AB', 'BIKMU23') },
+      card: (f) => f.select('UAE57'),
+      priority: { when: (f) => calling(f.sim, 'UAE57'), do: (f) => lead(f, 'UAE57', 'Direct I23R') },
+      others: { when: (f) => calling(f.sim, 'TUI3LK'), do: (f) => chip(f, 'TUI3LK', 'Descend') },
+      land: { when: () => true, do: () => {} },
+    }, { maxStepS: 2400, background: (f, step) => { if (step === 'mayday' || step === 'land') towerFake(f); if (step === 'land') releaseHolds(f); if (step === 'land') { const t = f.sim.find('TUI3LK'); const u = f.sim.find('UAE57'); if (t && t.state === 'assumed' && !t.app && !f.sim.readbackPending('TUI3LK') && (!u || u.app?.locCap || u.state !== 'assumed')) { const s = chips(f.sim, 'TUI3LK')[0]; if (s?.primary && s.items.some((i) => i.k === 'trans')) f.sim.issue({ cs: 'TUI3LK', items: s.items }); } } } });
+    expect(sim.events.some((e) => e.kind === 'readback_caught')).toBe(true);
+    expect(sim.events.filter((e) => ['los', 'goaround', 'readback_missed', 'wake', 'mva'].includes(e.kind)).map((e) => e.text)).toEqual([]);
+    expect(['UAE57', 'TUI3LK', 'EWG1AB'].every((cs) => sim.landings.some((l) => l.cs === cs) || sim.find(cs)?.state === 'transferred')).toBe(true);
+    expect(exam(E('emergency'), () => {}).v?.pass).toBe(false);
+  });
+
+  it('10 the 06:00 rush, and the first wave', () => {
+    const { sim } = walk(E('rush'), {
+      first: (f) => lead(f, 'EWG1AB', 'BIKMU23'),
+      cfg: leadWhenCalling('CFG7HD'),
+      release: { when: (f) => f.sim.releases.some((r) => r.cs === 'EWG2KL' && r.state === 'pending'), do: (f) => say(f, 'EWG2KL', [{ k: 'rel' }]) },
+      wave: { when: () => true, do: () => {} },
+    }, { maxStepS: 2400, background: (f, step) => { if (step === 'wave') autoControl(f.sim); } });
+    expect(sim.localHour()).toBeGreaterThan(5.8);
+    expect(sim.departuresHandled).toBe(2);
+    expect(sim.events.filter((e) => ['los', 'wake', 'release_delay', 'exit_unxfr'].includes(e.kind)).map((e) => e.text + '@' + e.t)).toEqual([]);
+    expect(exam(E('rush'), () => {}, 3000).v?.pass).toBe(false);
+  });
+});
+
 void (null as unknown as Step);
