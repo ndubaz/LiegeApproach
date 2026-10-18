@@ -29,7 +29,7 @@ import { RANKS, attachExaminer, bestExpertAsync, checkrideById, chipControl, exa
 import { attachDrill, drillById, drillScenario, drillSolver, drillVerdict, parseDrillScenario } from './engine/drills';
 import { GRADE_NAMES } from './engine/assess';
 import type { GhostData } from './ui/poster';
-import { LESSONS, coachFor } from './ui/tutorial';
+import { LESSONS, coachFor, lessonById, lessonsFor } from './ui/tutorial';
 
 if (!__SINGLE__ && 'serviceWorker' in navigator) registerSW({ immediate: true });
 
@@ -70,7 +70,7 @@ async function liveMetar(): Promise<string | undefined> {
 }
 
 const handlers: MenuHandlers & {
-  startLesson(i: number): void;
+  startLesson(id: string | number, opts?: { toExam?: boolean }): void;
   /** 2.0: the airports on offer and the switch (the menu's airport picker, phase 2). */
   airports: ReturnType<typeof airportList>;
   setAirport(icao: string, screen?: string): void;
@@ -80,7 +80,7 @@ const handlers: MenuHandlers & {
   pack,
   settings,
   radio,
-  startLesson: (i: number) => lesson(i),
+  startLesson: (id: string | number, opts?: { toExam?: boolean }) => lesson(id, opts),
   liveMetar,
   startChallenge: (sc) => brief(sc, 'challenges'),
   startFree: (o: FreePlayOpts) => brief(freePlay(pack, o), 'free'),
@@ -150,18 +150,21 @@ function go(screen: string) {
 
 /** The airport the player had chosen before a lesson moved the console to the lesson's airport. */
 let airportBeforeLesson: string | undefined;
-function lesson(i: number) {
-  const l = LESSONS[i];
-  // the 1.0 lessons are written for Liège; a lesson for another airport carries its icao. Leaving the lessons
-  // brings the console back to the airport the player had chosen.
-  const want = l.scenario.icao ?? DEFAULT_PACK;
+/** Start a lesson by id (or by index in the Liège list, for 1.0 callers and the walk script). */
+function lesson(idOrIndex: string | number, opts: { toExam?: boolean } = {}) {
+  const l = typeof idOrIndex === 'number' ? LESSONS[idOrIndex] : lessonById(idOrIndex);
+  if (!l) return;
+  // a lesson runs at its own airport; leaving the lessons brings the console back to the airport the player had chosen
+  const want = l.icao ?? l.scenario.icao ?? DEFAULT_PACK;
   if (want !== pack.meta.icao) { airportBeforeLesson ??= pack.meta.icao; setAirport(want, 'tutorial'); }
   const back = () => { const b = airportBeforeLesson; airportBeforeLesson = undefined; if (b && b !== pack.meta.icao) setAirport(b, 'tutorial'); else go('tutorial'); };
+  const list = lessonsFor(want);
+  const i = list.indexOf(l);
   play(l.scenario, undefined, coachFor(l, {
-    next: i < LESSONS.length - 1 ? () => lesson(i + 1) : undefined,
+    next: i >= 0 && i < list.length - 1 ? () => lesson(list[i + 1].id) : undefined,
     exit: back,
-    restart: () => lesson(i),
-  }));
+    restart: () => lesson(l.id),
+  }, { toExam: opts.toExam }));
 }
 
 function play(sc: Scenario, replay?: { cmds: { t: number; cl: Clearance }[]; until: number }, coach?: ReturnType<typeof coachFor>) {
@@ -256,4 +259,4 @@ app.addEventListener('click', (e) => {
 
 document.fonts?.ready.then(() => game?.scope.draw(performance.now()));
 go('home');
-(window as any).__lgg = { get pack() { return pack; }, radio, setAirport, airports: airportList(), get game() { return game; }, play, brief, autoControl, lesson, LESSONS, CHALLENGES, lastScenario: () => lastScenario, go, handlers, dev: { drillSolver, drillById, chipControl, voice: { Transmission, phrases, spokenText, castFor } } };
+(window as any).__lgg = { get pack() { return pack; }, radio, setAirport, airports: airportList(), get game() { return game; }, play, brief, autoControl, lesson, LESSONS, lessons: { byId: lessonById, for: lessonsFor }, CHALLENGES, lastScenario: () => lastScenario, go, handlers, dev: { drillSolver, drillById, chipControl, voice: { Transmission, phrases, spokenText, castFor } } };

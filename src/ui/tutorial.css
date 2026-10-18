@@ -74,6 +74,10 @@
   .coach footer .coach-wait { display: none; }
   .coach footer button { min-height: 34px; padding: 0 10px; font-size: 13.5px; }
   .coach-ask button { min-height: 38px; font-size: 14.5px; }
+  /* a question step: the text scrolls in its own box so the answers are always on screen */
+  /* (the clock is paused on a question, so the card may cover more of the scope) */
+  .coach:has(.coach-ask) { max-height: 72%; }
+  .coach:has(.coach-ask) > p { max-height: 6.2em; overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
   .scope-wrap.coached .icom { bottom: calc(var(--coach-h, 0px) + 12px); }
   .coach.pk-open { top: 6px; bottom: auto; }
 }

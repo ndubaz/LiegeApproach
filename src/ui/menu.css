@@ -593,3 +593,10 @@ dl.metrics dd { margin: 0; padding: 5px 0 5px 12px; border-bottom: 1px solid var
 h2 .h-ap { margin-left: 10px; font: 500 13px var(--mono); letter-spacing: 0.1em; color: var(--faint); vertical-align: middle; }
 .cr-none { border-left: 3px solid var(--amber); padding-left: 12px; }
 @media (max-width: 420px) { .ap-switch { width: 100%; } .ap-switch .ap { flex: 1; min-width: 0; } .ap-switch .ap b { font-size: 14px; } }
+
+/* 2.0 curriculum: three stages per airport, and the drill of the day */
+.tut-stage { margin-top: 22px; }
+.tut-stage h3 { font: 600 15px var(--ui); letter-spacing: 0.06em; color: var(--accent); margin: 0 0 4px; }
+.tut-stage .lede { margin: 0 0 10px; }
+.bay-strip.drill-day { margin: 12px 0 4px; border-color: var(--amber); }
+.bay-strip.drill-day .bs-bay { background: var(--amber); color: #1b1408; }

@@ -21,7 +21,7 @@ import { SKIN } from './scope';
 import { GLOSSARY_GROUPS, glossaryFor } from './glossary';
 import type { Radio } from './audio';
 import { VOICE_MODELS, neuralSupported } from '../voice/neural';
-import { LESSONS, tutorialDone, tutorialResults } from './tutorial';
+import { STAGES, curriculumProgress, drillOfTheDay, lessonsFor, tutorialDone, tutorialResults } from './tutorial';
 import type { Pack } from '../pack/load';
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
@@ -148,7 +148,7 @@ export function renderHome(root: HTMLElement, hd: MenuHandlers) {
         <p class="home-live mono" data-e="live"></p>
       </header>
       <nav class="bay" aria-label="Main menu">
-        ${strip('tutorial', 'tut', 'T', liege ? 'Learn the position' : 'Liège lessons', liege ? 'Eleven short lessons with exams, from the scope to the full position' : 'The lessons run at Liège for now; what they teach works here too', `${tut.size}/${LESSONS.length}`, 'lessons', firstTime ? 'start' : '')}
+        ${strip('tutorial', 'tut', 'T', 'Learn the position', `${lessonsFor(pack.meta.icao).length} lessons at ${pack.meta.name} in three stages, from the scope to a full shift`, `${lessonsFor(pack.meta.icao).filter((l) => tut.has(l.id)).length}/${lessonsFor(pack.meta.icao).length}`, 'lessons', firstTime ? 'start' : '')}
         ${strip('daily', 'day', 'D', 'Daily shift', dLine, String(daily.streak), daily.streak === 1 ? 'day streak' : 'day streak', daily.today ? 'played' : '')}
         ${strip('free', 'arr', 'F', 'Free play', `${tpl.shift.title} or your own mix of hour, weather and military activity`, '∞', 'sessions')}
         ${strip('challenges', 'dep', 'C', 'Challenges', CHALLENGES.length ? `${CHALLENGES.length} scripted scenarios, ${liege ? 'one freighter to a compound emergency' : 'from a first arrival to the abnormal'}` : `No scripted scenarios at ${pack.meta.name} yet; free play and the daily shift run from the pack`, CHALLENGES.length ? `${passed.size}/${CHALLENGES.length}` : '0', 'passed')}
@@ -188,32 +188,40 @@ export function renderHome(root: HTMLElement, hd: MenuHandlers) {
   } catch { /* the menu works without the live radar */ }
 }
 
-export function renderTutorial(root: HTMLElement, hd: MenuHandlers & { startLesson(i: number): void }) {
+export function renderTutorial(root: HTMLElement, hd: MenuHandlers & { startLesson(id: string | number, opts?: { toExam?: boolean }): void }) {
+  const icao = hd.pack.meta.icao;
+  const list = lessonsFor(icao);
   const done = tutorialDone();
   const res = tutorialResults();
-  const next = LESSONS.findIndex((l) => !res[l.id]?.pass && !(done.has(l.id) && !l.exam));
-  const passedN = LESSONS.filter((l) => res[l.id]?.pass).length;
-  const starsN = LESSONS.reduce((s, l) => s + (res[l.id]?.stars ?? 0), 0);
-  const stat = (l: (typeof LESSONS)[number]) => {
+  const prog = curriculumProgress(icao, res, done);
+  let pick: ReturnType<typeof drillOfTheDay>;
+  try { pick = drillOfTheDay(icao); } catch { pick = undefined; }
+  const stat = (l: (typeof list)[number]) => {
     const r = res[l.id];
     if (r?.pass) return `<span class="tut-stars" aria-label="${r.stars ?? 1} of 3 stars">${'★'.repeat(r.stars ?? 1)}<i>${'★'.repeat(3 - (r.stars ?? 1))}</i></span><small>exam passed</small>`;
     if (done.has(l.id)) return `<b class="mono">✓</b><small>${l.exam ? 'exam to do' : 'done'}</small>`;
     return `<b class="mono">${l.minutes}</b><small>min</small>`;
   };
-  const liege = hd.pack.meta.icao === 'EBLG';
-  root.innerHTML = shell(`
-    <h2>${liege ? 'Learn the position' : 'Liège lessons'}</h2>
-    ${liege ? '' : `<p class="lede">The lessons are set at Liège for now: starting one switches the console to Liège, and the home page brings you back to ${esc(hd.pack.meta.name)}. What they teach (the scope, levels, vectors, the ILS, handoffs, releases) works the same way here.</p>`}
-    <p class="lede">Eleven lessons in the real sim. The coach pauses the clock, points at the control or aircraft to use, and waits until you have done it. Each lesson ends with a short exam with no coach: pass it to earn up to three stars. Take them in order the first time.</p>
-    ${passedN ? `<p class="tut-sum mono">${passedN} of ${LESSONS.length} exams passed · ${starsN} of ${LESSONS.length * 3} stars</p>` : ''}
-    <ol class="lessons">
-      ${LESSONS.map((l, i) => `<li><button class="bay-strip lesson ${res[l.id]?.pass ? 'done passed' : done.has(l.id) ? 'done' : ''} ${i === next ? 'next' : ''}" data-lesson="${i}">
-        <span class="bs-bay mono">${i + 1}</span>
-        <span class="bs-body"><b>${l.title}</b><span>${l.summary}</span></span>
+  let n = 0;
+  const stages = STAGES.map((st) => {
+    const ls = list.filter((l) => l.stage === st.id);
+    if (!ls.length) return '';
+    return `<section class="tut-stage"><h3>${esc(st.title)}</h3><p class="lede">${esc(st.blurb)}</p>
+      <ol class="lessons" start="${n + 1}">
+      ${ls.map((l) => { n++; return `<li><button class="bay-strip lesson ${res[l.id]?.pass ? 'done passed' : done.has(l.id) ? 'done' : ''} ${prog.next?.id === l.id ? 'next' : ''}" data-lesson="${esc(l.id)}">
+        <span class="bs-bay mono">${n}</span>
+        <span class="bs-body"><b>${esc(l.title)}</b><span>${esc(l.summary)}</span></span>
         <span class="bs-stat">${stat(l)}</span>
-      </button></li>`).join('')}
-    </ol>`);
-  root.querySelectorAll<HTMLButtonElement>('[data-lesson]').forEach((b) => b.addEventListener('click', () => hd.startLesson(Number(b.dataset.lesson))));
+      </button></li>`; }).join('')}
+      </ol></section>`;
+  }).join('');
+  root.innerHTML = shell(`
+    <h2>Learn the position <small class="mono">${esc(icao)}</small></h2>
+    <p class="lede">${list.length} lessons at ${esc(hd.pack.meta.name)}, in three stages, the way a real rating course runs: the picture and the console, the procedures, then judgement. The coach pauses the clock, points at the control or aircraft to use, and explains why. Each lesson ends with an exam without the coach; if it goes wrong you can watch the instructor fly it. Change airport on the home page for the other curriculum.</p>
+    ${prog.passed ? `<p class="tut-sum mono">${prog.passed} of ${prog.total} exams passed · ${prog.stars} of ${prog.total * 3} stars</p>` : ''}
+    ${pick ? `<button class="bay-strip lesson drill-day" data-lesson="${esc(pick.lesson.id)}" data-exam="1"><span class="bs-bay mono">D</span><span class="bs-body"><b>Drill of the day: ${esc(pick.lesson.title)}</b><span>${esc(pick.reason.join(' '))}</span></span><span class="bs-stat"><b class="mono">exam</b><small>only</small></span></button>` : ''}
+    ${stages}`);
+  root.querySelectorAll<HTMLButtonElement>('[data-lesson]').forEach((b) => b.addEventListener('click', () => hd.startLesson(b.dataset.lesson!, { toExam: !!b.dataset.exam })));
 }
 
 // ===========================================================================
