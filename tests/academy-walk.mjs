@@ -176,6 +176,13 @@ for (const id of ids) {
     if (!st.hl && !st.ff && !st.next && stuck > 8 && stuck <= 40) { await probeTaps(stuck - 9); await wait(250); continue; }
     if (st.ff && stuck > 4) { await tapLoc(page.locator('.coach [data-c="ff"]').first()); await wait(700); continue; }
     if (stuck > 25 && stuck % 10 === 6) { const c = await leadChip(id); if (c) { fallbacks++; notes.push(`${id}/${st.step}: fallback tap on "${c}"`); await wait(500); continue; } }
+    // a step that wants typing: type what its title says ("Type 4ek D70 S210, Enter")
+    if (stuck === 6) {
+      const typed = await page.evaluate(() => { const t = document.querySelector('.coach h4')?.textContent ?? ''; const m = t.match(/^Type (.+?),? (?:then )?Enter/i); return m ? m[1] : null; });
+      if (typed) { await tapLoc(page.locator('[data-a="kbd"], [data-e="cmd"]').first()); await page.keyboard.type(typed); await page.keyboard.press('Enter'); await wait(500); notes.push(`${id}/${st.step}: typed "${typed}"`); continue; }
+    }
+    // a drag-only step (dial, drag from an aircraft, ruler, strip order): the walker cannot drag, so it skips and says so
+    if (stuck === 70 && (await page.locator('.coach [data-c="skip"] >> visible=true').count())) { notes.push(`${id}/${st.step}: skipped (gesture the walker cannot make)`); await tapLoc(page.locator('.coach [data-c="skip"] >> visible=true').first()); await wait(500); continue; }
     if (stuck > 120) { problems.push(`${id}: stuck at ${st.step}`); await page.screenshot({ path: `${OUT}/${id}-STUCK-${st.step}.png` }); break; }
     await wait(300);
   }

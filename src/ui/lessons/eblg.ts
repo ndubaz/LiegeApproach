@@ -821,7 +821,8 @@ const L_RUNWAY: Lesson = {
     {
       id: 'early', title: 'The centre asks for an early transfer: tap Approve', run: 2,
       body: (g) => `${acc(g)} would like to hand one over early, maintaining a level. The card on the scope gives you a minute to answer. ${K('Approve')} takes it; ${K('As coordinated')} keeps the agreed transfer. ${WHY('say yes when the level it will keep sits above your departures and clear of your other arrivals; it is one less aircraft the centre has to hold.')}`,
-      el: (g) => g.root.querySelector('.icom [data-v="bruok"]'),
+      // the card on the scope, or on a phone (where the coach sits over the card) the same answer in the queue bar
+      el: (g) => { const b = g.root.querySelector<HTMLElement>('.icom [data-v="bruok"]'); const q = g.root.querySelector<HTMLElement>('.att-row.bru .att-go'); return window.innerWidth < 700 && q ? q : b ?? q; },
       done: (g) => g.sim.coordReqs.some((r) => r.state !== 'pending') || (g.sim.coordReqs.length === 0 && g.sim.t > 320),
       until: (g) => g.sim.coordReqs.some((r) => r.state === 'pending'),
     },
