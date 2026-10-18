@@ -15,6 +15,9 @@ import { PERF, wakeMinNm } from './perf';
 import { afterEachStep } from './career';
 
 export type DrillId = 'intercept' | 'wake' | 'conflict' | 'descent' | 'release';
+/** The Düsseldorf drills (the UI keys its icons by DrillId; these need their own entries). */
+export type DusDrillId = 'dus-intercept' | 'dus-wake' | 'dus-conflict' | 'dus-descent' | 'dus-release' | 'dus-parallel' | 'dus-merge' | 'dus-goaround';
+export type AnyDrillId = DrillId | DusDrillId;
 export interface DrillVerdict {
   pass: boolean;
   /** Seconds the drill measures (see `timeLabel`). */
@@ -35,7 +38,12 @@ export interface DrillState {
   verdict?: DrillVerdict;
 }
 export interface DrillDef {
+  /** Typed as DrillId so the 1.0 UI tables compile; the Düsseldorf drills carry a DusDrillId (CONSOLE widens its tables). */
   id: DrillId;
+  /** Seed base for the drill's variations (unique per drill). Default: the 1.0 table. */
+  base?: number;
+  /** The callsigns the set-up waits for (default: the 1.0 parameter names). */
+  cs?(p: Record<string, any>): string[];
   /** The airport the drill is written for; default EBLG. */
   icao?: string;
   title: string;
@@ -429,22 +437,294 @@ const RELEASE: DrillDef = {
   },
 };
 
-export const DRILLS: DrillDef[] = [INTERCEPT, WAKE, CONFLICT, DESCENT, RELEASE];
+
+// ===========================================================================
+// Düsseldorf drills: the same skills with Düsseldorf geometry (runway 23L, the BIKMU23 and DOMUX23 transitions, the
+// parallel 23R), and three of its own: the 2.5 NM diagonal between the parallels, the merge of the two downwinds and a
+// go-around off 23R into the 23L departure climb.
+
+const DUS_GOOD = 'EDDL 120550Z 23008KT 9999 FEW035 12/07 Q1018 NOSIG';
+const DUS_PAX = ['A320', 'A321', 'B738', 'A319', 'A20N'];
+const DUS_CS = ['EWG4KL', 'DLH9TW', 'CFG2EP', 'TUI7MD', 'SXS3LR', 'RYR8JB', 'EJU59KE', 'KLM1855'];
+const dusArr = (cs: string, type: string, star = 'BIKMU1A', x: Partial<SpawnSpec> = {}): SpawnSpec => ({ t: 1, kind: 'arr', cs, type, star, spawnDist: 30, ...x });
+
+const DUS_INTERCEPT: DrillDef = {
+  ...INTERCEPT, id: 'dus-intercept' as DrillId, icao: 'EDDL', base: 7600,
+  summary: 'Turn a Eurowings off base onto the ILS 23L with a clean 30° intercept.',
+  params(seed) {
+    const r = rnd(seed, 'dus-intercept');
+    return { D: +r.range(17, 21).toFixed(1), X: +r.range(3.5, 5.5).toFixed(1), side: r.chance(0.5) ? 1 : -1, type: r.pick(DUS_PAX), cs: r.pick(DUS_CS) };
+  },
+  scenario(_pack, _seed, p) {
+    return { startUtc: '09:30', metar: DUS_GOOD, runway: '23L', readbackErr: 0, events: [], spawns: [dusArr(p.cs, p.type, 'BIKMU1A', { spawnDist: 20, level: { ft: 4000 }, alt: 4000 })] };
+  },
+};
+
+const DUS_WAKE: DrillDef = {
+  ...WAKE, id: 'dus-wake' as DrillId, icao: 'EDDL', base: 7700,
+  summary: 'An Emirates heavy and a Eurowings on the 23L localizer. One speed call to the follower sets the gap at touchdown.',
+  params(seed) {
+    const r = rnd(seed, 'dus-wake');
+    return { dL: +r.range(5.5, 7.5).toFixed(1), delta: +r.range(-1.5, 0.4).toFixed(1), lead: r.pick(['A388', 'B77W', 'A333']), fol: r.pick(['A320', 'B738', 'A321', 'E190']), csL: r.pick(['UAE55', 'UAE57', 'CFG1708']), csF: r.pick(['EWG2EK', 'DLH7PK', 'TUI3EA', 'KLM1853']) };
+  },
+  scenario(_pack, _seed, p) {
+    return { startUtc: '12:05', metar: DUS_GOOD, runway: '23L', readbackErr: 0, events: [], spawns: [dusArr(p.csL, p.lead, 'DOMUX1A', { spawnDist: 40 }), dusArr(p.csF, p.fol, 'BIKMU1A', { spawnDist: 40 })] };
+  },
+};
+
+const DUS_CONFLICT: DrillDef = {
+  ...CONFLICT, id: 'dus-conflict' as DrillId, icao: 'EDDL', base: 7800,
+  summary: 'Two jets converging over the Ruhr at the same level. Fix it before the alert does.',
+  params(seed) {
+    const r = rnd(seed, 'dus-conflict');
+    const hA = r.int(0, 35) * 10;
+    return {
+      cx: +r.range(-10, 14).toFixed(1), cy: +r.range(8, 20).toFixed(1), hA, hB: norm360(hA + (r.chance(0.5) ? 1 : -1) * r.int(7, 11) * 10),
+      tc: r.int(140, 175), fl: r.pick([90, 100, 110]), csA: r.pick(['DLH4KM', 'EWG52TP', 'CFG7AF']), csB: r.pick(['RYR4VB', 'TUI6421', 'SXS4NT']), tA: r.pick(['A320', 'A321']), tB: r.pick(['B738', 'E190']),
+    };
+  },
+  scenario(_pack, _seed, p) {
+    return { startUtc: '14:20', metar: DUS_GOOD, runway: '23L', readbackErr: 0, events: [], spawns: [{ t: 1, kind: 'ovf', cs: p.csA, type: p.tA, level: { fl: p.fl }, from: { brg: 90, dist: 30 } }, { t: 1, kind: 'ovf', cs: p.csB, type: p.tB, level: { fl: p.fl }, from: { brg: 270, dist: 30 } }] };
+  },
+};
+
+const DUS_DESCENT: DrillDef = {
+  ...DESCENT, id: 'dus-descent' as DrillId, icao: 'EDDL', base: 7900, timeLabel: 'to REGNO',
+  summary: 'From 6,000 ft on the BIKMU transition round the downwind, one continuous descent to REGNO at 3,000 ft.',
+  goal: 'Cross REGNO, the final approach fix for the 23 finals, between 2,900 and 3,300 ft, without levelling off on the way.',
+  params(seed) {
+    const r = rnd(seed, 'dus-descent');
+    return { nm: +r.range(16, 21).toFixed(1), type: r.pick(DUS_PAX), cs: r.pick(DUS_CS) };
+  },
+  scenario(_pack, _seed, p) {
+    return { startUtc: '10:20', metar: DUS_GOOD, runway: '23L', readbackErr: 0, events: [], spawns: [dusArr(p.cs, p.type, 'BIKMU1A', { spawnDist: 20, level: { ft: 6000 } })] };
+  },
+  setup(sim, st) {
+    const tr = sim.pack.transitions.find((t) => t.name === 'BIKMU23')!;
+    const chain: Leg[] = tr.legs.map((l) => ({ fix: l.fix, p: l.p }));
+    const at = backAlong(chain, st.p.nm);
+    const ac = sim.find(st.p.cs)!;
+    place(sim, ac, { p: at.p, hdg: bearing(at.p, at.route[0].p), alt: 6000, ias: 220, cleared: 6000, route: at.route, proc: 'BIKMU23' });
+    ac.spdAssigned = 220;
+    ac.app = { type: 'ILS', rwy: sim.rwy, locCap: false, gsCap: false };
+    ac.expectRwy = sim.rwy.id;
+    st.m.ifFix = 'REGNO';
+    st.m.ifAlt = 3000;
+  },
+  solve(sim, st) {
+    const ac = sim.find(st.p.cs);
+    if (!ac || st.m.solved || sim.t < st.t0 + 3 || sim.freqBusy()) return;
+    const need = ((ac.alt - st.m.ifAlt) / 1000) * 3 + 2;
+    if (routeNm(ac) > need) return;
+    sim.issue({ cs: ac.cs, items: [{ k: 'lvl', lvl: { ft: st.m.ifAlt } }] });
+    st.m.solved = true;
+  },
+};
+
+const DUS_RELEASE: DrillDef = {
+  ...RELEASE, id: 'dus-release' as DrillId, icao: 'EDDL', base: 8000,
+  summary: 'Single-runway operation on 23L: Tower has a departure ready and two arrivals on final. Fit it in the gap.',
+  params(seed) {
+    const r = rnd(seed, 'dus-release');
+    return {
+      d1: +r.range(3, 4).toFixed(1), d2: +r.range(13.4, 14.4).toFixed(1), dep: r.pick(['A320', 'B738', 'A321', 'B753']), sid: r.pick(['MODRU2T', 'MEVEL4T', 'COL6T', 'KUMIK7T']),
+      cs1: r.pick(['EWG2EK', 'CFG1414']), cs2: r.pick(['DLH7PK', 'TUI3EA']), csD: r.pick(['EWG8766', 'DLH1VL', 'SXS6KA', 'CFG3192']),
+    };
+  },
+  scenario(_pack, _seed, p) {
+    const sp: SpawnSpec[] = [dusArr(p.cs1, 'A321', 'BIKMU1A', { spawnDist: 40 }), dusArr(p.cs2, 'B738', 'DOMUX1A', { spawnDist: 40 }), { t: 3, kind: 'dep', cs: p.csD, type: p.dep, sid: p.sid }];
+    return { startUtc: '07:40', metar: DUS_GOOD, runway: '23L', readbackErr: 0, events: [], spawns: sp };
+  },
+};
+
+// 6. Parallel: the 2.5 NM diagonal between the two 23 finals
+const DUS_PARALLEL: DrillDef = {
+  id: 'dus-parallel' as DrillId, icao: 'EDDL', base: 8100, title: 'Parallels', timeLabel: 'to your speed call', limitS: 360,
+  summary: 'One on the 23R localizer, one joining 23L beside it. Set the follower so it stays 2.5 NM diagonal inside 10 NM.',
+  goal: 'When the leader lands on 23R, the follower on 23L is between 2.5 and 3.5 NM from its threshold.',
+  cs: (p) => [p.csL, p.csF],
+  params(seed) {
+    const r = rnd(seed, 'dus-parallel');
+    return { dL: +r.range(6, 8).toFixed(1), delta: +r.range(-1.2, 0.6).toFixed(1), lead: r.pick(['A320', 'B738', 'A321']), fol: r.pick(['A320', 'A319', 'E190', 'B738']), csL: r.pick(['EWG2EK', 'CFG1414', 'TUI3EA']), csF: r.pick(['DLH7PK', 'SXS6KA', 'KLM1853']) };
+  },
+  scenario(_pack, _seed, p) {
+    return { startUtc: '15:10', metar: DUS_GOOD, runway: '23R', readbackErr: 0, events: [], spawns: [dusArr(p.csL, p.lead, 'BIKMU1A', { spawnDist: 40 }), dusArr(p.csF, p.fol, 'DOMUX1A', { spawnDist: 40 })] };
+  },
+  setup(sim, st) {
+    const p = st.p;
+    const rR = sim.pack.runways.get('23R')!, rL = sim.pack.runways.get('23L')!;
+    const L = sim.find(p.csL)!, F = sim.find(p.csF)!;
+    const g0 = 2.5 + 2.2 + p.delta;
+    place(sim, L, { p: move(rR.thr, rR.crs + 180, p.dL), hdg: rR.crs, alt: glideAlt(rR, p.dL), ias: 165, cleared: 3000, loc: true, twr: true });
+    L.app = { type: 'ILS', rwy: rR, locCap: true, gsCap: true, capT: sim.t }; L.expectRwy = '23R';
+    place(sim, F, { p: move(rL.thr, rL.crs + 180, p.dL + g0), hdg: rL.crs, alt: glideAlt(rL, p.dL + g0), ias: 210, cleared: 3000, loc: true });
+    F.app = { type: 'ILS', rwy: rL, locCap: true, gsCap: true, capT: sim.t }; F.expectRwy = '23L';
+    F.spdAssigned = 210;
+  },
+  judge(sim, st) {
+    const p = st.p;
+    const landed = sim.landings.find((l) => l.cs === p.csL);
+    const F = sim.find(p.csF);
+    if (sim.events.some((e) => e.kind === 'los')) return { pass: false, timeS: sim.t - st.t0, score: 0, why: 'They came inside 2.5 NM of each other inside 10 NM. Slow the follower earlier.', facts: [] };
+    if (!landed) return sim.events.some((e) => e.kind === 'goaround' && e.cs === p.csL) ? { pass: false, timeS: sim.t - st.t0, score: 0, why: 'The leader went around.', facts: [] } : undefined;
+    if (!F) return { pass: false, timeS: sim.t - st.t0, score: 0, why: 'The follower is gone.', facts: [] };
+    const gap = distToThr(F.p, sim.pack.runways.get('23L')!);
+    const call = sends(sim, p.csF, st.t0).find((c) => c.cl.items.some((i) => i.k === 'spd' || i.k === 'spdmin' || i.k === 'spdres'));
+    const timeS = call ? call.t - st.t0 : sim.t - st.t0;
+    const facts = [`${gap.toFixed(1)} NM from the 23L threshold`, 'minimum 2.5 NM diagonal'];
+    if (gap < 2.45) return { pass: false, timeS, score: 0, why: `${gap.toFixed(1)} NM when the leader landed: inside the 2.5 NM the parallels allow. Slow the follower earlier.`, facts };
+    if (gap > 3.5) return { pass: false, timeS, score: Math.round(clamp(40 - (gap - 3.5) * 20, 0, 40)), why: `${gap.toFixed(1)} NM: more than 1 NM above the 2.5 NM diagonal. That is a lost landing slot on the parallel.`, facts };
+    const score = Math.round(clamp(100 - Math.abs(gap - 3) * 70 - Math.max(0, timeS - 40) / 3, 0, 100));
+    return { pass: true, timeS, score, why: `${gap.toFixed(1)} NM diagonal behind the leader on the other runway: 2.5 NM applies between the parallels inside 10 NM.`, facts };
+  },
+  solve(sim, st) {
+    if (st.m.solved || sim.t < st.t0 + 4) return;
+    const F = sim.find(st.p.csF);
+    if (!F || sim.freqBusy()) return;
+    let best = { spd: 0, err: Infinity };
+    for (let spd = 140; spd <= 210; spd += 10) {
+      const g = probeGapOn(sim, st, sim.t, spd, '23L', st.p.csL);
+      if (g === undefined) continue;
+      const err = Math.abs(g - 3);
+      if (err < best.err) best = { spd, err };
+    }
+    sim.issue({ cs: F.cs, items: [{ k: 'spd', spd: best.spd || 180, until: 4 }] });
+    st.m.solved = true;
+  },
+};
+function probeGapOn(sim: Sim, st: DrillState, at: number, spd: number, rwyId: string, leaderCs: string): number | undefined {
+  const sub = new SimClass(sim.pack, sim.sc);
+  attachDrill(sub, st.def, { noEnd: true });
+  while (sub.t < at) sub.step();
+  sub.issue({ cs: st.p.csF, items: [{ k: 'spd', spd, until: 4 }] });
+  while (sub.t < at + st.def.limitS && !sub.landings.some((l) => l.cs === leaderCs)) sub.step();
+  const F = sub.find(st.p.csF);
+  return F ? distToThr(F.p, sub.pack.runways.get(rwyId)!) : undefined;
+}
+
+// 7. Merge: the two downwinds meet on the 23L final
+const DUS_MERGE: DrillDef = {
+  id: 'dus-merge' as DrillId, icao: 'EDDL', base: 8200, title: 'Two downwinds', timeLabel: 'to a decided order', limitS: 720,
+  summary: 'One on the north-eastern downwind, one on the south-eastern, both at 5,000 ft and a minute apart from the final. Bring them onto one final.',
+  goal: 'Both land 23L in trail with no conflict alert, the second at least 3 NM behind the first at the first touchdown. Keep 1,000 ft between them until they are in trail.',
+  cs: (p) => [p.csN, p.csS],
+  params(seed) {
+    const r = rnd(seed, 'dus-merge');
+    return { nmN: +r.range(14, 18).toFixed(1), bias: +r.range(5, 7).toFixed(1), tN: r.pick(DUS_PAX), tS: r.pick(['A320', 'A319', 'A20N', 'E190']), csN: r.pick(['EWG4KL', 'DLH9TW', 'TUI7MD']), csS: r.pick(['CFG2EP', 'SXS3LR', 'RYR8JB']) };
+  },
+  scenario(_pack, _seed, p) {
+    return { startUtc: '16:30', metar: DUS_GOOD, runway: '23L', readbackErr: 0, events: [], spawns: [dusArr(p.csN, p.tN, 'BIKMU1A', { spawnDist: 20, level: { ft: 5000 } }), dusArr(p.csS, p.tS, 'DOMUX1A', { spawnDist: 20, level: { ft: 5000 } })] };
+  },
+  setup(sim, st) {
+    const p = st.p;
+    const north = sim.pack.transitions.find((t) => t.name === 'BIKMU23')!, south = sim.pack.transitions.find((t) => t.name === 'DOMUX23')!;
+    const n = backAlong(north.legs.map((l) => ({ fix: l.fix, p: l.p })), p.nmN);
+    const s = backAlong(south.legs.map((l) => ({ fix: l.fix, p: l.p })), p.nmN + p.bias);
+    for (const [cs, at, proc] of [[p.csN, n, 'BIKMU23'], [p.csS, s, 'DOMUX23']] as [string, typeof n, string][]) {
+      const ac = sim.find(cs)!;
+      place(sim, ac, { p: at.p, hdg: bearing(at.p, at.route[0].p), alt: 5000, ias: 220, cleared: 5000, route: at.route, proc });
+      ac.spdAssigned = 220;
+      ac.expectRwy = sim.rwy.id;
+    }
+  },
+  judge(sim, st) {
+    const p = st.p, m = st.m;
+    const hit = losOrStca(sim, p.csN, p.csS);
+    if (hit) return { pass: false, timeS: sim.t - st.t0, score: 0, why: hit.kind === 'los' ? 'They lost separation at the merge.' : 'The conflict alert went off. Decide the order early: slow one, or keep 1,000 ft between them until they are in trail.', facts: [] };
+    const first = sends(sim, p.csN, st.t0).concat(sends(sim, p.csS, st.t0)).sort((a, b) => a.t - b.t)[0];
+    if (first && m.decidedT === undefined) m.decidedT = first.t - st.t0;
+    const l1 = sim.landings[0], l2 = sim.landings[1];
+    if (sim.events.some((e) => e.kind === 'goaround')) return { pass: false, timeS: sim.t - st.t0, score: 0, why: `${sim.events.find((e) => e.kind === 'goaround')!.cs} went around.`, facts: [] };
+    if (!l1) return undefined;
+    const second = sim.find(l1.cs === p.csN ? p.csS : p.csN);
+    if (!l2) {
+      if (second && m.gap === undefined && second.app?.locCap) m.gap = distToThr(second.p, sim.rwy);
+      return undefined;
+    }
+    const gap = m.gap as number | undefined;
+    const timeS = m.decidedT ?? sim.t - st.t0;
+    const facts = [`${l1.cs} first`, gap !== undefined ? `${gap.toFixed(1)} NM between them at the first touchdown` : ''].filter(Boolean);
+    if (gap !== undefined && gap < 2.95) return { pass: false, timeS, score: 0, why: `Only ${gap.toFixed(1)} NM between them at the first touchdown.`, facts };
+    const score = Math.round(clamp(100 - Math.max(0, timeS - 20) * 0.4 - Math.max(0, (gap ?? 4) - 5) * 15, 0, 100));
+    return { pass: true, timeS, score, why: `${l1.cs} first, ${l2.cs} ${gap !== undefined ? gap.toFixed(1) + ' NM' : 'well'} behind. Decided ${fmtS(timeS)} in.`, facts };
+  },
+  solve(sim, st) {
+    if (st.m.solved || sim.t < st.t0 + 4 || sim.freqBusy()) return;
+    const n = sim.find(st.p.csN), s = sim.find(st.p.csS);
+    if (!n || !s) return;
+    // the northern one goes first: down to 3,000 ft and the approach now; the southern one stays at 5,000 ft until the
+    // first is on the localizer, then gets its descent and approach behind it
+    const once = (key: string, cs: string, items: Item[]) => { if (st.m[key]) return false; sim.issue({ cs, items }); st.m[key] = sim.t; return true; };
+    if (once('first', n.cs, [{ k: 'lvl', lvl: { ft: 3000 } }, { k: 'app', app: 'ILS', rwy: sim.rwy.id }])) return;
+    if (once('slow', s.cs, [{ k: 'spd', spd: s.perf.vminClean }])) return;
+    if (n.alt < 3400 && sim.dthr(s) < 15.5 && once('second', s.cs, [{ k: 'lvl', lvl: { ft: 3000 } }, { k: 'app', app: 'ILS', rwy: sim.rwy.id }])) return;
+    for (const a of [n, s]) if (a.app?.locCap && a.state === 'assumed' && !sim.readbackPending(a.cs)) { sim.issue({ cs: a.cs, items: [{ k: 'xfr', unit: sim.twr.id }] }); return; }
+  },
+};
+
+// 8. Go-around off 23R into the 23L departure climb
+const DUS_GOAROUND: DrillDef = {
+  id: 'dus-goaround' as DrillId, icao: 'EDDL', base: 8300, title: 'Go-around', timeLabel: 'to a safe solution', limitS: 420,
+  summary: 'Tower sends an arrival on 23R around as a departure rolls from 23L. Both climb through the same airspace.',
+  goal: 'No conflict alert and no loss of separation between the go-around and the departure in the first five minutes.',
+  cs: (p) => [p.csA, p.csD],
+  params(seed) {
+    const r = rnd(seed, 'dus-goaround');
+    return { dA: +r.range(1.2, 1.8).toFixed(1), tA: r.pick(DUS_PAX), tD: r.pick(['A320', 'B738', 'A321', 'B753']), sid: r.pick(['MEVEL4T', 'SONEB8T']), csA: r.pick(['EWG4KL', 'DLH9TW', 'TUI7MD']), csD: r.pick(['CFG2EP', 'SXS3LR', 'EJU59KE']) };
+  },
+  scenario(_pack, _seed, p) {
+    return { startUtc: '15:40', metar: DUS_GOOD, runway: '23R', readbackErr: 0, events: [], spawns: [dusArr(p.csA, p.tA, 'BIKMU1A', { spawnDist: 40 }), { t: 1, kind: 'dep', cs: p.csD, type: p.tD, sid: p.sid, released: true }] };
+  },
+  setup(sim, st) {
+    const p = st.p;
+    const r = sim.pack.runways.get('23R')!;
+    const a = sim.find(p.csA)!;
+    place(sim, a, { p: move(r.thr, r.crs + 180, p.dA), hdg: r.crs, alt: glideAlt(r, p.dA), ias: a.perf.vapp + 5, cleared: 3000, loc: true, twr: true });
+    a.app = { type: 'ILS', rwy: r, locCap: true, gsCap: true, capT: sim.t }; a.expectRwy = '23R';
+    sim.goAround(a, 'forced');
+  },
+  judge(sim, st) {
+    const p = st.p, m = st.m;
+    const hit = losOrStca(sim, p.csA, p.csD);
+    if (hit) return { pass: false, timeS: sim.t - st.t0, score: 0, why: hit.kind === 'los' ? 'The go-around and the departure lost separation.' : 'The conflict alert went off. Turn the departure away or stop its climb before the go-around reaches it.', facts: [] };
+    const a = sim.find(p.csA), d = sim.find(p.csD);
+    if (!a || !d) return { pass: true, timeS: m.firstT ?? sim.t - st.t0, score: 70, why: 'They parted safely.', facts: [] };
+    const first = sends(sim, p.csA, st.t0).concat(sends(sim, p.csD, st.t0)).sort((x, y) => x.t - y.t)[0];
+    if (first && m.firstT === undefined) m.firstT = first.t - st.t0;
+    m.minD = Math.min(m.minD ?? 99, dist(a.p, d.p));
+    if (sim.t - st.t0 < 300) return undefined;
+    const timeS = m.firstT ?? sim.t - st.t0;
+    const score = Math.round(clamp(100 - Math.max(0, timeS - 20) * 0.5, 0, 100));
+    return { pass: true, timeS, score, why: `Five minutes with no alert. Your first call came ${fmtS(timeS)} after the go-around; closest they came was ${m.minD.toFixed(1)} NM.`, facts: [`closest ${m.minD.toFixed(1)} NM`] };
+  },
+  solve(sim, st) {
+    if (st.m.solved || sim.t < st.t0 + 3 || sim.freqBusy()) return;
+    const d = sim.find(st.p.csD);
+    if (!d || d.state !== 'assumed') return;
+    // the departure turns left, away from the missed approach that curls back north over the field, and keeps climbing
+    sim.issue({ cs: d.cs, items: [hdgTo(sim, d, 180), { k: 'lvl', lvl: sim.depXfl }] });
+    st.m.solved = true;
+  },
+};
+
+export const DRILLS_EDDL: DrillDef[] = [DUS_INTERCEPT, DUS_WAKE, DUS_CONFLICT, DUS_DESCENT, DUS_RELEASE, DUS_PARALLEL, DUS_MERGE, DUS_GOAROUND];
+
+export const DRILLS: DrillDef[] = [INTERCEPT, WAKE, CONFLICT, DESCENT, RELEASE, ...DRILLS_EDDL];
 export const drillById = (id: string) => DRILLS.find((d) => d.id === id);
 /** The drills written for an airport. */
 export const drillsFor = (icao: string) => DRILLS.filter((d) => (d.icao ?? 'EBLG') === icao);
 const DRILL_BASE: Record<DrillId, number> = { intercept: 7100, wake: 7200, conflict: 7300, descent: 7400, release: 7500 };
 
 /** The scenario for one variation of a drill. Same id and variant, same session. */
-export function drillScenario(pack: Pack, id: DrillId, variant: number): Scenario {
+export function drillScenario(pack: Pack, id: DrillId | DusDrillId, variant: number): Scenario {
   const def = drillById(id)!;
-  const seed = DRILL_BASE[id] * 1000 + variant;
+  const seed = (def.base ?? DRILL_BASE[id as DrillId]) * 1000 + variant;
   const p = def.params(seed);
   const base = def.scenario(pack, seed, p);
   return { ...base, id: `drill-${id}-${variant}`, title: `Drill · ${def.title}`, desc: `${def.summary} ${def.goal}`, briefing: def.goal, seed, durationMin: Math.ceil(def.limitS / 60) + 1, icao: def.icao ?? pack.meta.icao };
 }
 export function parseDrillScenario(scId: string): { id: DrillId; variant: number } | undefined {
-  const m = /^drill-([a-z]+)-(\d+)$/.exec(scId);
+  const m = /^drill-([a-z-]+)-(\d+)$/.exec(scId);
   return m && drillById(m[1]) ? { id: m[1] as DrillId, variant: Number(m[2]) } : undefined;
 }
 
@@ -456,7 +736,7 @@ export function attachDrill(sim: Sim, def: DrillDef, opts: { noEnd?: boolean } =
   s._drill = st;
   afterEachStep(sim, 'drill', () => {
     if (!st.ready) {
-      const need = def.id === 'wake' ? [st.p.csL, st.p.csF] : def.id === 'conflict' ? [st.p.csA, st.p.csB] : def.id === 'release' ? [st.p.cs1, st.p.cs2] : [st.p.cs];
+      const need = def.cs ? def.cs(st.p) : def.id.endsWith('wake') ? [st.p.csL, st.p.csF] : def.id.endsWith('conflict') ? [st.p.csA, st.p.csB] : def.id.endsWith('release') ? [st.p.cs1, st.p.cs2] : [st.p.cs];
       if (!need.every((cs) => sim.find(cs))) return;
       def.setup(sim, st);
       st.ready = true;

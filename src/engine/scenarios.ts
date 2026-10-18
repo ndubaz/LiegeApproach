@@ -1,7 +1,7 @@
 import type { Scenario, SpawnSpec } from './types';
 import { durationFor, emergencyObjectives, hotStart } from './traffic';
 
-// The challenge library: 22 scripted scenarios in four tiers, written for Liège (EBLG).
+// The challenge library: 22 scripted scenarios in four tiers written for Liège (EBLG), and 12 for Düsseldorf (EDDL) below.
 // Times are seconds from the start. Callsigns are realistic in format; flights are fictional.
 // Each scenario carries its airport in `icao`; `challengesFor(icao)` gives the menu the right list.
 
@@ -259,8 +259,174 @@ const LIBRARY: Scenario[] = [
   },
 ];
 
+// ---------------------------------------------------------------------------
+// Düsseldorf (EDDL): twelve challenges in four tiers for the Langen Radar pickup position. Arrivals take about
+// 22 minutes from the handover at the sector edge round the RNAV transition to touchdown, so the spawns run
+// 2 to 3 minutes apart for a rush. Flights are fictional; callsigns follow the operators based at or serving DUS.
+const AD = (t: number, cs: string, type: string, star: string, x: Partial<SpawnSpec> = {}): SpawnSpec => ({ t, kind: 'arr', cs, type, star, spawnDist: 38, ...x });
+const GOOD23 = 'EDDL 120550Z 23008KT 9999 FEW035 12/07 Q1018 NOSIG';
+const SUMMER23 = 'EDDL 120850Z 25010KT 9999 SCT040 24/14 Q1016 NOSIG';
+const NIGHT23 = 'EDDL 120030Z 24005KT 9999 SCT040 09/06 Q1015 NOSIG';
+const HEMS = (t: number): SpawnSpec => ({ t, kind: 'heli', cs: 'CHRISTOPH9', type: 'EC45', route: ['BGU', 'UKD'], from: { brg: 20, dist: 4 }, level: { ft: 1500 }, request: { kind: 'direct', fix: 'UKD' } });
+
+const DUS_LIBRARY: Scenario[] = [
+  // ---------------- Tier 1: fundamentals at Düsseldorf ----------------
+  {
+    id: 'dus-super', tier: 1, title: 'Super behind a medium', seed: 601, durationMin: 40, startUtc: '12:10', metar: GOOD23, runway: '23L', readbackErr: 0.02, icao: 'EDDL',
+    desc: 'An Emirates A380 arrives via DOMUX two minutes behind a Eurowings A320 and two minutes ahead of a Condor A321 via BIKMU. The super needs 3 NM behind the medium; the A321 behind the super needs 5 NM. Set the gaps on the two downwinds before they merge on final 23L.',
+    objective: 'Land all three with no wake infringement and no loss of separation.',
+    briefing: 'Midday, runway 23L. 3 inbound, 1 out. The A380 lands in the middle: build the gap for the Condor behind it on the downwind, not on final.',
+    spawns: [AD(5, 'EWG2EK', 'A320', 'BIKMU1A', { spawnDist: 32 }), AD(130, 'UAE55', 'A388', 'DOMUX1A'), AD(250, 'CFG1414', 'A321', 'BIKMU1A'), D(700, 'DLH7PK', 'A20N', 'MEVEL4T')],
+    events: [], pass: { minLanded: 3, minRatings: { SEPC: 4 } },
+  },
+  {
+    id: 'dus-quiet-night', tier: 1, title: 'Quiet night, medical flight', seed: 602, durationMin: 35, startUtc: '00:30', metar: NIGHT23, runway: '23L', readbackErr: 0, icao: 'EDDL',
+    desc: 'The night flight restriction has the field shut to scheduled traffic. On the frequency: a delayed home-based Eurowings with an exemption, Christoph 9 wanting direct to the university hospital, and a Köln/Bonn diversion with a sick passenger who needs the ground inside 15 minutes.',
+    objective: 'Land the Eurowings and the diversion, the diversion within 15 minutes, and clear the helicopter through the zone.',
+    briefing: 'Night curfew: 22:00 to 06:00 local, no scheduled movements. 2 inbound (one a medical diversion from Köln/Bonn), none out. Runway 23L. Tower is on a reduced crew: keep the calls short.',
+    spawns: [AD(5, 'EWG9KP', 'A320', 'BIKMU1A', { spawnDist: 30 }), HEMS(240), AD(420, 'AUA1LW', 'A320', 'DOMUX1A', { unfamiliar: true, spawnDist: 30 })],
+    events: [{ t: 400, kind: 'note', text: 'Langen Radar, Köln sector: AUA1LW diverting from Köln/Bonn with a medical emergency on board, requests priority landing' }],
+    objectives: [{ cs: 'AUA1LW', text: 'Land AUA1LW within 15:00', byT: 420 + 15 * 60 }],
+    pass: { minLanded: 2, minRatings: { SEPC: 4 } },
+  },
+  {
+    id: 'dus-koeln', tier: 1, title: 'The Köln/Bonn interface', seed: 603, durationMin: 45, startUtc: '09:05', metar: GOOD23, runway: '23L', readbackErr: 0.02, icao: 'EDDL',
+    desc: 'The Köln arrival sector works the airspace south of you. It asks for 10 NM in trail on your departures via COL, hands over the arrivals from Nörvenich into BIKMU, and sends you a diversion from its own field. Keep the interface tidy.',
+    objective: 'No flow violations on the COL departures, every arrival landed, no loss of separation.',
+    briefing: 'Mid-morning, runway 23L. 5 inbound (one Köln/Bonn diversion), 4 out, three of them via COL into the Köln sector. Köln wants 10 NM in trail on those.',
+    spawns: [
+      AD(5, 'EWG7LX', 'A319', 'BIKMU1A', { spawnDist: 32 }), AD(200, 'THY1899', 'A333', 'BIKMU1A'), AD(380, 'KLM1853', 'E190', 'PISAP1A'), AD(560, 'EWG1EH', 'A320', 'DOMUX1A'),
+      AD(700, 'AFR1506', 'A320', 'BIKMU1A', { unfamiliar: true, spawnDist: 30 }),
+      D(90, 'EWG3DT', 'A320', 'COL6T'), D(230, 'SXS2EP', 'B738', 'COL6T'), D(420, 'DLH4YC', 'A21N', 'MEVEL4T'), D(640, 'CFG2217', 'B753', 'COL6T'),
+    ],
+    events: [{ t: 30, kind: 'flow', exitFix: 'COL', mit: 10, text: 'Langen Radar, Köln sector: 10 NM in trail on all departures via COL until further notice' }, { t: 680, kind: 'note', text: 'Langen Radar, Köln sector: AFR1506 diverting from Köln/Bonn, a passenger taken ill, requests priority' }],
+    pass: { allArrivalsHandled: true, minRatings: { CORD: 4, SEPC: 4 } },
+  },
+  // ---------------- Tier 2: Düsseldorf operations ----------------
+  {
+    id: 'dus-morning-rush', tier: 2, title: 'Morning rush', seed: 604, durationMin: 55, startUtc: '04:50', metar: GOOD23, runway: '23L', readbackErr: 0.03, icao: 'EDDL',
+    desc: 'The field opens at 06:00 local. Nine arrivals from all four entry fixes land in the first half hour while Tower lines up the outbound push on the same runway. Single-runway operation: every departure needs a gap on final 23L.',
+    objective: 'Land at least eight, hand on at least five departures, holding under 3 minutes per arrival on average.',
+    briefing: 'Opening wave, single runway 23L. 9 inbound, 7 out. Arrivals from BIKMU and PISAP share the north-eastern downwind; DOMUX comes in from the south-east. The push starts at 06:10 local.',
+    spawns: [
+      AD(5, 'EWG1KL', 'A320', 'BIKMU1A', { spawnDist: 30 }), AD(150, 'CFG1012', 'A333', 'PISAP1A'), AD(300, 'DLH2WT', 'A21N', 'DOMUX1A'), AD(440, 'TUI3EA', 'B738', 'BIKMU1A'),
+      AD(590, 'EWG5DH', 'A319', 'HALME1A'), AD(730, 'RYR8SJ', 'B738', 'PISAP1A'), AD(880, 'PGT1083', 'A321', 'DOMUX1A'), AD(1030, 'EJU31MF', 'A320', 'BIKMU1A'), AD(1180, 'AUA183', 'A320', 'PISAP1A'),
+      D(560, 'EWG8766', 'A320', 'MODRU2T'), D(760, 'CFG3192', 'B753', 'SONEB8T'), D(960, 'DLH1VL', 'A20N', 'KUMIK7T'), D(1160, 'EWG2TP', 'A21N', 'NETEX6T'), D(1360, 'TUI5110', 'B38M', 'COL6T'), D(1560, 'SXS6KA', 'B738', 'DODEN1T'), D(1760, 'EWG9MJ', 'A319', 'MEVEL4T'),
+    ],
+    events: [], pass: { minLanded: 8, minDeparturesHandled: 5, maxHoldMinPerArrival: 3, minRatings: { SEPC: 3 } },
+  },
+  {
+    id: 'dus-holiday-wave', tier: 2, title: 'Holiday wave', seed: 605, durationMin: 55, startUtc: '08:50', metar: SUMMER23, runway: '23L', readbackErr: 0.03, icao: 'EDDL',
+    desc: 'A summer Saturday. Condor, TUI, SunExpress and Pegasus bring ten holiday jets home from the south and east in half an hour, B757-300 and A330-300 among the narrow-bodies, while the next rotation pushes out. One runway for everything.',
+    objective: 'Land at least nine, no wake infringements, holding under 3 minutes per arrival on average.',
+    briefing: 'Summer Saturday, runway 23L. 10 inbound, 6 out. Mixed fleet: watch the wake behind the A330 and the B757.',
+    spawns: [
+      AD(5, 'CFG2104', 'B753', 'BIKMU1A', { spawnDist: 30 }), AD(140, 'SXS1DL', 'B738', 'DOMUX1A'), AD(280, 'TUI4KD', 'B738', 'PISAP1A'), AD(420, 'CFG1708', 'A333', 'BIKMU1A'),
+      AD(560, 'PGT1021', 'A321', 'DOMUX1A'), AD(700, 'THY1517', 'A321', 'HALME1A'), AD(840, 'CAI2318', 'B738', 'BIKMU1A'), AD(980, 'AEE816', 'A320', 'PISAP1A'),
+      AD(1120, 'CFG2310', 'A339', 'DOMUX1A'), AD(1260, 'EWG6RU', 'A320', 'BIKMU1A'),
+      D(400, 'CFG2103', 'B753', 'SONEB8T'), D(640, 'TUI4KC', 'B738', 'DODEN1T'), D(880, 'SXS1DK', 'B738', 'KUMIK7T'), D(1120, 'EWG4LF', 'A320', 'MODRU2T'), D(1360, 'PGT1022', 'A321', 'GMH1T'), D(1600, 'CFG1709', 'A333', 'COL6T'),
+    ],
+    events: [], pass: { minLanded: 9, maxHoldMinPerArrival: 3, minRatings: { SEPC: 3 } },
+  },
+  {
+    id: 'dus-runway-change', tier: 2, title: 'Runway change on both downwinds', seed: 606, durationMin: 55, startUtc: '06:30', metar: 'EDDL 120630Z 24006KT 9999 FEW030 08/05 Q1024 NOSIG', runway: '23L', readbackErr: 0.03, icao: 'EDDL',
+    desc: 'The wind backs to the east. At 06:31 the supervisor gives ten minutes of notice: runway 05R from 06:41. Traffic is on both 23 downwinds, north-east and south-east. Those established on 23L land; everyone else turns round for the 05 transitions, which run the other way along the same downwinds.',
+    objective: 'Land at least six; no go-arounds for tailwind or an unstable approach, no loss of separation through the change.',
+    briefing: 'Runway 23L, wind 240/06 and backing. Expect a change to 05R inside the first ten minutes. 8 inbound on both downwinds, 3 out.',
+    spawns: [
+      AD(5, 'EWG2HJ', 'A320', 'BIKMU1A', { spawnDist: 28 }), AD(130, 'DLH9DW', 'A320', 'DOMUX1A', { spawnDist: 30 }), AD(270, 'TUI6NC', 'B738', 'PISAP1A'), AD(420, 'CFG1890', 'A321', 'DOMUX1A'),
+      AD(600, 'EJU49KR', 'A320', 'BIKMU1A'), AD(780, 'KLM1857', 'B738', 'HALME1A'), AD(960, 'EWG7PZ', 'A21N', 'DOMUX1A'), AD(1140, 'BAW937', 'A320', 'PISAP1A'),
+      D(500, 'EWG3NB', 'A320', 'KUMIK7T'), D(900, 'CFG1891', 'A321', 'SONEB8T'), D(1300, 'DLH8ML', 'A319', 'MODRU2T'),
+    ],
+    events: [{ t: 60, kind: 'runway', rwy: '05R', notice: 600 }, { t: 560, kind: 'wind', dir: 70, kt: 12 }],
+    pass: { minLanded: 6, minRatings: { TRAF: 3, SEPC: 4 } },
+  },
+  {
+    id: 'dus-parallel', tier: 2, title: 'Northern runway open, go-around', seed: 607, durationMin: 50, startUtc: '15:05', metar: GOOD23, runway: '23R', readbackErr: 0.03, icao: 'EDDL',
+    desc: 'Both runways are open: arrivals land 23R, departures roll from 23L next to them. Tower sends one arrival around at 1 NM; its missed approach climbs over the field to the DUS holding at 4,000 ft, right where the departures climb out. Keep 2.5 NM between approaches to the parallels inside 10 NM, 3 NM everywhere else.',
+    objective: 'Land at least six, the go-around on its second approach, with no loss of separation.',
+    briefing: 'Afternoon, segregated parallel operations: arrivals 23R, departures 23L. 7 inbound, 5 out. The missed approach goes to DUS at 4,000 ft, through the departure climb.',
+    spawns: [
+      AD(5, 'EWG8ZA', 'A320', 'BIKMU1A', { spawnDist: 30 }), AD(170, 'CFG1552', 'B753', 'PISAP1A', { goAroundAt: 1 }), AD(340, 'DLH3UF', 'A20N', 'DOMUX1A'), AD(510, 'SWR924', 'E190', 'BIKMU1A'),
+      AD(680, 'THY1595', 'B738', 'DOMUX1A'), AD(850, 'EWG4EP', 'A319', 'HALME1A'), AD(1020, 'RYR2BC', 'B738', 'BIKMU1A'),
+      D(300, 'EWG6YE', 'A321', 'MODRU2T'), D(560, 'DLH2PH', 'A320', 'MEVEL4T'), D(820, 'TUI2LE', 'B738', 'COL6T'), D(1080, 'EWG1QA', 'A320', 'NETEX6T'), D(1340, 'CFG2219', 'A333', 'DODEN1T'),
+    ],
+    events: [], pass: { minLanded: 6, minRatings: { SEPC: 4 } },
+  },
+  // ---------------- Tier 3: abnormal ----------------
+  {
+    id: 'dus-fog', tier: 3, title: 'Fog morning', seed: 608, durationMin: 55, startUtc: '05:50', metar: 'EDDL 120550Z 21003KT 0300 R23L/0350 FG VV001 04/04 Q1024 NOSIG', runway: '23L', readbackErr: 0.03, icao: 'EDDL',
+    desc: 'RVR 350 m at the opening: low visibility procedures. Runway 23L is CAT III, and the localizer sensitive area stays protected until the previous aircraft has vacated, so Tower needs the runway two minutes per landing. Seven arrivals in the first wave, two departures.',
+    objective: 'No go-arounds for an occupied runway, at least five landings.',
+    briefing: 'Fog, LVP in force, CAT III on 23L only. 7 inbound, 2 out. Build the spacing early: the runway is blocked for two minutes after every landing.',
+    spawns: [
+      AD(5, 'EWG2KY', 'A320', 'BIKMU1A', { spawnDist: 30 }), AD(180, 'CFG1020', 'A333', 'PISAP1A'), AD(360, 'DLH4CE', 'A321', 'DOMUX1A'), AD(540, 'TUI2WB', 'B738', 'BIKMU1A'),
+      AD(720, 'EJU62PJ', 'A320', 'HALME1A'), AD(900, 'AUA161', 'E190', 'DOMUX1A'), AD(1080, 'EWG9HX', 'A319', 'PISAP1A'),
+      D(700, 'EWG3HF', 'A320', 'MODRU2T'), D(1200, 'DLH9KF', 'A20N', 'SONEB8T'),
+    ],
+    events: [], pass: { minLanded: 5, minRatings: { SEPC: 4 } },
+  },
+  {
+    id: 'dus-storms', tier: 3, title: 'Thunderstorm line over the Rhine', seed: 609, durationMin: 50, startUtc: '16:40', metar: 'EDDL 121640Z 22012G24KT 8000 TSRA SCT030CB BKN060 26/19 Q1008 TEMPO TSRA', runway: '23L', readbackErr: 0.04, icao: 'EDDL',
+    desc: 'A line of cells sits along the Rhine, south to north through the field, and drifts east across both downwinds and the final. Crews will ask to deviate; the finals get cut. Keep the sequence alive while they do.',
+    objective: 'Nobody flies into a cell; at least five landings.',
+    briefing: 'Late afternoon, runway 23L. 7 inbound, 3 out. Thunderstorms along the Rhine moving east at about 10 kt: expect deviation requests on both downwinds.',
+    spawns: [
+      AD(5, 'EWG6WN', 'A320', 'BIKMU1A', { spawnDist: 30 }), AD(150, 'DLH6XR', 'A321', 'DOMUX1A'), AD(300, 'CFG2152', 'B753', 'PISAP1A'), AD(450, 'TUI8DG', 'B38M', 'BIKMU1A'),
+      AD(600, 'SXS8VR', 'B738', 'DOMUX1A'), AD(760, 'EWG1MD', 'A21N', 'HALME1A'), AD(920, 'WZZ2816', 'A321', 'PISAP1A'),
+      D(420, 'EWG5SR', 'A320', 'KUMIK7T'), D(780, 'CFG2153', 'B753', 'MODRU2T'), D(1140, 'DLH2DK', 'A319', 'MEVEL4T'),
+    ],
+    storms: [{ p: { x: -12, y: -16 }, r: 4, vx: 9, vy: 2 }, { p: { x: -11, y: -2 }, r: 4.5, vx: 10, vy: 1 }, { p: { x: -9, y: 12 }, r: 4, vx: 9, vy: 3 }],
+    events: [], pass: { minLanded: 5, minRatings: { SEPC: 4 } },
+  },
+  {
+    id: 'dus-north-closure', tier: 3, title: 'Northern runway closes mid-shift', seed: 610, durationMin: 55, startUtc: '07:10', metar: GOOD23, runway: '23R', readbackErr: 0.03, icao: 'EDDL',
+    desc: 'Parallel operations until 07:30: arrivals on 23R, departures on 23L. Then the northern runway closes for the day and everything goes back onto 23L, arrivals and departures together. Approaches already cleared for 23R continue; everyone else needs a gap on 23L.',
+    objective: 'Land at least seven, hand on at least five departures, no loss of separation through the closure.',
+    briefing: 'Morning, arrivals 23R and departures 23L until the northern runway closes at 07:30. 9 inbound, 7 out. After the closure every departure needs its own gap on final.',
+    spawns: [
+      AD(5, 'EWG1TB', 'A320', 'BIKMU1A', { spawnDist: 30 }), AD(150, 'CFG1218', 'A333', 'DOMUX1A'), AD(300, 'DLH5FP', 'A20N', 'PISAP1A'), AD(450, 'TUI3GE', 'B738', 'BIKMU1A'),
+      AD(600, 'RYR7KT', 'B738', 'HALME1A'), AD(760, 'EWG3VU', 'A319', 'DOMUX1A'), AD(920, 'ETD17', 'B789', 'BIKMU1A'), AD(1080, 'EJU81CV', 'A320', 'PISAP1A'), AD(1240, 'EWG2GN', 'A21N', 'DOMUX1A'),
+      D(200, 'EWG4AX', 'A320', 'MODRU2T'), D(440, 'DLH1EB', 'A321', 'SONEB8T'), D(680, 'CFG1217', 'A333', 'DODEN1T'), D(920, 'TUI3GF', 'B738', 'COL6T'), D(1160, 'EWG6HM', 'A319', 'MEVEL4T'), D(1400, 'SXS3RL', 'B738', 'KUMIK7T'), D(1640, 'EWG8CD', 'A320', 'NETEX6T'),
+    ],
+    events: [{ t: 600, kind: 'parallel', on: false, notice: 600 }],
+    pass: { minLanded: 7, minDeparturesHandled: 5, minRatings: { SEPC: 4 } },
+  },
+  // ---------------- Tier 4: emergency and the full hour ----------------
+  {
+    id: 'dus-emergency-return', tier: 4, title: 'Emergency return', seed: 611, durationMin: 40, startUtc: '10:40', metar: GOOD23, runway: '23L', readbackErr: 0.02, icao: 'EDDL',
+    desc: 'A Condor B757-300 loses an engine passing 3,000 ft on the MODRU departure and wants to come straight back to 23L. Four arrivals are already on the transitions.',
+    objective: 'First instruction to the emergency within 20 seconds, on the ground within 15 minutes, no loss of separation.',
+    briefing: 'Late morning, runway 23L. 4 inbound, 2 out. Tower reports the Condor rolling at 10:41.',
+    spawns: [
+      D(30, 'CFG2175', 'B753', 'MODRU2T', { emergency: { after: 70, type: 'engine' } }),
+      AD(5, 'EWG7VE', 'A320', 'BIKMU1A', { spawnDist: 30 }), AD(140, 'DLH5RW', 'A321', 'DOMUX1A'), AD(280, 'TUI6BU', 'B738', 'PISAP1A'), AD(420, 'EWG2LK', 'A319', 'BIKMU1A'),
+      D(600, 'DLH3TQ', 'A20N', 'MEVEL4T'),
+    ],
+    events: [], pass: { emergencyLandedWithinMin: 15, minRatings: { NONR: 3, SEPC: 4 } },
+  },
+  {
+    id: 'dus-full-hour', tier: 4, title: 'The full hour', seed: 612, durationMin: 70, startUtc: '15:50', metar: SUMMER23, runway: '23L', readbackErr: 0.04, confusion: true, icao: 'EDDL',
+    desc: 'The evening wave, start to finish: eighteen arrivals and fourteen departures in an hour on one runway, then the northern runway opens at 17:15 local and the arrivals move to 23R. The ATIS changes once. Similar callsigns are on frequency together.',
+    objective: 'Land at least fifteen, hand on at least ten departures, pass the safety gate.',
+    briefing: 'Evening wave, runway 23L for everything until the northern runway opens at 17:15 local. 18 inbound, 14 out. Expect the ATIS to change once.',
+    spawns: [
+      AD(5, 'EWG1AB', 'A320', 'BIKMU1A', { spawnDist: 30 }), AD(140, 'CFG1310', 'A333', 'DOMUX1A'), AD(280, 'DLH4KA', 'A20N', 'PISAP1A'), AD(420, 'TUI7RE', 'B738', 'BIKMU1A'),
+      AD(560, 'EWG1BA', 'A319', 'HALME1A'), AD(700, 'SXS4KL', 'B738', 'DOMUX1A'), AD(840, 'UAE57', 'B77W', 'BIKMU1A'), AD(980, 'EJU73QX', 'A320', 'PISAP1A'),
+      AD(1120, 'EWG5GH', 'A21N', 'DOMUX1A'), AD(1260, 'KLM1859', 'E190', 'HALME1A'), AD(1400, 'CFG2316', 'B753', 'BIKMU1A'), AD(1540, 'DLH4AK', 'A321', 'PISAP1A'),
+      AD(1680, 'PGT1053', 'A321', 'DOMUX1A'), AD(1820, 'EWG9NE', 'A320', 'BIKMU1A'), AD(1960, 'BAW941', 'A320', 'HALME1A'), AD(2100, 'TUI7ER', 'B38M', 'DOMUX1A'),
+      AD(2240, 'EWG3QV', 'A320', 'PISAP1A'), AD(2380, 'AUA187', 'A320', 'BIKMU1A'),
+      D(240, 'EWG2DF', 'A320', 'MODRU2T'), D(440, 'DLH6WA', 'A321', 'SONEB8T'), D(640, 'CFG1311', 'A333', 'KUMIK7T'), D(840, 'TUI7RF', 'B738', 'COL6T'), D(1040, 'EWG2FD', 'A319', 'MEVEL4T'),
+      D(1240, 'SXS4KM', 'B738', 'DODEN1T'), D(1440, 'EWG7HK', 'A21N', 'NETEX6T'), D(1640, 'DLH6AW', 'A20N', 'GMH1T'), D(1840, 'CFG2317', 'B753', 'NUDGO6T'), D(2040, 'EWG4JS', 'A320', 'MODRU2T'),
+      D(2240, 'EJU73XQ', 'A320', 'KUMIK7T'), D(2440, 'TUI8CL', 'B738', 'SONEB8T'), D(2640, 'EWG1NQ', 'A319', 'COL6T'), D(2840, 'DLH9UV', 'A321', 'MEVEL4T'),
+    ],
+    events: [{ t: 1200, kind: 'parallel', on: true, notice: 600 }, { t: 1500, kind: 'wind', dir: 250, kt: 11 }],
+    pass: { minLanded: 15, minDeparturesHandled: 10 },
+  },
+];
+
 /** Challenges are hot-started (first aircraft calling at once) and end ~15 minutes after the last spawn. */
-export const CHALLENGES: Scenario[] = LIBRARY.map((sc) => {
+export const CHALLENGES: Scenario[] = [...LIBRARY, ...DUS_LIBRARY].map((sc) => {
   const spawns = sc.spawns.map((x) => ({ ...x }));
   hotStart(spawns);
   const obj = emergencyObjectives(spawns).map((o) => {
@@ -271,7 +437,7 @@ export const CHALLENGES: Scenario[] = LIBRARY.map((sc) => {
   });
   return { ...sc, icao: sc.icao ?? 'EBLG', spawns, durationMin: durationFor(spawns), objectives: obj.length ? obj : sc.objectives };
 });
-/** The challenges written for an airport (none yet for airports other than Liège). */
+/** The challenges written for an airport (Liège and Düsseldorf). */
 export const challengesFor = (icao: string) => CHALLENGES.filter((c) => (c.icao ?? 'EBLG') === icao);
 
 /** Tier n+1 opens once every challenge in tier n is passed (per airport: pass its challenge list). */
@@ -287,3 +453,5 @@ export function unlockedTiers(passed: Set<string>, unlockAll = false, list: Scen
 }
 
 export const TIER_NAMES: Record<number, string> = { 1: 'Fundamentals', 2: 'Liège operations', 3: 'Abnormal', 4: 'Emergency' };
+/** Tier names per airport (tier 2 is the airport's own operations). */
+export const tierName = (tier: number, icao = 'EBLG') => (tier === 2 ? (icao === 'EDDL' ? 'Düsseldorf operations' : TIER_NAMES[2]) : TIER_NAMES[tier] ?? `Tier ${tier}`);

@@ -85,6 +85,9 @@ export const EDDL: PackSpec = {
     ],
     gndFreq: '121.680',
     effective: '2026-10-01',
+    // AD 2.22 item 1.2: 2.5 NM between alternating approaches to the two parallel runways inside 10 NM (dependent
+    // parallel operations); wake separation applies on top whenever the follower is behind a heavier aircraft.
+    parallelApproachSepNm: 2.5,
   },
 
   fixes: {
@@ -320,6 +323,16 @@ export const EDDL: PackSpec = {
   ],
   // Single-runway operation uses the southern runway (AD 2.20 item 5.1); 23 is the usual direction.
   preferredRunways: ['23L', '05R'],
+  // Runway configurations in preference order. Single-runway operation (the usual case, AD 2.20 item 5.1) lands and
+  // departs on the southern runway; when the northern runway is open (56 hours a week, scheduled ahead) arrivals use
+  // it and departures stay on the southern one (AD 2.22 item 1.1). A scheduled "northern runway open" event in a
+  // scenario switches between the two, like a runway change.
+  runwayConfigs: [
+    { land: '23L', dep: '23L', note: 'Single-runway operation: everything on the southern runway' },
+    { land: '05R', dep: '05R', note: 'Single-runway operation, easterly' },
+    { land: '23R', dep: '23L', note: 'Northern runway open: arrivals 23R, departures 23L (AD 2.22 item 1.1)' },
+    { land: '05L', dep: '05R', note: 'Northern runway open, easterly: arrivals 05L, departures 05R' },
+  ],
 
   // The published STARs (AD 2 EDDL 3-1-2) run from the entry fix to the DUS VOR at 4,000 ft or above; the sim
   // flies them to the entry fix only (see the file header and meta.approximations). Levels: AD 2.22 planning
@@ -411,6 +424,13 @@ export const EDDL: PackSpec = {
   // (050 / 230 magnetic, variation 3 E); turn directions as read from the charts. DOMEG, NVO and ELDAR: the
   // en-route holds Langen uses to keep the arrival sector clear (VATSIM SOP; not in the AD section).
   holds: [
+    // Transition entry holdings (the IAFs of the sim) at the sector transfer points: drawn on the RNAV transition charts
+    // (3-1-3, 3-1-4) at the entry fixes; levels per the AD 2.22 transfer bands and the VATSIM Germany SOP (not an
+    // AD 2.22 holding table, which EDDL does not publish). Inbound tracks follow the transition's first leg.
+    { fix: 'BIKMU', inboundTrue: 26, turn: 'R', minAlt: 'F070', maxAlt: 'F150', maxSpd: 230, legMin: 1, inboundMag: 23 },
+    { fix: 'DOMUX', inboundTrue: 230, turn: 'L', minAlt: 'F070', maxAlt: 'F140', maxSpd: 230, legMin: 1, inboundMag: 227 },
+    { fix: 'HALME', inboundTrue: 174, turn: 'L', minAlt: 'F070', maxAlt: 'F140', maxSpd: 230, legMin: 1, inboundMag: 171 },
+    { fix: 'PISAP', inboundTrue: 167, turn: 'R', minAlt: 'F070', maxAlt: 'F150', maxSpd: 230, legMin: 1, inboundMag: 164 },
     { fix: 'DUS', inboundTrue: 149, turn: 'L', minAlt: 4000, maxAlt: 'F240', maxSpd: 230, inboundMag: 146, legMin: 1 },
     { fix: 'DL524', inboundTrue: 233, turn: 'R', minAlt: 4000, maxAlt: 'F070', maxSpd: 220, inboundMag: 230, legMin: 1 },
     { fix: 'DL503', inboundTrue: 233, turn: 'L', minAlt: 4000, maxAlt: 'F070', maxSpd: 220, inboundMag: 230, legMin: 1 },
@@ -656,16 +676,16 @@ export const EDDL: PackSpec = {
   // does not have yet are listed in docs/REALISM-EDDL.md with the stand-in used here.
   traffic: {
     pax: [
-      { op: 'EWG', types: ['A320', 'A321', 'A320'], w: 14, telephony: 'Eurowings', voices: ['de'] },
-      { op: 'DLH', types: ['A320', 'A321'], w: 5, telephony: 'Lufthansa', voices: ['de'] },
-      { op: 'CFG', types: ['A321', 'B752', 'A332'], w: 6, telephony: 'Condor', voices: ['de'] },
-      { op: 'TUI', types: ['B738'], w: 4, telephony: 'Tuijet', voices: ['de'] },
-      { op: 'THY', types: ['A321', 'B738', 'A332'], w: 4 },
+      { op: 'EWG', types: ['A320', 'A21N', 'A319', 'A20N'], w: 14, telephony: 'Eurowings', voices: ['de'] },
+      { op: 'DLH', types: ['A320', 'A20N', 'A319', 'A21N'], w: 5, telephony: 'Lufthansa', voices: ['de'] },
+      { op: 'CFG', types: ['A321', 'B753', 'A333', 'A339'], w: 6, telephony: 'Condor', voices: ['de'] },
+      { op: 'TUI', types: ['B738', 'B38M'], w: 4, telephony: 'Tuijet', voices: ['de'] },
+      { op: 'THY', types: ['A321', 'B738', 'A333'], w: 4 },
       { op: 'SXS', types: ['B738'], w: 3, telephony: 'Sunexpress', voices: ['de', 'ar'] },
       { op: 'PGT', types: ['A321', 'B738'], w: 3, telephony: 'Sunturk', voices: ['ar'] },
-      { op: 'UAE', types: ['B77L'], w: 1, telephony: 'Emirates', voices: ['uk', 'in', 'ar', 'au'] },
-      { op: 'QTR', types: ['B77L', 'A332'], w: 1 },
-      { op: 'ETD', types: ['B77L'], w: 1, telephony: 'Etihad', voices: ['ar', 'uk', 'in'] },
+      { op: 'UAE', types: ['A388', 'B77W'], w: 1, telephony: 'Emirates', voices: ['uk', 'in', 'ar', 'au'] },
+      { op: 'QTR', types: ['B788', 'A333'], w: 1 },
+      { op: 'ETD', types: ['B789'], w: 1, telephony: 'Etihad', voices: ['ar', 'uk', 'in'] },
       { op: 'RYR', types: ['B738'], w: 3 },
       { op: 'EJU', types: ['A320', 'A321'], w: 3, telephony: 'Alpine', voices: ['de', 'uk', 'es'] },
       { op: 'EZY', types: ['A320'], w: 1, telephony: 'Easy', voices: ['uk', 'scot'] },
@@ -676,7 +696,7 @@ export const EDDL: PackSpec = {
       { op: 'AFR', types: ['A320', 'E190'], w: 2, telephony: 'Airfrans', voices: ['fr'] },
       { op: 'AEE', types: ['A320', 'A321'], w: 1, telephony: 'Aegean', voices: ['uk', 'es'] },
       { op: 'CAI', types: ['B738'], w: 1, telephony: 'Corendon', voices: ['nl', 'ar'] },
-      { op: 'DAL', types: ['B763'], w: 1, telephony: 'Delta', voices: ['us'] },
+      { op: 'DAL', types: ['B764'], w: 1, telephony: 'Delta', voices: ['us'] },
       { op: 'WZZ', types: ['A321', 'A320'], w: 1, telephony: 'Wizz Air', voices: ['uk', 'es'] },
     ],
     cargo: [
@@ -703,8 +723,25 @@ export const EDDL: PackSpec = {
       { perHour: 24, paxShare: 0.95 }, { perHour: 19, paxShare: 0.95 }, { perHour: 8, paxShare: 0.95 }, { perHour: 2, paxShare: 0.9 },
     ],
     gaPrefixes: ['D-E', 'D-I', 'D-C', 'PH-', 'OO-', 'G-'],
+    registration: { prefix: 'DE', length: 5 },
     military: [
       { op: 'GAF', types: ['A400', 'A321'], w: 1 },
+    ],
+    // Diversions come from Köln/Bonn, the big airport 25 NM south-east (the Köln arrival sector hands them over).
+    diversion: { from: 'Köln/Bonn', icao: 'EDDK', brg: 170 },
+    // Free-play templates. The night one is honest: AD 2.20 closes the field to scheduled traffic 22:00 to 06:00 local,
+    // so a night at Düsseldorf is a delayed home-based landing, HEMS or a diversion at most, and the 06:00 rush at the end.
+    templates: {
+      night: { title: 'Night curfew', arrPerHr: 2, depPerHr: 0, start: '00:30', paxShare: 0.9, note: 'Night flight restriction: no scheduled take-offs or landings between 22:00 and 06:00 local. Expect a delayed home-based arrival, a medical flight or a diversion at most.' },
+      day: { title: 'Afternoon wave', arrPerHr: 15, depPerHr: 14, start: '15:00', paxShare: 0.93 },
+      quiet: { title: 'Midday lull', arrPerHr: 10, depPerHr: 9, start: '12:00', paxShare: 0.92 },
+      shift: { title: 'Morning rush shift', arrPerHr: 15, depPerHr: 14, start: '04:50', paxShare: 0.95, note: 'The field opens at 06:00 local: the first wave lands from the opening minute and the outbound push follows.' },
+    },
+    patterns: [
+      { at: 1, deck: 'hems', w: 2, kind: 'heli', cs: 'CHRISTOPH9', types: ['EC45'], route: ['BGU', 'UKD'], from: { brg: 20, dist: 4 }, level: 1500, request: { kind: 'direct', fix: 'UKD' } },
+      { at: 1, deck: 'hems', w: 1, kind: 'vfr', csReg: true, types: ['C172', 'PA28'], route: ['NOVEMBER', 'SIERRA'], from: { brg: 350, dist: 5 }, level: 2000, request: { kind: 'crossing', route: ['NOVEMBER', 'SIERRA'] } },
+      { at: 2, deck: 'military', w: 1, kind: 'mil', csOp: 'GAF', csNum: [10, 99], types: ['A400'], route: ['NVO', 'BIKMU', 'DL426', 'HALME'], from: { brg: 200, dist: 8 }, level: 'F070', request: { kind: 'climb', level: 'F110' } },
+      { at: 3, deck: 'military', w: 1, kind: 'mil', cs: 'NATO11', types: ['E3TF'], route: ['MHV', 'LMA', 'VEBAK'], from: { brg: 240, dist: 14 }, level: 'F060', request: { kind: 'climb', level: 'F150' } },
     ],
     arrStars: [
       { name: 'BIKMU1A', w: 4 }, { name: 'DOMUX1A', w: 3 }, { name: 'HALME1A', w: 2 }, { name: 'PISAP1A', w: 3 }, { name: 'LMA1A', w: 0 },
@@ -737,4 +774,6 @@ export const EDDL: PackSpec = {
     { arrivals: '23R', departures: '23L', note: 'AD 2.22 item 1.1: dependent parallel operations; the northern runway lands, the southern departs; 2.5 NM between alternating approaches to the two runways inside 10 NM (item 1.2)' },
     { arrivals: '05L', departures: '05R', note: 'As for 23; the northern runway may be used 56 hours a week (AD 2.20 item 5.1)' },
   ],
+  // SID pages: "remain on Tower frequency until passing 2,000 ft, then contact Langen Radar 121.355".
+  depCheckIn: { unitId: 'DEP', passingFt: 2000 },
 };

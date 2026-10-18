@@ -144,6 +144,9 @@ export interface ReleaseReq {
   chased?: boolean;
   tReleased?: number;
   tAirborne?: number;
+  /** 2.0: slot (calculated take-off time, sim seconds) Tower gave the departure after a late release; open for SLOT_WINDOW_S after it. UI: on the strip. */
+  slot?: number;
+  slotMissed?: boolean;
 }
 
 export interface SimEvent {
@@ -216,7 +219,9 @@ export type ScEvent =
   | { t: number; kind: 'ils'; rwy: string; ok: boolean }
   | { t: number; kind: 'lvp'; on: boolean; rvr?: number; vis?: number; ceiling?: number }
   | { t: number; kind: 'flow'; exitFix: string; mit: number; text: string }
-  | { t: number; kind: 'note'; text: string };
+  | { t: number; kind: 'note'; text: string }
+  /** 2.0: the second runway of the direction in use opens (segregated parallel operations) or closes; with `notice` the supervisor announces it first. */
+  | { t: number; kind: 'parallel'; on: boolean; notice?: number };
 
 export interface PassCriteria {
   minLanded?: number;
@@ -263,6 +268,8 @@ export interface Scenario {
   icao?: string;
   /** 2.0: calendar date of the shift (yyyy-mm-dd), for daylight saving time. */
   date?: string;
+  /** 2.0: the supervisor announces the shift plan at the start and an update halfway. Default: on, except in tutorial scenarios. */
+  plan?: boolean;
 }
 
 /** Brussels' estimate for an arrival, sent on the intercom 2 to 4 minutes before the transfer. */

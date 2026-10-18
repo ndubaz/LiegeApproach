@@ -15,6 +15,10 @@ export interface CmdEntry { t: number; cl: Clearance; op?: 'correct' | 'seq'; se
 export const RUNWAY_CHANGE_NOTICE_S = 600;
 /** Seconds of notice before a TSA goes live. */
 export const TSA_NOTICE_S = 300;
+/** A departure slot is open for this long after its time (the CTOT tolerance, minus 5 plus 10 minutes in the real system, compressed for the game). */
+export const SLOT_WINDOW_S = 300;
+/** A missed slot is replaced by one this far ahead. */
+export const SLOT_RESLOT_S = 600;
 /** Ground speed assumed for Brussels' estimates on the STAR, NM per minute. */
 const EST_NM_PER_MIN = 4.5;
 const hhmmOf = (utc: string) => utc.slice(0, 5).replace(':', '');
@@ -80,11 +84,16 @@ export class Sim implements PilotWorld {
   /** Coordination requests from Brussels (early transfers), answered with appr / deny on the callsign. */
   coordReqs: CoordReq[] = [];
   /** A runway change the supervisor has announced and not yet made. */
-  rwyChange?: { to: string; at: number; reason: 'wind' | 'scheduled' };
+  rwyChange?: { to: string; at: number; reason: 'wind' | 'scheduled' | 'parallel' };
   /** The last runway change: from, to, when. */
   lastRwyChange?: { from: string; to: string; t: number };
   /** TSAs announced by MIL and not yet active: name to activation time. */
   tsaPending = new Map<string, number>();
+  /** 2.0: the supervisor's shift plan, announced at the start, and the mid-shift update once it has been given (UI: the briefing strip). */
+  plan?: { start: string; mid?: string; midAt: number };
+  /** 2.0: supervisor interventions after a loss of separation (UI: the intervention prompt with a replay button). */
+  interventions: { t: number; a: string; b: string; text: string; replayT: number }[] = [];
+  onIntervention: ((x: { t: number; a: string; b: string; text: string; replayT: number }) => void)[] = [];
   /** The pack's units by id (keys, callsigns, frequencies). */
   units: UnitTable;
   /** Unit ids by role: the tower, the centre, the military unit, the supervisor. */
@@ -155,6 +164,63 @@ export class Sim implements PilotWorld {
     if (opts.radarRefresh) this.radarRefresh = opts.radarRefresh;
     this.crng = new Rng(((sc.seed ^ 0x9e3779b9) >>> 0) || 7);
     this.planCoordination();
+    if (sc.plan ?? !sc.tutorial) this.plan = { start: this.shiftPlanText(), midAt: Math.round(Math.min(this.durationS / 2, (this.spawns[this.spawns.length - 1]?.t ?? this.durationS / 2) * 0.6)) };
+  }
+
+  // ---------------- the supervisor's shift plan ----------------
+  /** What the next hour brings, in the supervisor's words: runways, the bank, the weather trend, reserved areas, scheduled changes. */
+  shiftPlanText(): string {
+    const sc = this.sc;
+    const arr = this.spawns.filter((x) => x.kind === 'arr'), dep = this.spawns.filter((x) => x.kind === 'dep');
+    const parts: string[] = [];
+    parts.push(`Shift plan. ${this.depRunway === this.runway ? `Runway ${this.runway} for everything` : `Arrivals ${this.runway}, departures ${this.depRunway}`}, ATIS ${this.atis}, QNH ${this.qnh}.`);
+    const hhmm = (t: number) => hhmmOf(this.utc(t));
+    if (arr.length || dep.length) {
+      // the busiest quarter hour of arrivals
+      let peak = 0, best = 0;
+      for (let t0 = 0; t0 <= this.durationS; t0 += 300) { const n = arr.filter((x) => x.t >= t0 && x.t < t0 + 900).length; if (n > best) { best = n; peak = t0; } }
+      const bank = best >= 4 ? ` The bank peaks around ${hhmm(peak + 450)} with ${best} in a quarter hour.` : arr.length ? ' A steady flow, no bank.' : '';
+      parts.push(`${arr.length} inbound and ${dep.length} out in the session.${bank}`);
+    } else parts.push('Nothing scheduled: the curfew.');
+    const ev = sc.events;
+    const winds = ev.filter((e) => e.kind === 'wind');
+    const lvps = ev.filter((e) => e.kind === 'lvp');
+    const trend: string[] = [];
+    for (const w of winds) if (w.kind === 'wind') trend.push(`wind ${String(w.dir).padStart(3, '0')}/${w.kt}${w.gust ? 'G' + w.gust : ''} expected around ${hhmm(w.t)}`);
+    for (const l of lvps) if (l.kind === 'lvp') trend.push(l.on ? `fog expected around ${hhmm(l.t)}, low visibility procedures from then` : `visibility improving around ${hhmm(l.t)}`);
+    if (this.lvp) trend.push('low visibility procedures in force now');
+    if (this.storms.length) trend.push('thunderstorm cells on the scope, moving across the sector');
+    if (sc.atisDrift) trend.push('a new ATIS every half hour');
+    parts.push(trend.length ? `Weather: ${trend.join('; ')}.` : 'Weather: no change expected.');
+    const tsas = ev.filter((e) => e.kind === 'tsa' && e.on);
+    if (tsas.length) parts.push(`${this.areasName}: ${tsas.map((e) => (e.kind === 'tsa' ? `${areaSpoken(e.name)} active from ${hhmm(e.t)}` : '')).join(', ')}.`);
+    for (const e of ev) {
+      if (e.kind === 'runway') parts.push(`Runway change to ${e.rwy} planned around ${hhmm(e.t + (e.notice ?? 0))}.`);
+      if (e.kind === 'parallel') { const to = this.parallelTarget(e.on); if (to) parts.push(e.on ? `Runway ${to} opens for arrivals around ${hhmm(e.t + (e.notice ?? 0))}.` : `Runway ${this.runway} closes around ${hhmm(e.t + (e.notice ?? 0))}, everything back to ${to}.`); }
+      if (e.kind === 'flow') parts.push(`Flow: ${e.mit} NM in trail on departures via ${e.exitFix}.`);
+      if (e.kind === 'ils' && !e.ok) parts.push(`ILS ${e.rwy} maintenance possible this shift.`);
+    }
+    return parts.join(' ');
+  }
+  /** The mid-shift update: what is done, what is still to come, the next scheduled change. */
+  private midShiftText(): string {
+    const left = this.spawns.slice(this.spawnIdx);
+    const arrLeft = left.filter((x) => x.kind === 'arr').length, depLeft = left.filter((x) => x.kind === 'dep').length;
+    const parts = [`Mid-shift. ${this.landings.length} landed, ${this.departuresHandled} departures handed on; ${arrLeft} more inbound and ${depLeft} more out to come.`];
+    const los = this.events.filter((e) => e.kind === 'los').length;
+    if (los) parts.push(`${los} loss${los === 1 ? '' : 'es'} of separation so far: we talk afterwards.`);
+    else if (this.events.some((e) => e.kind === 'stca')) parts.push('The alert went off once or twice; see them a minute earlier.');
+    else parts.push('Clean so far.');
+    const hhmm = (t: number) => hhmmOf(this.utc(t));
+    const next = this.sc.events.slice(this.evIdx).find((e) => e.kind === 'runway' || e.kind === 'parallel' || e.kind === 'tsa' || e.kind === 'lvp' || e.kind === 'wind');
+    if (next) {
+      if (next.kind === 'runway') parts.push(`Next: runway change to ${next.rwy} around ${hhmm(next.t + (next.notice ?? 0))}.`);
+      else if (next.kind === 'parallel') parts.push(`Next: the second runway ${next.on ? 'opens' : 'closes'} around ${hhmm(next.t + (next.notice ?? 0))}.`);
+      else if (next.kind === 'tsa') parts.push(`Next: ${areaSpoken(next.name)} ${next.on ? 'active' : 'released'} at ${hhmm(next.t)}.`);
+      else if (next.kind === 'lvp') parts.push(next.on ? `Next: fog around ${hhmm(next.t)}.` : `Next: visibility improving around ${hhmm(next.t)}.`);
+      else if (next.kind === 'wind') parts.push(`Next: the wind goes to ${String(next.dir).padStart(3, '0')}/${next.kt} around ${hhmm(next.t)}.`);
+    } else if (this.rwyChange) parts.push(`Runway change to ${this.rwyChange.to} at ${hhmm(this.rwyChange.at)}.`);
+    return parts.join(' ');
   }
 
   /** Whether Brussels coordinates on the intercom in this scenario. */
@@ -212,7 +278,7 @@ export class Sim implements PilotWorld {
   stackFixes(rwy = this.runway): string[] {
     const out: string[] = [];
     if (this.pack.stackFix && this.pack.fixes.has(this.pack.stackFix)) out.push(this.pack.stackFix);
-    for (const t of this.pack.transitions) if (t.runways.includes(rwy) && t.legs[0] && !out.includes(t.legs[0].fix)) out.push(t.legs[0].fix);
+    for (const t of this.transitionsFor(rwy)) if (t.legs[0] && !out.includes(t.legs[0].fix)) out.push(t.legs[0].fix);
     return out;
   }
   /** The pack's main stack fix (ALHUV at Liège). */
@@ -254,8 +320,28 @@ export class Sim implements PilotWorld {
   readbackPending(cs: string) { return this.queue.some((q) => q.priority && q.tx.cs === cs); }
   callers(): Aircraft[] { return this.aircraft.filter((a) => a.awaitingSince !== undefined && !a.remove).sort((a, b) => a.awaitingSince! - b.awaitingSince!); }
 
-  /** Transitions usable for a runway. */
-  transitionsFor(rwy: string) { return this.pack.transitions.filter((t) => t.runways.includes(rwy)); }
+  /** Two runway ids point the same way (23L and 23R): the parallels of one direction. */
+  sameDirection(a: string, b: string): boolean { return a.slice(0, 2) === b.slice(0, 2); }
+  /** The pack runs parallel runways as one system (Düsseldorf): transitions, finals and stacks are shared across a direction. */
+  get parallelSystem(): boolean { return !!this.pack.spec.parallelOps?.length; }
+  /** Segregated parallel operations are in force now: arrivals on one runway, departures on its parallel. */
+  get inParallelOps(): boolean { return this.depRunway !== this.runway && this.sameDirection(this.depRunway, this.runway); }
+  /** The runways an approach may be cleared to now: the landing runway, plus its parallel while both runways are open. */
+  landingRunways(): string[] {
+    const out = [this.runway];
+    if (this.inParallelOps) out.push(this.depRunway);
+    return out;
+  }
+  /** The fix is the intermediate or final approach fix of a runway (any runway of the direction in use where parallels are shared). */
+  isFinalFix(fix: string, rwy = this.runway): boolean {
+    for (const r of this.pack.runways.values()) {
+      if (r.id !== rwy && !(this.parallelSystem && this.sameDirection(r.id, rwy))) continue;
+      if (r.ifFix === fix || r.faf === fix) return true;
+    }
+    return false;
+  }
+  /** Transitions usable for a runway: its own, and (where the pack shares the parallels) those bound to the other runway of the same direction. */
+  transitionsFor(rwy: string) { return this.pack.transitions.filter((t) => t.runways.includes(rwy) || (this.parallelSystem && t.runways.some((r) => this.sameDirection(r, rwy)))); }
 
   // ---------------- main loop ----------------
   step(dt = 1) {
@@ -276,6 +362,12 @@ export class Sim implements PilotWorld {
       if (!(sp as any)._done) this.spawn(sp);
     }
 
+    // the supervisor's shift plan at the start, and one update halfway through
+    if (this.plan) {
+      if (t === 3) this.icom(this.sup.id, this.plan.start);
+      if (t === this.plan.midAt && this.plan.mid === undefined && t > 60) { this.plan.mid = this.midShiftText(); this.icom(this.sup.id, this.plan.mid); }
+    }
+
     // frequency
     this.pumpQueue();
 
@@ -283,6 +375,7 @@ export class Sim implements PilotWorld {
     for (const ac of this.aircraft) {
       if (ac.remove) continue;
       if (ac.checkInAt !== undefined && t >= ac.checkInAt) { ac.checkInAt = undefined; this.checkIn(ac); }
+      else if ((ac as any)._checkInFt !== undefined && ac.alt >= (ac as any)._checkInFt) { (ac as any)._checkInFt = undefined; this.checkIn(ac); }
       stepAircraft(ac, this, dt);
       this.afterStep(ac);
     }
@@ -363,13 +456,22 @@ export class Sim implements PilotWorld {
     for (const r of this.releases) {
       if (r.state === 'pending' && !r.chased && t - r.t > 180) {
         r.chased = true;
-        this.icom(this.twr.id, `Approach, ${this.twr.say}, still waiting release for ${r.cs}`, r.cs);
-        this.event({ kind: 'release_delay', cs: r.cs, comp: 'CORD', sev: 'minor', text: `${r.cs}: release request unanswered for 3 minutes`, cost: 10 });
+        this.giveSlot(r);
+        this.icom(this.twr.id, `Approach, ${this.twr.say}, still waiting release for ${r.cs}. It has a slot now, ${hhmmOf(this.utc(r.slot!))}, airborne by ${hhmmOf(this.utc(r.slot! + SLOT_WINDOW_S))} at the latest`, r.cs);
+        this.event({ kind: 'release_delay', cs: r.cs, comp: 'CORD', sev: 'minor', text: `${r.cs}: release request unanswered for 3 minutes, Tower gave it a slot at ${hhmmOf(this.utc(r.slot!))}`, cost: 10 });
       }
       if (r.state === 'held' && !r.chased && r.expectAt !== undefined && t > r.expectAt + 60) {
         r.chased = true;
-        this.icom(this.twr.id, `Approach, ${this.twr.say}, ${r.cs} is past the expected release time, request release`, r.cs);
-        this.event({ kind: 'release_delay', cs: r.cs, comp: 'CORD', sev: 'minor', text: `${r.cs}: held past the expected release time`, cost: 10 });
+        this.giveSlot(r);
+        this.icom(this.twr.id, `Approach, ${this.twr.say}, ${r.cs} is past the expected release time. It has a slot now, ${hhmmOf(this.utc(r.slot!))}, airborne by ${hhmmOf(this.utc(r.slot! + SLOT_WINDOW_S))}`, r.cs);
+        this.event({ kind: 'release_delay', cs: r.cs, comp: 'CORD', sev: 'minor', text: `${r.cs}: held past the expected release time, Tower gave it a slot at ${hhmmOf(this.utc(r.slot!))}`, cost: 10 });
+      }
+      // a slot that runs out on the ground: Tower calls again and the departure is re-slotted
+      if (r.slot !== undefined && r.state !== 'airborne' && !r.slotMissed && t > r.slot + SLOT_WINDOW_S) {
+        r.slotMissed = true;
+        this.event({ kind: 'slot_missed', cs: r.cs, comp: 'CORD', sev: 'major', text: `${r.cs}: missed its slot (${hhmmOf(this.utc(r.slot))} to ${hhmmOf(this.utc(r.slot + SLOT_WINDOW_S))}) still on the ground`, cost: 25 });
+        r.slot = t + SLOT_RESLOT_S;
+        this.icom(this.twr.id, `Approach, ${this.twr.say}, ${r.cs} has missed its slot. New slot ${hhmmOf(this.utc(r.slot))}, and the crew is not happy`, r.cs);
       }
       if (r.state === 'released' && t - (r.tReleased ?? t) >= 30 && t - this.lastDepT >= this.depSpacingS(r) && !this.runwayBusy()) {
         const heavy = r.wake === 'H' || r.wake === 'J';
@@ -383,6 +485,10 @@ export class Sim implements PilotWorld {
         r.state = 'airborne';
         r.tAirborne = t;
         this.lastDepT = t;
+        if (r.slot !== undefined && !r.slotMissed && t > r.slot + SLOT_WINDOW_S) {
+          r.slotMissed = true;
+          this.event({ kind: 'slot_missed', cs: r.cs, comp: 'CORD', sev: 'major', text: `${r.cs}: airborne ${Math.round((t - r.slot - SLOT_WINDOW_S) / 60)} min after its slot window closed`, cost: 25 });
+        }
         this.launchDeparture(spec, r);
       }
     }
@@ -390,6 +496,8 @@ export class Sim implements PilotWorld {
     this.releases = this.releases.filter((r) => r.state !== 'airborne' || t - (r.tAirborne ?? t) < 120);
   }
 
+  /** Tower gives a departure a slot (a calculated take-off time) once its release has waited too long: 4 minutes from now. */
+  private giveSlot(r: ReleaseReq) { if (r.slot === undefined) r.slot = this.t + 240; }
   /** Seconds Tower leaves between the last departure and this one: RECAT-EU departure wake minimum, 60 s at least. */
   depSpacingS(r: { type: string }): number {
     const foll = (PERF[r.type] ?? PERF.B738).recat;
@@ -473,23 +581,31 @@ export class Sim implements PilotWorld {
   private arrivalStart(spec: SpawnSpec, extraNm = 0) {
     const star = this.starForSpec(spec.star);
     const legs = star.legs;
-    const D = (spec.spawnDist ?? 42) + extraNm;
     const pts = legs.map((l) => l.p);
-    let remaining = D;
-    let pos: XY | undefined;
-    let startIdx = 0;
-    for (let i = pts.length - 1; i > 0; i--) {
-      const seg = dist(pts[i - 1], pts[i]);
-      if (remaining <= seg) { pos = move(pts[i], bearing(pts[i], pts[i - 1]), remaining); startIdx = i; break; }
-      remaining -= seg;
-    }
-    if (!pos) {
-      const b = pts.length > 1 ? bearing(pts[1], pts[0]) : bearing({ x: 0, y: 0 }, pts[0]);
-      pos = move(pts[0], b, remaining);
-      startIdx = 0;
-    }
-    if (spec.unfamiliar) pos = move({ x: 0, y: 0 }, 300, D);
-    const route = spec.unfamiliar ? [] : legs.slice(startIdx).map((l) => ({ ...l }));
+    const walk = (D: number) => {
+      let remaining = D;
+      let pos: XY | undefined;
+      let startIdx = 0;
+      for (let i = pts.length - 1; i > 0; i--) {
+        const seg = dist(pts[i - 1], pts[i]);
+        if (remaining <= seg) { pos = move(pts[i], bearing(pts[i], pts[i - 1]), remaining); startIdx = i; break; }
+        remaining -= seg;
+      }
+      if (!pos) {
+        const b = pts.length > 1 ? bearing(pts[1], pts[0]) : bearing({ x: 0, y: 0 }, pts[0]);
+        pos = move(pts[0], b, remaining);
+        startIdx = 0;
+      }
+      return { pos, startIdx };
+    };
+    let D = (spec.spawnDist ?? 42) + extraNm;
+    let w = walk(D);
+    // a short feed STAR (Düsseldorf: 6 NM from TEBRO to PISAP) would put the handover outside radar cover: come in closer
+    const limit = this.pack.meta.sectorRadiusNm + 14;
+    while (D > 12 && Math.hypot(w.pos.x, w.pos.y) > limit) { D -= 2; w = walk(D); }
+    let pos = w.pos;
+    if (spec.unfamiliar) pos = move({ x: 0, y: 0 }, this.pack.spec.traffic?.diversion?.brg ?? 300, Math.min(D, limit - 4));
+    const route = spec.unfamiliar ? [] : legs.slice(w.startIdx).map((l) => ({ ...l }));
     return { star, legs, pos, route };
   }
 
@@ -661,7 +777,7 @@ export class Sim implements PilotWorld {
   // ---------------- runway change ----------------
   /** Tailwind on the runway in use above 5 kt (gusts included): the supervisor gives 10 minutes' notice of a change. */
   private windCheck() {
-    if (this.rwyChange || this.sc.events.slice(this.evIdx).some((e) => e.kind === 'runway')) return;
+    if (this.rwyChange || this.sc.events.slice(this.evIdx).some((e) => e.kind === 'runway' || e.kind === 'parallel')) return;
     const tail = this.tailwind();
     if (tail <= 5) return;
     const to = selectConfig(this.pack, this.weather).land;
@@ -674,17 +790,35 @@ export class Sim implements PilotWorld {
     if (!r) return 0;
     return -windComponents(r.crs, this.weather.windDir, Math.max(this.weather.windKt, this.weather.gustKt ?? 0)).head;
   }
-  private announceRunwayChange(to: string, notice: number, reason: 'wind' | 'scheduled', tail?: number) {
+  private announceRunwayChange(to: string, notice: number, reason: 'wind' | 'scheduled' | 'parallel', tail?: number) {
     const at = this.t + notice;
     this.rwyChange = { to, at, reason };
     const why = tail !== undefined ? `, tailwind ${tail} kt on ${this.runway}` : '';
     const cfg = this.configFor(to);
+    if (reason === 'parallel') {
+      // the northern runway opens or closes: the same direction, so nobody needs a new arrival route
+      const opening = cfg.dep !== to;
+      this.icom(this.sup.id, opening
+        ? `Runway ${to} opens at ${hhmmOf(this.utc(at))}: from then arrivals land ${to}, departures stay on ${cfg.dep}. Approaches already cleared for ${this.runway} continue.`
+        : `Runway ${this.runway} closes at ${hhmmOf(this.utc(at))}: from then everything goes back to ${to}. Approaches already cleared for ${this.runway} continue.`);
+      this.schedule(at, () => { if (this.rwyChange && this.rwyChange.at === at) this.changeRunway(to); });
+      return;
+    }
     // the STAR series of the new runway, when the pack names them by a trailing letter (Liège: X for 22, D for 04)
     const letters = [...new Set(this.pack.stars.filter((s) => s.runways.includes(to)).map((s) => s.name.slice(-1)))];
     const arrivals = letters.length === 1 ? `the ${letters[0]} arrivals` : `the ${to} arrivals`;
     const deps = cfg.dep === to ? `the ${to} SIDs` : `the ${cfg.dep} SIDs`;
     this.icom(this.sup.id, `Runway change to ${to} at ${hhmmOf(this.utc(at))}${why}. After the change, arrivals not yet on the approach go via ${arrivals}, departures get ${deps}.`);
     this.schedule(at, () => { if (this.rwyChange && this.rwyChange.at === at) this.changeRunway(to); });
+  }
+  /**
+   * The landing runway of the configuration that opens (`on`) or closes the second runway of the direction in use:
+   * Düsseldorf on 23L: on gives 23R (arrivals 23R, departures 23L), off gives 23L for everything. Undefined when the
+   * pack has no such configuration.
+   */
+  parallelTarget(on: boolean): string | undefined {
+    const cfg = this.pack.runwayConfigs.find((c) => this.sameDirection(c.land, this.runway) && (on ? c.land !== c.dep : c.land === c.dep));
+    return cfg?.land;
   }
   /** Change the runway in use now. Aircraft established on the localizer continue to the old runway. */
   /** The runway configuration whose landing runway is `land` (or a same-runway pair when the pack has none). */
@@ -697,7 +831,8 @@ export class Sim implements PilotWorld {
     this.runway = to; this.depRunway = this.pack.runways.has(cfg.dep) ? cfg.dep : to; this.atisIdx++;
     this.lastRwyChange = { from, to, t: this.t };
     this.sys(`Runway change: ${to} in use${this.depRunway !== to ? `, departures ${this.depRunway}` : ''}, ATIS ${this.atis}`);
-    const est = this.aircraft.filter((a) => !a.remove && !a.landed && a.kind === 'arr' && a.app?.locCap && a.app.rwy.id === from).map((a) => a.cs);
+    // established on the old runway (or, between the parallels, already cleared for it) they continue
+    const est = this.aircraft.filter((a) => !a.remove && !a.landed && a.kind === 'arr' && a.app && a.app.rwy.id === from && (a.app.locCap || this.sameDirection(from, to))).map((a) => a.cs);
     const re = this.needReclear().map((a) => a.cs);
     this.icom(this.sup.id, `Runway ${to} in use${est.length ? `. ${est.join(', ')} continue${est.length === 1 ? 's' : ''} to ${from}` : ''}${re.length ? `. Re-clear ${re.join(', ')} for ${to}` : ''}`);
     // Tower moves the departures waiting at the holding point onto the new SIDs
@@ -959,7 +1094,9 @@ export class Sim implements PilotWorld {
       ac.hdgAssigned = norm360(rel.hdg + this.pack.meta.magVar);
       ac.hdgSys = ac.hdgAssigned;
     }
-    ac.checkInAt = this.t + 4;
+    const dci = this.pack.spec.depCheckIn;
+    if (dci && this.units[dci.unitId]) { (ac as any)._checkInFt = dci.passingFt; ac.checkInAt = undefined; }
+    else ac.checkInAt = this.t + 4;
     this.lastDepT = this.t;
     this.lastDepRecat = ac.perf.recat;
     this.lastDepCs = ac.cs;
@@ -1084,6 +1221,8 @@ export class Sim implements PilotWorld {
         {
           const onHdg = ac.mode === 'HDG' && ac.hdgAssigned !== undefined;
           const h = onHdg ? String(Math.round(norm360(ac.hdgAssigned! - this.pack.meta.magVar)) || 360).padStart(3, '0') : '';
+          const dci = this.pack.spec.depCheckIn;
+          const app = (dci && this.units[dci.unitId]?.callsign) || this.appCallsign;
           text = `${app}, ${ac.cs}, passing ${(Math.round(ac.alt / 100) * 100).toLocaleString('en-US')} ft climbing ${cl.text}, ${onHdg ? 'heading ' + h : ac.proc}`;
           // "passing two thousand three hundred feet climbing flight level six zero"
           const passing = levelSpeech({ ft: Math.round(ac.alt / 100) * 100 }).replace(/^altitude /, '');
@@ -1170,7 +1309,7 @@ export class Sim implements PilotWorld {
       if (it.k === 'app') {
         const r = this.pack.runways.get(it.rwy);
         if (!r) { w.push('Unknown runway'); continue; }
-        if (it.rwy !== this.runway) w.push(`Runway in use is ${this.runway}`);
+        if (!this.landingRunways().includes(it.rwy)) w.push(`Runway in use is ${this.runway}`);
         if (it.app === 'ILS' && !r.ils) w.push(`No ILS on ${it.rwy}`);
         if (it.app === 'ILS' && this.ilsOut.has(it.rwy)) w.push(`ILS ${it.rwy} out of service`);
         if (this.lvp && (it.app !== 'ILS' || r.ils?.cat !== 'III')) w.push('Below minima in LVP');
@@ -1546,7 +1685,8 @@ export class Sim implements PilotWorld {
           ac.proc = tr.name; ac.mode = 'NAV'; ac.hold = undefined; ac.turnDir = undefined;
           // a transition replaces any hold instruction: the aircraft is now in the landing sequence
           (ac as any)._holdAt = undefined;
-          ac.expectRwy = tr.runways[0];
+          // bound to the runway whose final approach fix it ends at; with shared parallels it serves the runway in use
+          ac.expectRwy = ac.app && this.landingRunways().includes(ac.app.rwy.id) ? ac.app.rwy.id : tr.runways.includes(this.runway) || (this.parallelSystem && tr.runways.some((r) => this.sameDirection(r, this.runway))) ? this.runway : tr.runways[0];
           break;
         }
         case 'star': {
@@ -1698,7 +1838,7 @@ export class Sim implements PilotWorld {
         return;
       }
       const r = this.pack.runways.get(ac.expectRwy ?? this.runway);
-      ac.mode = 'HDG'; ac.hdgAssigned = r && last.fix === r.ifFix ? r.crs : ac.hdg;
+      ac.mode = 'HDG'; ac.hdgAssigned = r && (last.fix === r.ifFix || this.isFinalFix(last.fix, r.id)) ? r.crs : ac.hdg;
       if (ac.state === 'assumed' && !ac.radioFail) this.pilotSays(ac, `${ac.cs}, ${last.fix}, request approach clearance`, `${ac.tel}, ${last.fix}, request approach clearance`);
       return;
     }
@@ -1747,6 +1887,8 @@ export class Sim implements PilotWorld {
       return;
     }
     ac.goArounds++;
+    // the go-around loses its place: it goes to the back of the player's landing order
+    if (this.sequence.includes(ac.cs)) this.sequence = [...this.sequence.filter((x) => x !== ac.cs), ac.cs];
     const withTwr = ac.state === 'transferred' && ac.xfrUnit === this.twr.id;
     const missed = r.missed.map((f) => ({ fix: f, p: this.fixP(f), min: { ft: 3000 } }));
     ac.route = missed;
@@ -1955,6 +2097,13 @@ export class Sim implements PilotWorld {
         if (e.notice) { if (!this.rwyChange) this.announceRunwayChange(e.rwy, e.notice, 'scheduled', this.tailwind() > 0 ? this.tailwind() : undefined); }
         else this.changeRunway(e.rwy);
         break;
+      case 'parallel': {
+        const to = this.parallelTarget(e.on);
+        if (!to || to === this.runway) break;
+        if (e.notice) { if (!this.rwyChange) this.announceRunwayChange(to, e.notice, 'parallel'); }
+        else this.changeRunway(to);
+        break;
+      }
       case 'ils':
         if (!e.ok) {
           this.ilsOut.add(e.rwy);
@@ -2040,6 +2189,7 @@ export class Sim implements PilotWorld {
         const ratio = lat / min;
         const sev = lat < 1.5 && vert < 500 ? 'serious' : ratio < 0.9 ? 'major' : 'minor';
         this.event({ t: o.t0, kind: 'los', cs: o.a, cs2: o.b, comp: 'SEPC', sev, value: lat, text: `Loss of separation ${o.a} / ${o.b}: ${lat.toFixed(1)} NM, ${Math.round(vert)} ft`, cost: sev === 'serious' ? 150 : sev === 'major' ? 100 : 45 });
+        if (sev !== 'minor' && !this.sc.tutorial) this.intervene(o.a, o.b ?? '', lat, vert, o.t0);
         break;
       }
       case 'wake':
@@ -2052,6 +2202,19 @@ export class Sim implements PilotWorld {
         this.event({ t: o.t0, kind: 'tsa', cs: o.a, comp: 'CORD', sev: 'major', text: `${o.a}: entered active ${o.extra} for ${dur} s`, cost: 40 });
         break;
     }
+  }
+
+  /** The supervisor steps in after a loss of separation: a word on the intercom and a replay prompt for the UI. */
+  private intervene(a: string, b: string, lat: number, vert: number, t0: number) {
+    const replayT = Math.max(0, t0 - 60);
+    const A = this.find(a), B = this.find(b);
+    const whatA = A ? (A.app?.locCap ? 'on final' : A.mode === 'HOLD' ? 'in the hold' : A.kind === 'dep' ? 'climbing out' : 'on the arrival') : '';
+    const text = `Stop a moment. ${a}${whatA ? ' ' + whatA : ''} and ${b} got to ${lat.toFixed(1)} NM and ${Math.round(vert)} ft at ${hhmmOf(this.utc(t0))}. Keep 1,000 ft between them until they are 3 NM apart and diverging. Replay from ${hhmmOf(this.utc(replayT))} and try a different call, or carry on and we debrief it.`;
+    const x = { t: this.t, a, b, text, replayT };
+    this.interventions.push(x);
+    this.icom(this.sup.id, text);
+    this.event({ kind: 'intervention', cs: a, cs2: b, comp: 'SEPC', sev: 'info', text: `Supervisor intervention after ${a} / ${b}`, cost: 0 });
+    for (const f of this.onIntervention) f(x);
   }
 
   private monitor() {
@@ -2070,11 +2233,16 @@ export class Sim implements PilotWorld {
         const k = this.key(a, b);
         const lat = dist(a.p, b.p);
         const vert = Math.abs(a.alt - b.alt);
-        const sameFinal = a.app?.locCap && b.app?.locCap && a.app.rwy.id === b.app.rwy.id && Math.min(distToThr(a.p, a.app.rwy), distToThr(b.p, b.app.rwy)) < 10;
-        const latMin = sameFinal ? this.finalMinNm : 3;
+        const bothLoc = !!(a.app?.locCap && b.app?.locCap);
+        const inside10 = bothLoc && Math.min(distToThr(a.p, a.app!.rwy), distToThr(b.p, b.app!.rwy)) < 10;
+        const sameFinal = bothLoc && a.app!.rwy.id === b.app!.rwy.id && inside10;
+        // consecutive approaches to the two parallels of one strip pair inside 10 NM (Düsseldorf AD 2.22: 2.5 NM diagonal)
+        const parSep = this.pack.meta.parallelApproachSepNm;
+        const parFinal = !!parSep && bothLoc && inside10 && a.app!.rwy.id !== b.app!.rwy.id && this.sameDirection(a.app!.rwy.id, b.app!.rwy.id);
+        const latMin = sameFinal ? this.finalMinNm : parFinal ? parSep! : 3;
         if (lat < latMin - 0.02 && vert < EPS_VERT) { seen.add('los:' + k); this.openOrUpdate('los:' + k, 'los', a.cs, b.cs, lat, vert, latMin); }
         // prediction (MTCD-like 120 s) and STCA (60 s)
-        if (lat < 25 && !sameFinal) {
+        if (lat < 25 && !sameFinal && !parFinal) {
           const pred = this.predict(a, b, 120);
           const pk = 'cf:' + k;
           if (pred.tMin !== undefined) {
@@ -2198,7 +2366,7 @@ export class Sim implements PilotWorld {
     else if (ac.mode === 'NAV' && ac.route.length) {
       d = dist(ac.p, ac.route[0].p) + ac.route.slice(1).reduce((s, l, i) => s + dist(ac.route[i].p, l.p), 0);
       const end = ac.route[ac.route.length - 1];
-      d += end.fix === r.ifFix ? distToThr(end.p, r) : dist(end.p, r.thr) + 14;
+      d += end.fix === r.ifFix || this.isFinalFix(end.fix, r.id) ? Math.max(0, distToThr(end.p, r)) : dist(end.p, r.thr) + 14;
     } else {
       const dd = dist(ac.p, r.thr);
       const along = alongTrack(ac.p, r.thr, r.crs + 180);

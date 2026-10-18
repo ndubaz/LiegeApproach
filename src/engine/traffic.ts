@@ -90,6 +90,28 @@ export interface FreePlayOpts {
    * (the pack's demand curve) from that time instead of the template's flat rates or compressed night.
    */
   startHour?: number;
+  // ---- 2.0 free-play designer (all optional; the UI shows the sliders designerOptions(pack) lists) ----
+  /** Traffic mix as shares (they need not sum to 1): cargo and passenger split the scheduled traffic; ga and mil add VFR / military movements on top. */
+  mix?: { cargo: number; pax: number; ga: number; mil: number };
+  /** Weather trend over the session. */
+  trend?: 'steady' | 'deteriorating' | 'improving' | 'wind-shift';
+  /** Reserved-area activity: 0 none, 1 one activation, 2 two (needs a pack with `traffic.reserved`). */
+  reserved?: 0 | 1 | 2;
+  /** Expected emergencies per hour (0 to 2). Overrides `emergencies` when set. */
+  emergencyRate?: number;
+}
+
+/** What the free-play designer can offer at an airport: which sliders make sense and what the pack calls things. */
+export function designerOptions(pack: Pack): { mix: { cargo: boolean; pax: boolean; ga: boolean; mil: boolean }; reserved?: string; trends: NonNullable<FreePlayOpts['trend']>[]; templates: Record<string, TemplateSpec>; curfew?: string } {
+  const t = pack.spec.traffic;
+  const ops = opsOf(pack);
+  return {
+    mix: { cargo: ops.cargo.length > 0 && ops.cargo !== ops.pax, pax: ops.pax.length > 0, ga: true, mil: (t?.patterns ?? []).some((p) => p.kind === 'mil') || (t?.military?.length ?? 0) > 0 },
+    reserved: t?.reserved?.name,
+    trends: ['steady', 'deteriorating', 'improving', 'wind-shift'],
+    templates: templatesOf(pack),
+    curfew: pack.spec.curfew ? `${pack.spec.curfew.fromLocal} to ${pack.spec.curfew.toLocal} local` : undefined,
+  };
 }
 
 /** The engine's fallback templates (a cargo hub's night and day); packs give their own in `traffic.templates`. */
@@ -254,7 +276,7 @@ export function starPoint(pack: Pack, starName: string, d: number): XY | undefin
   return move(pts[0], b, remaining);
 }
 
-interface ArrTrack { spec: SpawnSpec; key: string; level: Level; at: (dRemain: number) => XY }
+interface ArrTrack { spec: SpawnSpec; key: string; level: Level; at: (dRemain: number) => XY; /** fixes the STAR passes (for merges between different STARs) */ fixes?: string[]; /** track miles from the handover to each fix */ nmTo?: Record<string, number> }
 function trackOf(pack: Pack, s: SpawnSpec): ArrTrack | undefined {
   if (s.kind !== 'arr') return undefined;
   if (s.unfamiliar) {
@@ -263,7 +285,23 @@ function trackOf(pack: Pack, s: SpawnSpec): ArrTrack | undefined {
   }
   const star = pack.stars.find((x) => x.name === s.star);
   if (!star) return undefined;
-  return { spec: s, key: star.name, level: s.level ?? star.handoffLevel, at: (d) => starPoint(pack, star.name, d)! };
+  // track miles from the handover point to each STAR fix: the whole remaining STAR length minus the length after the fix
+  const D = s.spawnDist ?? 42;
+  const after = (i: number) => { let d = 0; for (let k = i; k < star.legs.length - 1; k++) d += dist(star.legs[k].p, star.legs[k + 1].p); return d; };
+  const nmTo: Record<string, number> = {};
+  star.legs.forEach((l, i) => { nmTo[l.fix] = D - after(i); });
+  return { spec: s, key: star.name, level: s.level ?? star.handoffLevel, at: (d) => starPoint(pack, star.name, d)!, fixes: star.legs.map((l) => l.fix), nmTo };
+}
+/**
+ * Two arrivals on different STARs that share a fix (KOK7X and CIV7X join at GILOM): the seconds between their arrivals
+ * over the first common fix, flying at the handover speed. Infinity when they share nothing.
+ */
+function joinGapS(a: ArrTrack, b: ArrTrack, ta: number, tb: number): number {
+  if (!a.fixes || !b.fixes || a.key === b.key) return Infinity;
+  const common = a.fixes.find((f) => b.fixes!.includes(f) && (a.nmTo![f] ?? -1) >= 0 && (b.nmTo![f] ?? -1) >= 0);
+  if (!common) return Infinity;
+  const tA = ta + (a.nmTo![common] / ARR_NM_PER_MIN) * 60, tB = tb + (b.nmTo![common] / ARR_NM_PER_MIN) * 60;
+  return Math.abs(tA - tB);
 }
 /** Distance between the two aircraft at the moment the later one is handed over (ignores controller action). */
 function handoverGap(a: ArrTrack, b: ArrTrack, ta: number, tb: number): number {
@@ -291,7 +329,7 @@ export function separateHandovers(pack: Pack, spawns: SpawnSpec[], minNm = HANDO
     for (let tries = 0; tries < 80 && !chosen; tries++) {
       for (const L of levels) {
         const me: ArrTrack = { ...base, level: L };
-        const clash = placed.some((p) => p.key === me.key && Math.abs(lvlFt(p.level) - lvlFt(L)) < 1000 && handoverGap(p, me, p.spec.t, t) < minNm + 0.5);
+        const clash = placed.some((p) => Math.abs(lvlFt(p.level) - lvlFt(L)) < 1000 && ((p.key === me.key && handoverGap(p, me, p.spec.t, t) < minNm + 1) || joinGapS(p, me, p.spec.t, t) < ((minNm + 0.5) / ARR_NM_PER_MIN) * 60));
         if (!clash) { chosen = L; break; }
       }
       if (!chosen) t += 15;
@@ -346,6 +384,16 @@ export function hotStart(spawns: SpawnSpec[], at = 2) {
   first.callNow = true;
 }
 
+/** Minutes an arrival needs from handover to touchdown at this airport: the handover distance, the longest transition and the final, at about 4.2 NM a minute, plus a little; never under 20. */
+export function arrivalMinutes(pack: Pack): number {
+  let longest = 15;
+  for (const t of pack.transitions) {
+    let d = 0;
+    for (let i = 1; i < t.legs.length; i++) d += dist(t.legs[i - 1].p, t.legs[i].p);
+    longest = Math.max(longest, d);
+  }
+  return Math.max(20, Math.ceil((42 + longest + 10) / 4.2) + 3);
+}
 /** Session cap: 15 minutes after the last spawn, 25 after a last arrival (measured 15 to 19 min on the full published procedure, more with holding). The engine ends the session earlier once traffic is complete. */
 export function durationFor(spawns: SpawnSpec[]): number {
   let end = 0;
@@ -538,17 +586,20 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
     else arrT[0] = 2;
   }
   const bankEnd = 0.5 * W, bankStart = shiftPhases(W)[1].from * W;
+  const mixPax = o.mix && o.mix.cargo + o.mix.pax > 0 ? o.mix.pax / (o.mix.cargo + o.mix.pax) : undefined;
   for (const t of arrT) {
     // a bank phase draws from the bank operators; an airport without a bank list keeps its usual mix
     const inBank = (byHour ? mixAt(t).phase === 'bank' : shift && t >= bankStart && t < bankEnd) && ops.bank.length > 0;
-    const pax = !inBank && rng.chance(byHour ? mixAt(t).paxShare : tpl.paxShare);
+    const pax = !inBank && rng.chance(mixPax ?? (byHour ? mixAt(t).paxShare : tpl.paxShare));
     const pool = pax ? ops.pax : inBank ? ops.bank : ops.cargo;
     const op = rng.weighted(pool.map((x) => ({ w: x.w, v: x })));
     const base = rng.weighted(arrivalWeights(pack, rwy, inBank));
     spawns.push({ t, kind: 'arr', cs: cs.make(op.op), type: rng.pick(op.types), star: starFor(base, rwy, pack), spawnDist: rng.range(36, 46) });
   }
   for (const t of depT) {
-    const pool = byHour && rng.chance(mixAt(t).paxShare) ? ops.pax : ops.cargo;
+    // no random draw unless a share is in play, so seeded sessions (and replays of them) keep their traffic
+    const share = mixPax ?? (byHour ? mixAt(t).paxShare : undefined);
+    const pool = share !== undefined && rng.chance(share) ? ops.pax : ops.cargo;
     const op = rng.weighted(pool.map((x) => ({ w: x.w, v: x })));
     spawns.push({ t, kind: 'dep', cs: cs.make(op.op), type: rng.pick(op.types), sid: sidFor(rng, depRwy, pack) });
   }
@@ -560,9 +611,36 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
     if (p.at === 1 && shift) continue;
     extras.push(spawnFromPattern(p, at(), rng, cs));
   }
+  // the designer's general-aviation and military shares: VFR crossings and military transits on top of the schedule
+  if (o.mix) {
+    const hours = W / 3600;
+    const nGa = Math.round(o.mix.ga * 6 * hours), nMil = Math.round(o.mix.mil * 4 * hours);
+    const vfrPats = patternsOf(pack).filter((p) => p.kind === 'vfr' || p.kind === 'heli');
+    const milPats = patternsOf(pack).filter((p) => p.kind === 'mil');
+    for (let i = 0; i < nGa; i++) {
+      const p = vfrPats.length ? rng.pick(vfrPats) : undefined;
+      if (p) extras.push(spawnFromPattern(p, at(), rng, cs));
+      else if (pack.vfrRoutes.length) { const vr = rng.pick(pack.vfrRoutes); extras.push({ t: at(), kind: 'vfr', cs: cs.reg(), type: rng.pick(['C172', 'PA28']), route: vr.points, from: { brg: rng.int(0, 359), dist: 6 }, level: { ft: vr.alt }, request: { kind: 'crossing', route: vr.points } }); }
+    }
+    for (let i = 0; i < nMil; i++) {
+      const p = milPats.length ? rng.pick(milPats) : undefined;
+      if (p) extras.push(spawnFromPattern(p, at(), rng, cs));
+      else { const sf = pack.stackFix; const exit = pack.sids[0]?.exitFix ?? sf; extras.push({ t: at(), kind: 'mil', cs: `${pack.spec.traffic?.military?.[0]?.op ?? 'GAF'}${rng.int(10, 99)}`, type: 'A400', route: [sf, exit], from: { brg: rng.int(0, 359), dist: 12 }, level: { fl: 70 }, request: { kind: 'climb', level: { fl: 110 } } }); }
+    }
+  }
   spawns.push(...extras);
-  // Emergencies
-  if (o.emergencies) {
+  // Emergencies: the designer's rate (expected per hour) or the 1.0 switch (one per session)
+  if (o.emergencyRate !== undefined) {
+    const n = Math.min(4, poissonTimes(rng, W, () => o.emergencyRate!, Math.max(0.01, o.emergencyRate!)).length);
+    const arrivals = spawns.filter((s) => s.kind === 'arr' && !s.unfamiliar && !s.emergency);
+    const deps = spawns.filter((s) => s.kind === 'dep' && !s.emergency);
+    for (let i = 0; i < n; i++) {
+      const pickType = rng.pick(['smoke', 'radio', 'engine'] as const);
+      const dep = pickType === 'engine' ? deps.filter((d) => !d.emergency) : [];
+      if (dep.length) rng.pick(dep).emergency = { after: rng.int(60, 150), type: 'engine' };
+      else { const free = arrivals.filter((a) => !a.emergency); if (free.length > 2) rng.pick(free.slice(1, -1)).emergency = { after: rng.int(60, 240), type: pickType === 'engine' ? 'smoke' : pickType }; }
+    }
+  } else if (o.emergencies) {
     const arrivals = spawns.filter((s) => s.kind === 'arr' && !s.unfamiliar);
     const deps = spawns.filter((s) => s.kind === 'dep');
     const pickType = rng.pick(['smoke', 'radio', 'engine'] as const);
@@ -576,10 +654,35 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
   if (o.weather === 'storms') storms = [{ p: { x: -14, y: -10 }, r: 4, vx: 8, vy: 10 }, { p: { x: -22, y: 6 }, r: 3.5, vx: 9, vy: 6 }, { p: { x: 8, y: -20 }, r: 5, vx: 4, vy: 9 }];
   const reserved = pack.spec.traffic?.reserved;
   if (shift) drawDeck({ rng, cs, spawns, events, objectives, rwy, notes, start: tpl.start, pack }, W);
-  else if (o.military >= 2 && reserved && reservedActive(pack, tpl.start, Math.round(W * 0.4)) && reservedActive(pack, tpl.start, Math.round(W * 0.9))) {
+  else if (o.reserved === undefined && o.military >= 2 && reserved && reservedActive(pack, tpl.start, Math.round(W * 0.4)) && reservedActive(pack, tpl.start, Math.round(W * 0.9))) {
     const on = Math.round(W * 0.4);
     events.push({ t: on, kind: 'tsa', name: reserved.name, on: true }, { t: Math.round(W * 0.9), kind: 'tsa', name: reserved.name, on: false });
     notes.push(`${areaSpoken(reserved.name)} active from ${utcPlus(tpl.start, on)}.`);
+  }
+  // the designer's reserved-area activity: one or two activations of the pack's area
+  if (o.reserved && reserved) {
+    const windows: [number, number][] = o.reserved === 1 ? [[0.3, 0.7]] : [[0.15, 0.4], [0.55, 0.85]];
+    for (const [a, b] of windows) {
+      const on = Math.round(W * a), off = Math.round(W * b);
+      events.push({ t: on, kind: 'tsa', name: reserved.name, on: true }, { t: off, kind: 'tsa', name: reserved.name, on: false });
+      notes.push(`${areaSpoken(reserved.name)} active ${utcPlus(tpl.start, on)} to ${utcPlus(tpl.start, off)}.`);
+    }
+  }
+  // the designer's weather trend
+  if (o.trend === 'deteriorating' && o.weather !== 'lvp') {
+    const t = Math.round(W * 0.55);
+    events.push({ t, kind: 'lvp', on: true, rvr: 400, vis: 450, ceiling: 100 });
+    notes.push(`Visibility dropping: fog expected around ${utcPlus(tpl.start, t)}, low visibility procedures from then.`);
+  } else if (o.trend === 'improving' && o.weather === 'lvp') {
+    const t = Math.round(W * 0.5);
+    events.push({ t, kind: 'lvp', on: false });
+    notes.push(`Fog lifting around ${utcPlus(tpl.start, t)}.`);
+  } else if (o.trend === 'wind-shift') {
+    const into = (rwyWindDir(pack, rwy) + 180) % 360 || 360;
+    const dir = Math.round((into + rng.int(-20, 20) + 360) % 360 / 10) * 10 || 360;
+    const t = Math.round(W * 0.45);
+    events.push({ t, kind: 'wind', dir, kt: rng.int(9, 14) });
+    notes.push(`Wind expected to swing round to ${String(dir).padStart(3, '0')} degrees around ${utcPlus(tpl.start, t)}: be ready for a runway change.`);
   }
   // The centre hands over in trail; the tower lines departures up with wake gaps.
   separateHandovers(pack, spawns);
@@ -588,7 +691,7 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
   // The session lasts exactly what the player chose: arrivals appear early enough to land
   // (20 minutes before the end), everything else at least 10 minutes before it.
   const endS = o.durationMin * 60;
-  const lastArr = Math.max(8 * 60, endS - 20 * 60), lastOther = Math.max(10 * 60, endS - 10 * 60);
+  const lastArr = Math.max(8 * 60, endS - arrivalMinutes(pack) * 60), lastOther = Math.max(10 * 60, endS - 10 * 60);
   for (let i = spawns.length - 1; i >= 0; i--) {
     const s = spawns[i];
     if (s.t > 2 && s.t > (s.kind === 'arr' ? lastArr : lastOther)) spawns.splice(i, 1);
@@ -606,6 +709,8 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
   if (byHour) parts.push(hourBrief(o.startHour!, W, curve));
   else if (shift) parts.push(`Wave peaks around ${utcPlus(tpl.start, Math.round(0.33 * W))}, departures push from ${utcPlus(tpl.start, Math.round(0.6 * W))}.`);
   else parts.push(o.template === 'quiet' ? 'A gentle flow.' : 'Steady flow all session.');
+  if (!byHour && tpl.note) parts.push(tpl.note);
+  if (o.mix) { const bits: string[] = []; if (o.mix.ga > 0) bits.push('general aviation crossing the zone'); if (o.mix.mil > 0) bits.push('military transits'); if (bits.length) parts.push(`Also ${bits.join(' and ')}.`); }
   parts.push(...notes);
   if (o.weather === 'lvp') parts.push('Fog: low visibility procedures, CAT III only.');
   if (o.weather === 'storms') parts.push('Thunderstorms drifting in from the south-west; expect deviation requests.');

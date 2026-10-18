@@ -2,8 +2,9 @@ import type { Sim } from './sim';
 import type { Aircraft } from './types';
 import type { Item } from './clearance';
 import type { Level } from '../pack/load';
-import { alongTrack, angDiff, crossTrack, dist, norm360 } from '../geo';
-import { asCleared, bestTransition, predictedConflict, sequenceMembers, shortfall, slotFor, trackNm, TRANSITION_HORIZON_S, type Slot } from './sequence';
+import { alongTrack, angDiff, bearing, crossTrack, dist, norm360 } from '../geo';
+import { asCleared, bestTransition, etaS, predictedConflict, sequenceMembers, shortfall, slotFor, trackNm, TRANSITION_HORIZON_S, type Slot } from './sequence';
+import type { Procedure } from '../pack/load';
 
 // Next-call suggestions: the one or two clearances an approach controller would
 // most likely give this aircraft now, worked out from its phase and geometry.
@@ -48,6 +49,28 @@ export { bestTransition };
 
 /** Lowest level an arrival is given with a transition: the published 3,000 ft (never below the transition restrictions). */
 const TRANS_FT = 3000;
+/** Vertical margin for the transition look-ahead: the turn onto the transition against traffic on short final (ALHUV1B at Liège) is only clear with 1,100 ft to spare, since the final descends through it. */
+const TRANSITION_VERT_FT = 1100;
+/** The level a long transition is flown at until the descent for the final (Düsseldorf chart overlay: 5,000 ft to the downwind). */
+const TRANS_OVERLAY_FT = 5000;
+/** The overlay level, kept 1,000 ft above the SID initial climb so arrivals on the downwind stay clear of departures still at it. */
+export function overlayFtOf(sim: Sim): number {
+  let sidTop = 0;
+  for (const sd of sim.pack.sids) sidTop = Math.max(sidTop, sim.ftOf(sd.initialClimb));
+  return Math.max(TRANS_OVERLAY_FT, Math.ceil((sidTop + 1000) / 1000) * 1000);
+}
+/** The highest minimum vectoring altitude along a straight path, sampled every 2 NM. */
+export function mvaAlong(sim: Sim, from: { x: number; y: number }, to: { x: number; y: number }): number {
+  const L = dist(from, to);
+  let m = sim.mvaAt(from);
+  for (let d = 2; d < L; d += 2) m = Math.max(m, sim.mvaAt({ x: from.x + ((to.x - from.x) * d) / L, y: from.y + ((to.y - from.y) * d) / L }));
+  return Math.max(m, sim.mvaAt(to));
+}
+/** A transition longer than this (its legs, without the final) is flown at the overlay altitude first. */
+export const LONG_TRANSITION_NM = 28;
+export const legsNm = (tr: { legs: { p: { x: number; y: number } }[] }) => tr.legs.reduce((s, l, i) => (i ? s + dist(tr.legs[i - 1].p, l.p) : 0), 0);
+/** Track miles from the final approach fix to the threshold (the FAF is the last transition fix where the pack has no IF on the transition). */
+export const finalFixNmOf = (sim: Sim, rw: Sim['rwy']) => { const f = sim.pack.fixes.get(rw.faf); return f ? Math.max(0, -alongTrack(f.p, rw.thr, rw.crs)) : 6; };
 
 /** A speed the aircraft can fly here: never below minimum clean speed until it is established (or within 15 NM). */
 function spdFor(sim: Sim, ac: Aircraft, want: number): number {
@@ -79,7 +102,7 @@ function cpa(a: Aircraft, b: Aircraft, horizon = 240): number {
   return best;
 }
 /** Another aircraft in the way of a climb or descent from the current altitude to `toFt` in the next few minutes, if any. */
-function pathBlocker(sim: Sim, ac: Aircraft, toFt: number, members?: Set<Aircraft>): Aircraft | undefined {
+export function pathBlocker(sim: Sim, ac: Aircraft, toFt: number, members?: Set<Aircraft>): Aircraft | undefined {
   const lo = Math.min(ac.alt, toFt) - 900, hi = Math.max(ac.alt, toFt) + 900;
   for (const o of sim.aircraft) {
     if (o === ac || o.remove || o.landed || o.rules === 'VFR' || o.state === 'unconcerned') continue;
@@ -87,6 +110,14 @@ function pathBlocker(sim: Sim, ac: Aircraft, toFt: number, members?: Set<Aircraf
     if (o.app?.locCap || members?.has(o)) continue;
     const oLo = Math.min(o.alt, o.tgtAlt), oHi = Math.max(o.alt, o.tgtAlt);
     if (oHi < lo || oLo > hi) continue;
+    // a holding aircraft turns through every heading: treat its racetrack as a 6 NM circle round the fix
+    const hf = o.mode === 'HOLD' && o.hold ? o.hold.p : holdAtOf(sim, o) ? sim.fixP(holdAtOf(sim, o)!) : undefined;
+    if (hf) {
+      const v = { x: (Math.sin((ac.trk * Math.PI) / 180) * ac.gs) / 3600, y: (Math.cos((ac.trk * Math.PI) / 180) * ac.gs) / 3600 };
+      let best = dist(ac.p, hf);
+      for (let t = 10; t <= 240; t += 10) best = Math.min(best, Math.hypot(ac.p.x + v.x * t - hf.x, ac.p.y + v.y * t - hf.y));
+      if (best < 6) return o;
+    }
     if (cpa(ac, o) < 5) return o;
   }
   return undefined;
@@ -125,13 +156,16 @@ function stackLevels(sim: Sim, ac: Aircraft, fix: string): Level[] {
   const h = sim.pack.holds.find((x) => x.fix === fix);
   if (!h) return out;
   const others = stackOf(sim, fix, ac).map((o) => lvlFt(sim, o));
-  const top = Math.min(sim.ftOf(h.max), sim.ftOf(ac.cleared) + 50);
+  // a go-around flying the missed approach below the stack may climb into it (the transitions start at the fix at its level)
+  const climbIn = ac.goArounds > 0 && sim.ftOf(ac.cleared) < sim.ftOf(h.min) + 1050;
+  const top = climbIn ? sim.ftOf(h.max) : Math.min(sim.ftOf(h.max), sim.ftOf(ac.cleared) + 50);
   const near = dist(ac.p, sim.fixP(fix)) < 15;
   for (let ft = Math.max(4000, Math.ceil(sim.ftOf(h.min) / 1000) * 1000); ft <= top + 1; ft += 1000) {
     if (others.some((x) => Math.abs(x - ft) < 900)) continue;
     // close to the fix, do not descend through someone already holding there
     if (near && others.some((x) => x > ft && x < ac.alt - 300)) continue;
     out.push(sim.levelFor(ft));
+    if (climbIn) break;
   }
   return out;
 }
@@ -207,12 +241,35 @@ export function suggest(sim: Sim, ac: Aircraft): Suggestion[] {
       const xt = crossTrack(ac.p, rw.thr, rw.crs);
       const h = roundHdg(crsMag - 30 * (Math.sign(xt) || 1));
       add({ label: `Intercept ${turnDir(curMag, h)}${p3(h)}`, items: [hdgItem(sim, ac, h)], why: `${Math.abs(xt).toFixed(1)} NM off the centreline. 30° to the final course so the localizer captures.`, primary: true });
+    } else if (rq.kind === 'vectors' && !ac.app && ac.kind === 'arr' && !ac.emergency) {
+      // a diversion with no local procedure: route it to the nearest entry fix and work it like the others from there
+      const sf = sim.stackFixOf(ac);
+      const mvaFt = Math.ceil(mvaAlong(sim, ac.p, sim.fixP(sf)) / 500) * 500;
+      const items: Item[] = [{ k: 'dct', fix: sf }];
+      if (sim.ftOf(ac.cleared) < mvaFt) items.push({ k: 'lvl', lvl: sim.levelFor(mvaFt) });
+      add({ label: `Direct ${sf}`, items, why: `No local arrival: send it to ${sf}, the entry fix, and give it the transition from there like everyone else.`, primary: true });
     } else if (rq.kind === 'vectors') {
       const away = norm360(crsMag + 180);
       const items: Item[] = [{ k: 'brk' }, hdgItem(sim, ac, away)];
       const l3 = sim.levelFor(3000);
       if (!sameAsCleared(l3)) items.push({ k: 'lvl', lvl: l3 });
       add({ label: `Break off · H${p3(away)}${sameAsCleared(l3) ? '' : ' · 3000'}`, items, why: ac.app?.tooHigh ? 'Too high for the glide. Take it off the approach and bring it round again.' : 'It asks for vectors. Take it off the approach and bring it round again.', primary: true });
+    } else if (rq.kind === 'deviate' && rq.hdg !== undefined && ac.kind === 'arr') {
+      const hdgTrue = norm360(rq.hdg + sim.pack.meta.magVar);
+      const onHdg = (c: Aircraft) => { c.mode = 'HDG'; c.hdgAssigned = hdgTrue; c.route = []; c.app = c.app?.locCap ? c.app : undefined; };
+      const hit = predictedConflict(sim, ac, onHdg, 240)?.with;
+      let lvl: Level | undefined;
+      if (hit) {
+        // the deviation runs into someone: approve it with a level 1,000 ft clear, above the vectoring minimum
+        const mva = sim.mvaAt(ac.p);
+        for (const cand of [ac.alt - 1000, ac.alt + 1000]) {
+          const ft = Math.round(cand / 1000) * 1000;
+          if (ft < Math.max(mva, rw.ifAlt)) continue;
+          if (predictedConflict(sim, ac, (c) => { onHdg(c); c.tgtAlt = ft; }, 240)) continue;
+          lvl = sim.levelFor(ft); break;
+        }
+      }
+      add({ label: `Approve${lvl ? ' · ' + lvlLabel(lvl) : ''}`, items: lvl ? [{ k: 'appr' }, { k: 'lvl', lvl }] : [{ k: 'appr' }], why: hit ? (lvl ? `Weather avoidance, but heading ${p3(rq.hdg)} runs into ${hit.cs}: approve it with ${lvlWords(lvl)}.` : `Heading ${p3(rq.hdg)} runs into ${hit.cs} and no level is free. Refuse it and offer the other side.`) : rq.text, primary: !hit || !!lvl });
     } else add({ label: 'Approve', items: [{ k: 'appr' }], why: rq.text, primary: true });
     add({ label: 'Unable', items: [{ k: 'deny' }], why: 'Refuse the request.' });
   }
@@ -271,10 +328,35 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
   const chg = sim.rwyChange;
   const late = (etaS: number) => !!chg && chg.to.slice(0, 2) !== rw.id.slice(0, 2) && sim.t + etaS > chg.at - 60;
   const lateWhy = chg ? `Runway change to ${chg.to} at ${sim.utc(chg.at).slice(0, 5).replace(':', '')}: it would land after it. Keep it at ${SF} until then.` : ''
-  const d = sim.dthr(ac);
+  // miles to touchdown: straight down the final once established, else along the path it will most likely fly
+  const d = ac.app?.locCap ? sim.dthr(ac) : trackNm(sim, ac);
+  const dStraight = sim.dthr(ac);
   const xt = crossTrack(ac.p, rw.thr, rw.crs);
   const along = alongTrack(ac.p, rw.thr, norm360(rw.crs + 180));
-  const transLvl = sim.levelFor(Math.max(TRANS_FT, rw.ifAlt));
+  const finalFt = Math.max(TRANS_FT, rw.ifAlt);
+  // a long transition (Düsseldorf: 40 NM round the downwind) is flown at the overlay altitude first; the descent to the
+  // final approach altitude comes as its own call about 3 NM per 1,000 ft before the final approach fix
+  const bt = ac.mode !== 'HDG' ? bestTransition(sim, ac) : undefined;
+  const overlayFt = overlayFtOf(sim);
+  const longTrans = !!bt && legsNm(bt) > LONG_TRANSITION_NM && sim.ftOf(ac.cleared) > overlayFt + 50;
+  const transLvl0 = sim.levelFor(longTrans ? overlayFt : finalFt);
+  /**
+   * The level for a transition clearance: the overlay (or final) level, or 1,000 ft above it when the transition merges
+   * with another aircraft's transition at a fix they would reach within 5 minutes of each other. Crossing paths at a
+   * merge are kept apart vertically until both are in trail; the descent for the final comes later.
+   */
+  const transLvlFor = (tr: Procedure | undefined, eta: number): Level => {
+    if (!tr) return transLvl0;
+    const mine = new Set(tr.legs.slice(0, -1).map((l) => l.fix));
+    const nom = (l: Level) => (l.fl !== undefined ? l.fl * 100 : l.ft!);
+    let want = nom(transLvl0);
+    for (const o of sequenceMembers(sim, ac)) {
+      if (!o.app || o.app.locCap || o.mode !== 'NAV' || o.proc === tr.name || !o.route.some((l) => mine.has(l.fix))) continue;
+      if (Math.abs(etaS(o, trackNm(sim, o)) - eta) < 420) want = Math.max(want, Math.min(nom(o.cleared), overlayFt) + 1000);
+    }
+    return want > nom(ac.cleared) ? ac.cleared : sim.levelFor(want);
+  };
+  let transLvl = transLvl0;
   const lvlTo = (l: Level): Item[] => (sim.ftOf(l) < clearedFt - 50 ? [{ k: 'lvl', lvl: l }] : []);
   const lvlTag = (l: Level) => (sim.ftOf(l) < clearedFt - 50 ? ` · ${lvlLabel(l)}` : '');
 
@@ -285,11 +367,16 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
     return;
   }
 
-  // MAYDAY: the shortest way in, straight to the final, not round a transition or into the hold
-  if (ac.emergency && ac.emergency !== 'radio' && !ac.app) {
+  // MAYDAY (or a diversion with no local procedure asking for vectors): the shortest way in, straight to the final,
+  // not round a transition or into the hold, at a level that keeps it above the vectoring minimum on the way
+  const joinDirect = ac.emergency && ac.emergency !== 'radio' && !ac.app;
+  if (joinDirect) {
     const ifFix = rw.ifFix;
-    const l = sim.levelFor(Math.max(TRANS_FT, rw.ifAlt));
-    add({ label: `Direct ${ifFix}${lvlTag(l)} · ${appName}`, items: [{ k: 'dct', fix: ifFix }, ...lvlTo(l), ils], why: `${ac.emergencyText ?? 'Emergency'}: the shortest way to the final, everyone else makes room.`, primary: true });
+    const ifP = sim.fixP(ifFix);
+    const mvaFt = Math.ceil(mvaAlong(sim, ac.p, ifP) / 500) * 500;
+    const l = sim.levelFor(Math.max(TRANS_FT, rw.ifAlt, mvaFt));
+    const why = ac.emergency ? `${ac.emergencyText ?? 'Emergency'}: the shortest way to the final, everyone else makes room.` : `No local procedure: direct to the intermediate fix and the approach. ${lvlWords(l)} keeps it above the vectoring minimum on the way.`;
+    add({ label: `Direct ${ifFix}${lvlTag(l)} · ${appName}`, items: [{ k: 'dct', fix: ifFix }, ...lvlTo(l), ils], why, primary: true });
     if (ac.mode === 'HDG' && Math.abs(xt) < 4.5 && along > 6) {
       const h = roundHdg(crsMag - 30 * (Math.sign(xt) || 1));
       add({ label: `${turnDir(curMag, h)}${p3(h)} · ${appName}`, items: [hdgItem(sim, ac, h), ...lvlTo(l), ils], why: 'Already close to the final: 30° intercept and the approach.' });
@@ -301,10 +388,11 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
     const fix = ac.hold?.fix ?? SF;
     const tr = bestTransition(sim, ac);
     const slot = slotFor(sim, ac, tr);
+    transLvl = transLvlFor(tr, slot.etaS);
     // lowest first in its own stack, and the stack at the transition fix before anyone holding further out
     const lower = sim.aircraft.filter((o) => o !== ac && !o.remove && o.kind === 'arr' && !o.app && (isHolder(sim, o, fix) ? lvlFt(sim, o) < clearedFt - 50 : fix !== SF && isHolder(sim, o, SF)));
     const blk0 = pathBlocker(sim, ac, sim.ftOf(transLvl), new Set(sequenceMembers(sim)));
-    const blk = blk0 ?? (slot.ok && !lower.length ? predictedConflict(sim, ac, asCleared(sim, tr?.name, sim.ftOf(transLvl), rw.id), TRANSITION_HORIZON_S)?.with : undefined);
+    const blk = blk0 ?? (slot.ok && !lower.length ? predictedConflict(sim, ac, asCleared(sim, tr?.name, sim.ftOf(transLvl), rw.id), TRANSITION_HORIZON_S, TRANSITION_VERT_FT)?.with : undefined);
     const ok = slot.ok && !lower.length && !blk && !late(slot.etaS);
     const why = late(slot.etaS) ? lateWhy : lower.length ? `Release the lowest first: ${lower[0].cs} is below it.` : blk ? `Wait: ${blk.cs} is in the way down.` : slot.ok ? `${slotWhy(slot)}.` : `No gap yet: ${slot.clash?.cs ?? 'the sequence'} is too close. About ${Math.max(1, Math.round(slot.waitS / 60))} min.`;
     add({ label: `Leave hold · ${tr?.name ?? ''}${lvlTag(transLvl)} · ${appName}`, items: [...(tr ? [{ k: 'trans', name: tr.name } as Item] : []), ...lvlTo(transLvl), ils], why, primary: ok });
@@ -319,7 +407,28 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
     return;
   }
 
+  // off its route on a heading (a weather deviation, a vector) with the route still to fly: back to the next fix once the way is clear
+  if (ac.mode === 'HDG' && !ac.request && (ac.route.length || ac.savedRoute?.length) && !ac.app?.locCap) {
+    const legs = ac.route.length ? ac.route : ac.savedRoute!;
+    // the first fix of the route that is ahead of the aircraft (within 100 degrees of its track)
+    const next = legs.find((l) => Math.abs(angDiff(ac.trk, bearing(ac.p, l.p))) < 100 && dist(ac.p, l.p) > 1.5);
+    if (next) {
+      const clear = !sim.storms.some((st) => { const L = dist(ac.p, next.p); for (let k = 0; k <= L; k += 2) { const q = { x: ac.p.x + ((next.p.x - ac.p.x) * k) / L, y: ac.p.y + ((next.p.y - ac.p.y) * k) / L }; if (dist(q, st.p) < st.r + 2) return true; } return false; });
+      const hit = clear ? predictedConflict(sim, ac, (c) => { c.mode = 'NAV'; c.route = legs.slice(legs.indexOf(next)).map((l) => ({ ...l })); c.hold = undefined; }, 300)?.with : undefined;
+      add({ label: `Direct ${next.fix}`, items: [{ k: 'dct', fix: next.fix }], why: !clear ? `Weather still between it and ${next.fix}. Keep the heading for now.` : hit ? `Wait: ${hit.cs} is in the way to ${next.fix}.` : `The way to ${next.fix} is clear: back onto its route.`, primary: clear && !hit && !ac.turnQuery });
+    }
+  }
   if (ac.app && !ac.app.locCap) {
+    // on a transition at the overlay altitude: down to the final approach altitude in time for the glide
+    if (ac.mode === 'NAV' && ac.route.length && ac.tgtAlt > finalFt + 300) {
+      const toFaf = Math.max(0, d - finalFixNmOf(sim, rw));
+      const need = ((ac.alt - finalFt) / 1000) * 3 + 3;
+      const l = sim.levelFor(finalFt);
+      if (toFaf <= need + 4) {
+        const hit = predictedConflict(sim, ac, (c) => { c.tgtAlt = finalFt; }, 300)?.with;
+        add({ label: `Descend ${lvlLabel(l)}`, items: [{ k: 'lvl', lvl: l }], why: hit ? `Wait: ${hit.cs} is in the way down.` : `${toFaf.toFixed(0)} NM to the final approach fix: about ${need.toFixed(0)} NM needed to get down to ${lvlWords(l)}.`, primary: toFaf <= need + 2 && !hit });
+      }
+    }
     if (ac.mode === 'HDG' && Math.abs(xt) > 0.6 && Math.abs(angDiff(curMag, crsMag)) > 50) {
       const h = roundHdg(crsMag - 30 * Math.sign(xt));
       add({ label: `Intercept ${turnDir(curMag, h)}${p3(h)}`, items: [hdgItem(sim, ac, h)], why: '30° to the final course so the localizer captures cleanly.', primary: Math.abs(xt) < 3 });
@@ -359,8 +468,9 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
     const holders = sim.aircraft.filter((o) => o !== ac && !o.remove && o.kind === 'arr' && !o.app && (o.mode === 'HOLD' || !!holdAtOf(sim, o))
       && (lvlFt(sim, o) < clearedFt - 50 || (isHolder(sim, o, SF) && lvlFt(sim, o) < transFt + 950)));
     const slot = slotFor(sim, ac, tr);
+    transLvl = transLvlFor(tr, slot.etaS);
     const blk0 = pathBlocker(sim, ac, sim.ftOf(transLvl), new Set(sequenceMembers(sim)));
-    const blk = blk0 ?? (slot.ok && !holders.length && tr ? predictedConflict(sim, ac, asCleared(sim, tr.name, sim.ftOf(transLvl), rw.id), TRANSITION_HORIZON_S)?.with : undefined);
+    const blk = blk0 ?? (slot.ok && !holders.length && tr ? predictedConflict(sim, ac, asCleared(sim, tr.name, sim.ftOf(transLvl), rw.id), TRANSITION_HORIZON_S, TRANSITION_VERT_FT)?.with : undefined);
     const ok = slot.ok && !holders.length && !blk && !late(slot.etaS);
     if (tr) {
       const why = late(slot.etaS) ? lateWhy : holders.length ? `${holders.length} already holding at ${SF}: they go first.` : blk ? `Wait: ${blk.cs} is in the way down.` : slot.ok ? `${slotWhy(slot)}. Transition, ${lvlWords(transLvl)} and the approach: it flies to final by itself.` : `No gap: ${slot.clash?.cs ?? 'the sequence'} would be too close. About ${Math.max(1, Math.round(slot.waitS / 60))} min to wait.`;
@@ -368,6 +478,13 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
     }
     // already told to hold: no second hold instruction, only the way down into the stack
     if (!ok && myHold) stackDescend(sim, ac, myHold, clearedFt, add, true);
+    // a short delay with miles still to run: absorb it with speed instead of a hold
+    const toSF = dist(ac.p, sim.fixP(SF));
+    const slowable = !ok && !myHold && !late(slot.etaS) && !holders.length && !blk && slot.waitS > 0 && slot.waitS <= 180 && toSF > 14 && ac.spdAssigned === undefined && !ac.spdMin && !speedQuiet(sim, ac);
+    if (slowable) {
+      const v = spdFor(sim, ac, Math.max(ac.perf.vminClean, 210));
+      if (worthSlowing(ac, v)) add({ label: `Speed ${v}`, items: [{ k: 'spd', spd: v }], why: `About ${Math.round(slot.waitS)} s short behind ${slot.clash?.cs ?? 'the one ahead'}. Slow it now and it will not need the hold.`, primary: true });
+    }
     if (!ok && !myHold && ac.route[ac.route.length - 1]?.fix === SF) {
       // the lowest free level in the stack that it can reach without meeting anyone on the way
       const cands = stackLevels(sim, ac, SF);
@@ -380,8 +497,10 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
         if (!sl) { sl = l; blkS = b; }
       }
       if (sl) {
-        const why = holders.length ? `${holders.length} holding ahead of it. Join the stack at ${lvlWords(sl)}.` : `No gap in the sequence yet. Hold at ${lvlWords(sl)} until there is one.`;
-        add({ label: `Hold ${SF}${lvlTag(sl)}`, items: [{ k: 'hold', fix: SF }, ...lvlTo(sl)], why: blkS ? `Wait: ${blkS.cs} is in the way down.` : why, primary: !blkS });
+        const climb = sim.ftOf(sl) > clearedFt + 50;
+        const lvlItems: Item[] = climb ? [{ k: 'lvl', lvl: sl }] : lvlTo(sl);
+        const why = climb ? `Going around below the stack: climb into it at ${lvlWords(sl)}, clear of the transitions starting at ${SF}.` : holders.length ? `${holders.length} holding ahead of it. Join the stack at ${lvlWords(sl)}.` : `No gap in the sequence yet. Hold at ${lvlWords(sl)} until there is one.`;
+        add({ label: `Hold ${SF}${climb ? ' · ' + lvlLabel(sl) : lvlTag(sl)}`, items: [{ k: 'hold', fix: SF }, ...lvlItems], why: blkS ? `Wait: ${blkS.cs} is in the way down.` : why, primary: !blkS && !slowable });
       }
       if (!sl || blkS) {
         // the stack is full: another published hold (GIREL, GSY at Liège) at a level inside its band
@@ -395,14 +514,14 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
       }
     }
     const step = levelList(sim).find((l) => sim.ftOf(l) <= clearedFt - 1900 && sim.ftOf(l) >= sim.mvaAt(ac.p) + 500);
-    if (step && d < 30) add({ label: `Descend ${lvlLabel(step)}`, items: [{ k: 'lvl', lvl: step }], why: 'Keep it coming down: about 3 NM per 1,000 ft.' });
+    if (step && dStraight < 30) add({ label: `Descend ${lvlLabel(step)}`, items: [{ k: 'lvl', lvl: step }], why: 'Keep it coming down: about 3 NM per 1,000 ft.' });
   }
   if (ac.mode === 'HDG' && ac.tgtAlt > rw.ifAlt + 300) {
     const mva = sim.mvaAt(ac.p);
     const lv = levelList(sim).find((l) => sim.ftOf(l) <= ac.tgtAlt - 900 && sim.ftOf(l) >= Math.max(mva, rw.ifAlt));
     if (lv) add({ label: `Descend ${lvlLabel(lv)}`, items: [{ k: 'lvl', lvl: lv }], why: `Minimum vectoring altitude here is ${mva} ft.` });
   }
-  if (ac.ias > 230 && d < 25 && !ac.spdAssigned && !speedQuiet(sim, ac)) { const s = spdFor(sim, ac, 210); if (worthSlowing(ac, s)) add({ label: `Speed ${s}`, items: [{ k: 'spd', spd: s }], why: 'Slow it to make the sequence work.' }); }
+  if (ac.ias > 230 && dStraight < 25 && !ac.spdAssigned && !speedQuiet(sim, ac)) { const s = spdFor(sim, ac, 210); if (worthSlowing(ac, s)) add({ label: `Speed ${s}`, items: [{ k: 'spd', spd: s }], why: 'Slow it to make the sequence work.' }); }
 }
 
 /** Cleared to hold at `fix` above its published top: down into the stack, without passing anyone holding below. */

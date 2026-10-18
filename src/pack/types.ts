@@ -121,6 +121,11 @@ export interface PackSpec {
     reducedFinalSep?: boolean;
     /** 2.0: controlled airspace over and around the TMA inside the sector (Liège: the Brussels CTA from 4,500 ft, class C). Default: none (class G). */
     upperClass?: { floor: LevelSpec; cls: string };
+    /**
+     * 2.0 gameplay: radar minimum between consecutive approaches to the two parallel runways of one strip pair inside
+     * 10 NM, where the unit is approved for it (Düsseldorf AD 2.22: 2.5 NM diagonal). Wake minima always apply on top.
+     */
+    parallelApproachSepNm?: number;
   };
   fixes: Record<string, FixSpec>;
   runways: RunwaySpec[];
@@ -176,6 +181,12 @@ export interface PackSpec {
   curfew?: { fromLocal: string; toLocal: string; note?: string };
   /** Segregated parallel operations (AD 2.22): which runway lands and which departs when both are in use, per direction. */
   parallelOps?: { arrivals: string; departures: string; note?: string }[];
+  // ---- 2.0 gameplay (GAMEPLAY track); all optional ----
+  /**
+   * Departures stay with Tower until passing this altitude, then call the named unit (Düsseldorf: Langen Radar 121.355
+   * passing 2,000 ft). The sim's player works that frequency for departures; the check-in names the unit's callsign.
+   */
+  depCheckIn?: { unitId: string; passingFt: number };
 }
 
 export interface TerrainSpec {
@@ -252,7 +263,11 @@ export interface TrafficSpec {
 }
 
 export interface PhaseSpec { from: number; to: number; phase: string; label: string; paxShare: number }
-export interface TemplateSpec { title: string; arrPerHr: number; depPerHr: number; start: string; paxShare: number }
+export interface TemplateSpec {
+  title: string; arrPerHr: number; depPerHr: number; start: string; paxShare: number;
+  /** 2.0 gameplay: one honest sentence for the briefing (a curfew template says what the night really brings). */
+  note?: string;
+}
 /** A transient-traffic template. Callsign: fixed `cs`, or `csOp` + a number in `csNum`, or a registration (`csReg`). Several `types`: one is picked. */
 export interface PatternSpec {
   kind: 'vfr' | 'heli' | 'mil' | 'ovf' | 'cal';

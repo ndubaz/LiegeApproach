@@ -218,7 +218,7 @@ describe('career: checkride examiner', () => {
 
 describe('drills', () => {
   it('generators are deterministic per variant, and vary between variants', () => {
-    for (const d of DRILLS) {
+    for (const d of DRILLS.filter((x) => (x.icao ?? 'EBLG') === 'EBLG')) {
       const a = drillScenario(pack, d.id, 3), b = drillScenario(pack, d.id, 3), c = drillScenario(pack, d.id, 4);
       expect(a).toEqual(b);
       expect(parseDrillScenario(a.id)).toEqual({ id: d.id, variant: 3 });
@@ -228,7 +228,7 @@ describe('drills', () => {
     }
   });
   it('every drill is passable by its scripted solution, and fails when nobody acts', () => {
-    for (const d of DRILLS) {
+    for (const d of DRILLS.filter((x) => (x.icao ?? 'EBLG') === 'EBLG')) {
       for (let v = 1; v <= 3; v++) {
         const sc = drillScenario(pack, d.id, v);
         const sim = new Sim(pack, sc);

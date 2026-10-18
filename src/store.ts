@@ -256,7 +256,7 @@ export interface RankReq { text: string; ok: boolean }
 export interface Rank { index: number; name: string; next?: string; reqs: RankReq[] }
 
 const tierIds: Record<number, string[]> = {};
-for (const c of CHALLENGES) (tierIds[c.tier ?? 1] ??= []).push(c.id);
+for (const c of CHALLENGES.filter((x) => (x.icao ?? 'EBLG') === 'EBLG')) (tierIds[c.tier ?? 1] ??= []).push(c.id);
 
 /** The v0.4 rank rule (logbook only). Used once, to credit existing players with the checkrides they would have had. */
 export function legacyRankIndex(l: Logbook, best: Record<string, Grade>): number {
