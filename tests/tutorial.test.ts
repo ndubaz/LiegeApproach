@@ -116,6 +116,7 @@ function walk0(lesson: Lesson, acts: Record<string, Act>, o: WalkOpts, sim: Sim)
       }
       sim.step();
       o.background?.(f, st.id);
+      if (sim.pack.meta.icao === 'EDDL' && lesson.id !== 'eddl-transitions') downwindDescents(f);
     }
     trail.push(`${st.id}@${sim.t}`);
     expect(did, `${lesson.id}/${st.id}: action never became possible (${trail.join(' ')})`).toBe(true);
@@ -147,6 +148,22 @@ function exam(lesson: Lesson, script: (sim: Sim, once: (k: string, c: boolean) =
 }
 const calling = (sim: Sim, cs: string) => isCalling(sim, cs) && !sim.readbackPending(cs);
 /** the student's Tower handoffs during the steps that say so ("Tower chips for both") */
+/** what a student who has taken the transitions lesson does at Düsseldorf: the descent off the FL060 downwind when its chip turns bright */
+const downwindDescents = (f: Fake) => {
+  for (const a of f.sim.aircraft) {
+    if (a.kind !== 'arr' || a.state !== 'assumed' || !a.app || a.app.locCap || a.mode !== 'NAV' || f.sim.readbackPending(a.cs) || f.sim.ftOf(a.cleared) <= 3000) continue;
+    const s = chips(f.sim, a.cs)[0];
+    if (s?.primary && s.label.startsWith('Descend')) f.sim.issue({ cs: a.cs, items: s.items });
+  }
+};
+/** the step says "use speed": the student takes the bright speed chip when one comes up */
+const speedChips = (f: Fake) => {
+  for (const a of f.sim.aircraft) {
+    if (a.kind !== 'arr' || a.state !== 'assumed' || f.sim.readbackPending(a.cs)) continue;
+    const s = chips(f.sim, a.cs)[0];
+    if (s?.primary && s.items.length === 1 && (s.items[0].k === 'spd' || s.items[0].k === 'spdmin')) f.sim.issue({ cs: a.cs, items: s.items });
+  }
+};
 const towerIn = (...steps: string[]) => (f: Fake, step: string) => { if (steps.includes(step)) towerFake(f); };
 const towerFake = (f: Fake) => { for (const a of f.sim.aircraft) if (a.kind === 'arr' && a.state === 'assumed' && a.app?.locCap && f.sim.dthr(a) < 12 && !f.sim.readbackPending(a.cs)) chip(f, a.cs, a.ias > 175 ? '160 to 4' : 'Tower'); };
 const penalties = (sim: Sim) => sim.events.filter((e) => e.cost > 0).map((e) => e.text);
@@ -393,7 +410,7 @@ describe('Liège lessons fly the way the coach says', () => {
       reclear: (f) => lead(f, 'CLX7HK'),
       reclear2: { when: (f) => !!chips(f.sim, 'TAY4EK')[0]?.primary && !f.sim.readbackPending('TAY4EK'), do: (f) => lead(f, 'TAY4EK') },
       land: { when: () => true, do: () => {} },
-    }, { answers: { notice: 1 }, maxStepS: 2400, background: (f, step) => { if (step === 'land') { towerFake(f); for (const cs of ['CLX7HK', 'TAY4EK']) { const a = f.sim.find(cs); if (a && a.state === 'assumed' && !f.sim.readbackPending(cs)) { const s = chips(f.sim, cs)[0]; if (s?.primary && (s.items.some((i) => i.k === 'trans' || i.k === 'xfr'))) f.sim.issue({ cs, items: s.items }); } } } } });
+    }, { answers: { notice: 1 }, maxStepS: 2400, background: (f, step) => { for (const r of f.sim.coordReqs.filter((x) => x.state === 'pending' && x.cs !== 'CLX7HK')) say(f, r.cs, [{ k: 'appr' }]); if (step === 'land') { towerFake(f); for (const cs of ['CLX7HK', 'TAY4EK']) { const a = f.sim.find(cs); if (a && a.state === 'assumed' && !f.sim.readbackPending(cs)) { const s = chips(f.sim, cs)[0]; if (s?.primary && (s.items.some((i) => i.k === 'trans' || i.k === 'xfr'))) f.sim.issue({ cs, items: s.items }); } } } } });
     expect(sim.runway).toBe('04R');
     expect(sim.landings.length + sim.aircraft.filter((a) => a.state === 'transferred').length).toBe(2);
     expect(sim.events.filter((e) => ['los', 'goaround', 'mva', 'coord_unanswered'].includes(e.kind))).toEqual([]);
@@ -500,7 +517,8 @@ describe('Düsseldorf lessons fly the way the coach says', () => {
 
   it('3 the RNAV transitions: BIKMU23 to REGNO', () => {
     const { sim } = walk(E('transitions'), {
-      lead: (f) => lead(f, 'EWG1AB', 'BIKMU23 · 3000 · ILS 23R'),
+      lead: (f) => lead(f, 'EWG1AB', 'BIKMU23 · FL060 · ILS 23R'),
+      down: { when: (f) => !!chips(f.sim, 'EWG1AB').find((s) => s.primary && s.label.startsWith('Descend 3000')), do: (f) => chip(f, 'EWG1AB', 'Descend 3000') },
       twr: (f) => chip(f, 'EWG1AB', '160 to 4'),
     }, { answers: { speed: 1 } });
     expect(sim.landings.map((l) => l.cs).concat(sim.aircraft.filter((a) => a.state === 'transferred').map((a) => a.cs))).toContain('EWG1AB');
@@ -541,7 +559,7 @@ describe('Düsseldorf lessons fly the way the coach says', () => {
       twr1: { when: (f) => established(f, 'EWG1AB'), do: (f) => chip(f, 'EWG1AB', '160 to 4') },
       dep: { when: () => true, do: () => {} },
       twr2: { when: (f) => established(f, 'TUI3LK'), do: (f) => chip(f, 'TUI3LK', '160 to 4') },
-    }, { maxStepS: 2400, background: (f, step) => { if (step === 'dep' || step === 'twr2') releaseHolds(f); if (step === 'dep' || step === 'twr2') { const a = f.sim.find('DLH9PA'); if (a && a.state === 'assumed' && !f.sim.readbackPending('DLH9PA')) { if (calling(f.sim, 'DLH9PA')) chip(f, 'DLH9PA', 'Climb'); else if (chips(f.sim, 'DLH9PA').some((s) => s.label === 'Langen')) chip(f, 'DLH9PA', 'Langen'); } } if (step === 'dep') towerFake(f); } });
+    }, { maxStepS: 2400, background: (f, step) => { if (step === 'dep' || step === 'twr2') releaseHolds(f); if (step === 'twr1' || step === 'dep' || step === 'twr2') { const a = f.sim.find('DLH9PA'); if (a && a.state === 'assumed' && !f.sim.readbackPending('DLH9PA')) { if (calling(f.sim, 'DLH9PA')) chip(f, 'DLH9PA', 'Climb'); else if (chips(f.sim, 'DLH9PA').some((s) => s.label === 'Langen')) chip(f, 'DLH9PA', 'Langen'); } } if (step === 'dep') towerFake(f); } });
     expect(sim.depRunway).toBe('23L');
     expect(sim.departuresHandled).toBe(1);
     expect(sim.events.filter((e) => ['los', 'goaround', 'release_delay', 'exit_unxfr'].includes(e.kind)).map((e) => e.text)).toEqual([]);
@@ -567,7 +585,7 @@ describe('Düsseldorf lessons fly the way the coach says', () => {
       ewg: leadWhenCalling('EWG1AB'),
       cfg: leadWhenCalling('CFG2PL'),
       gap: { when: () => true, do: () => {} },
-    }, { maxStepS: 2400, background: (f, step) => { if (step === 'gap') { towerFake(f); releaseHolds(f); } } });
+    }, { maxStepS: 2400, background: (f, step) => { if (step === 'gap') { towerFake(f); releaseHolds(f); speedChips(f); } } });
     expect(sim.events.filter((e) => ['los', 'wake', 'goaround', 'mva'].includes(e.kind)).map((e) => e.text)).toEqual([]);
     expect(['THY5MK', 'EWG1AB', 'CFG2PL'].every((cs) => sim.landings.some((l) => l.cs === cs) || sim.find(cs)?.state === 'transferred')).toBe(true);
     expect(exam(E('sequence'), () => {}, 3000).v?.pass).toBe(false);
@@ -595,7 +613,7 @@ describe('Düsseldorf lessons fly the way the coach says', () => {
       cfg: leadWhenCalling('CFG7HD'),
       release: { when: (f) => f.sim.releases.some((r) => r.cs === 'EWG2KL' && r.state === 'pending'), do: (f) => say(f, 'EWG2KL', [{ k: 'rel' }]) },
       wave: { when: () => true, do: () => {} },
-    }, { maxStepS: 2400, background: (f, step) => { if (step === 'wave') autoControl(f.sim); } });
+    }, { maxStepS: 2400, background: (f, step) => { if (step === 'wave') { speedChips(f); autoControl(f.sim); } } });
     expect(sim.localHour()).toBeGreaterThan(5.8);
     expect(sim.departuresHandled).toBe(2);
     expect(sim.events.filter((e) => ['los', 'wake', 'release_delay', 'exit_unxfr'].includes(e.kind)).map((e) => e.text + '@' + e.t)).toEqual([]);

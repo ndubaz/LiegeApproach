@@ -186,7 +186,7 @@ const L_CONTACT: Lesson = {
 // ---- 3. The RNAV transitions
 const L_TRANSITIONS: Lesson = {
   id: 'eddl-transitions', icao: 'EDDL', stage: 'procedures', title: 'The RNAV transitions', minutes: 7, comps: ['SPP', 'TRAF'],
-  summary: 'BIKMU23: entry fix, downwind points, 220 kt, 3,000 ft at REGNO. One call takes the aircraft to the localizer.',
+  summary: 'BIKMU23: entry fix, downwind points, 220 kt, 3,000 ft at REGNO. The transition at FL060 first, the descent to 3,000 ft later.',
   scenario: sc('transitions', [A(2, 'EWG1AB', 'A320', 'BIKMU1A', 18)], { runway: '23R' }),
   steps: [
     {
@@ -196,8 +196,8 @@ const L_TRANSITIONS: Lesson = {
       focus: { fix: 'DL429', scale: 7 }, mark: { cs: 'EWG1AB' }, done: (g) => calling(g, 'EWG1AB'),
     },
     {
-      id: 'lead', title: 'Tap the lead chip: BIKMU23 · 3000 · ILS 23R',
-      body: `Transition, 3,000 ft and the ILS in one call. ${WHY('3,000 ft because REGNO is published at 3,000 ft and the ILS captures the glidepath from below; the pilot flies the published descent and speeds, so the whole route is one clearance and one readback.')}`,
+      id: 'lead', title: 'Tap the lead chip: BIKMU23 · FL060 · ILS 23R',
+      body: `Transition, ${K('FL060')} and the ILS in one call. ${WHY('the downwind runs over the departure routes, and departures stop at 5,000 ft, the top of every SID; at FL060 your arrival stays 1,000 ft above them. The pilot flies the published route and speeds, so the route and the approach are one clearance and one readback.')}`,
       cs: 'EWG1AB', el: '.sg.lead',
       done: (g, x) => sentTo(g, x, 'EWG1AB', (it) => it.k === 'trans') && sentTo(g, x, 'EWG1AB', (it) => it.k === 'app'),
     },
@@ -205,6 +205,11 @@ const L_TRANSITIONS: Lesson = {
       id: 'speed', title: 'Do you need to say 220 kt?',
       body: `The chart says 220 kt from DL426. The pilot is at 280 kt. Do you need to assign the speed?`,
       ask: { options: ['Yes: assign 220 kt now', 'No: the published speed is part of the transition'], correct: 1, why: 'A published speed restriction stays with the procedure; the pilot flies it without being told. You assign a speed only when you want something different, and a plain speed clearance cancels the published one from then on.' },
+    },
+    {
+      id: 'down', title: 'On the base: Descend 3000', run: 4, cs: 'EWG1AB', el: sg('Descend 3000'),
+      body: `When the ${K('Descend 3000')} chip turns bright, tap it. ${WHY('about 3 NM for every 1,000 ft: from FL060 it needs some 9 NM to get down to 3,000 ft by REGNO, so the descent comes on the base, once the aircraft has crossed the departure routes. Too late and it reaches the localizer above the glidepath and goes around.')}`,
+      done: (g) => { const a = find(g, 'EWG1AB'); return !a || !!a.app?.locCap || (a.cleared.ft !== undefined && a.cleared.ft <= 3000); },
     },
     {
       id: 'watch', title: 'Watch it fly the downwind', run: 4, cs: 'EWG1AB',
@@ -218,12 +223,12 @@ const L_TRANSITIONS: Lesson = {
     },
     {
       id: 'wrap', title: 'One fix, one transition, one call',
-      body: `Every entry fix has a transition to each runway direction; clear it with the level and the ILS and the aircraft flies itself to the final. The exam adds a second arrival from HALME.`,
+      body: `Every entry fix has a transition to each runway direction: clear it with FL060 and the ILS, then the descent to 3,000 ft on the base, and the aircraft flies itself to the final. The exam adds a second arrival from HALME.`,
     },
   ],
   exam: {
     title: 'BIKMU and HALME', run: 2, limitS: 2100,
-    brief: 'EWG1AB from BIKMU and RYR8CD from HALME, both for 23R. Clear each one its transition, the level and the ILS, and hand both to Tower established. Use the hold if they would meet at the final.',
+    brief: 'EWG1AB from BIKMU and RYR8CD from HALME, both for 23R. Clear each one its transition at FL060 with the ILS, the descent to 3,000 ft on the base, and hand both to Tower established. Use the hold if they would meet at the final.',
     rule: '<b>Pass:</b> both to Tower on the localizer, no loss of separation, no go-around. <b>Stars:</b> no holding.',
     scenario: sc('transitions-exam', [A(2, 'EWG1AB', 'A320', 'BIKMU1A', 20), A(30, 'RYR8CD', 'B738', 'HALME1A', 26)], { seed: 31, runway: '23R' }),
     status: (sim) => `${sim.aircraft.filter((a) => a.state === 'transferred' || a.landed).length + sim.landings.length} of 2 with Tower · ${sim.aircraft.filter((a) => a.mode === 'HOLD').length} holding`,
@@ -426,8 +431,9 @@ const L_PARALLEL: Lesson = {
       until: (g) => g.sim.releases.some((r) => r.cs === 'DLH9PA' && r.state === 'pending'),
     },
     {
-      id: 'twr1', title: 'EWG1AB established: 160 to 4 · Tower', run: 2, cs: 'EWG1AB', el: sg('160'),
-      body: `Hand it to Tower established; Tower works both runways.`,
+      id: 'twr1', title: 'EWG1AB established: 160 to 4 · Tower', run: 2, mark: { cs: 'EWG1AB' }, el: sg('160'),
+      onEnter: (g) => { if (find(g, 'EWG1AB')) g.select('EWG1AB', true); },
+      body: `Hand it to Tower established; Tower works both runways. If DLH9PA calls before that, answer it first: ${K('Climb FL100')}, then ${K('Langen')} before it leaves your airspace.`,
       done: (g) => gone(g.sim, 'EWG1AB') || landed(g.sim, 'EWG1AB'), until: (g) => dueTower(g.sim, 'EWG1AB'),
     },
     {
@@ -479,7 +485,7 @@ const L_PARALLEL: Lesson = {
 const L_RUNWAY05: Lesson = {
   id: 'eddl-runway05', icao: 'EDDL', stage: 'procedures', title: 'Runway 05', minutes: 8, comps: ['SPP', 'CORD'],
   summary: 'An easterly: the supervisor turns the airport round. The 05 transitions end at DIKMI, the downwind holds are DL524 and DL503, and arrivals already cleared are re-cleared.',
-  scenario: sc('runway05', [A(2, 'EWG1AB', 'A320', 'BIKMU1A', 34), A(150, 'RYR8CD', 'B738', 'HALME1A', 26)], { runway: '23R', events: [{ t: 30, kind: 'runway', rwy: '05L', notice: 150 }] }),
+  scenario: sc('runway05', [A(2, 'EWG1AB', 'A320', 'BIKMU1A', 34), A(420, 'RYR8CD', 'B738', 'HALME1A', 26)], { runway: '23R', events: [{ t: 30, kind: 'runway', rwy: '05L', notice: 150 }] }),
   steps: [
     {
       id: 'notice', title: 'SUP: runway change to 05L', run: 2,

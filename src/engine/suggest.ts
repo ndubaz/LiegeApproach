@@ -345,14 +345,49 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
    * with another aircraft's transition at a fix they would reach within 5 minutes of each other. Crossing paths at a
    * merge are kept apart vertically until both are in trail; the descent for the final comes later.
    */
-  const transLvlFor = (tr: Procedure | undefined, eta: number): Level => {
+  const transLvlFor = (tr: Procedure | undefined, eta: number, _leader?: Aircraft): Level => {
     if (!tr) return transLvl0;
     const mine = new Set(tr.legs.slice(0, -1).map((l) => l.fix));
     const nom = (l: Level) => (l.fl !== undefined ? l.fl * 100 : l.ft!);
     let want = nom(transLvl0);
-    for (const o of sequenceMembers(sim, ac)) {
-      if (!o.app || o.app.locCap || o.mode !== 'NAV' || o.proc === tr.name || !o.route.some((l) => mine.has(l.fix))) continue;
-      if (Math.abs(etaS(o, trackNm(sim, o)) - eta) < 420) want = Math.max(want, Math.min(nom(o.cleared), overlayFt) + 1000);
+    // track miles along a route to a fix (from the aircraft's present position)
+    const nmTo = (p: { x: number; y: number }, legs: { fix: string; p: { x: number; y: number } }[], fix: string) => {
+      let d = 0, q = p;
+      for (const l of legs) { d += dist(q, l.p); q = l.p; if (l.fix === fix) return d; }
+      return undefined;
+    };
+    const myLegs = tr.legs.map((l) => ({ fix: l.fix, p: l.p ?? sim.fixP(l.fix) }));
+    // a transition cleared in the last minute whose readback has not come yet counts too: the pilot will fly it
+    const pendingTrans = (o: Aircraft) => {
+      for (let i = sim.cmdLog.length - 1; i >= 0 && sim.t - sim.cmdLog[i].t < 60; i--) {
+        const c = sim.cmdLog[i];
+        if (c.cl.cs !== o.cs) continue;
+        const it = c.cl.items.find((x) => x.k === 'trans') as { k: 'trans'; name: string } | undefined;
+        const lv = c.cl.items.find((x) => x.k === 'lvl') as { k: 'lvl'; lvl: Level } | undefined;
+        const p = it && sim.pack.transitions.find((x) => x.name === it.name);
+        if (p) return { name: p.name, route: p.legs.map((l) => ({ fix: l.fix, p: l.p ?? sim.fixP(l.fix) })), cleared: lv?.lvl ?? o.cleared };
+        return undefined;
+      }
+      return undefined;
+    };
+    for (const o of sim.aircraft) {
+      if (o === ac || o.remove || o.kind !== 'arr' || o.app?.locCap) continue;
+      const pend = !o.app ? pendingTrans(o) : undefined;
+      const onTr = !!o.app && o.mode === 'NAV' && sequenceMembers(sim, ac).includes(o);
+      if (!onTr && !pend) continue;
+      const route = pend?.route ?? o.route;
+      if ((pend?.name ?? o.proc) === tr.name || !route.some((l) => mine.has(l.fix))) continue;
+      const oCleared = pend?.cleared ?? o.cleared;
+      // compare the times over the first fix both routes share (the merge point), not over the threshold:
+      // two transitions of different lengths can meet at the merge with very different touchdown times
+      const merge = route.find((l) => mine.has(l.fix))!.fix;
+      const dO = nmTo(o.p, route, merge), dMe = nmTo(ac.p, myLegs, merge);
+      // seconds this aircraft reaches the merge after the other (negative: before it)
+      const lag = dO !== undefined && dMe !== undefined ? ((dMe / Math.max(150, ac.gs || ac.ias)) - (dO / Math.max(150, o.gs || o.ias))) * 3600 : undefined;
+      // within 5 minutes of each other at the merge: 1,000 ft apart until they are in trail (speed control changes who
+      // leads, so the rule does not depend on it); the descents for the final then come one at a time
+      const near = lag !== undefined ? Math.abs(lag) < 300 : Math.abs(etaS(o, trackNm(sim, o)) - eta) < 420;
+      if (near) want = Math.max(want, Math.min(nom(oCleared), overlayFt) + 1000);
     }
     return want > nom(ac.cleared) ? ac.cleared : sim.levelFor(want);
   };
@@ -388,7 +423,7 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
     const fix = ac.hold?.fix ?? SF;
     const tr = bestTransition(sim, ac);
     const slot = slotFor(sim, ac, tr);
-    transLvl = transLvlFor(tr, slot.etaS);
+    transLvl = transLvlFor(tr, slot.etaS, slot.leader);
     // lowest first in its own stack, and the stack at the transition fix before anyone holding further out
     const lower = sim.aircraft.filter((o) => o !== ac && !o.remove && o.kind === 'arr' && !o.app && (isHolder(sim, o, fix) ? lvlFt(sim, o) < clearedFt - 50 : fix !== SF && isHolder(sim, o, SF)));
     const blk0 = pathBlocker(sim, ac, sim.ftOf(transLvl), new Set(sequenceMembers(sim)));
@@ -425,7 +460,10 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
       const need = ((ac.alt - finalFt) / 1000) * 3 + 3;
       const l = sim.levelFor(finalFt);
       if (toFaf <= need + 4) {
-        const hit = predictedConflict(sim, ac, (c) => { c.tgtAlt = finalFt; }, 300)?.with;
+        const hit0 = predictedConflict(sim, ac, (c) => { c.tgtAlt = finalFt; }, 300)?.with;
+        // proximity that exists whether or not it descends (in trail on the same downwind) is not a reason to wait:
+        // only a conflict the descent itself would create blocks it
+        const hit = hit0 && hit0 !== predictedConflict(sim, ac, undefined, 300)?.with ? hit0 : undefined;
         add({ label: `Descend ${lvlLabel(l)}`, items: [{ k: 'lvl', lvl: l }], why: hit ? `Wait: ${hit.cs} is in the way down.` : `${toFaf.toFixed(0)} NM to the final approach fix: about ${need.toFixed(0)} NM needed to get down to ${lvlWords(l)}.`, primary: toFaf <= need + 2 && !hit });
       }
     }
@@ -468,7 +506,7 @@ function arrival(sim: Sim, ac: Aircraft, add: (s: Suggestion) => void, c: ArrCtx
     const holders = sim.aircraft.filter((o) => o !== ac && !o.remove && o.kind === 'arr' && !o.app && (o.mode === 'HOLD' || !!holdAtOf(sim, o))
       && (lvlFt(sim, o) < clearedFt - 50 || (isHolder(sim, o, SF) && lvlFt(sim, o) < transFt + 950)));
     const slot = slotFor(sim, ac, tr);
-    transLvl = transLvlFor(tr, slot.etaS);
+    transLvl = transLvlFor(tr, slot.etaS, slot.leader);
     const blk0 = pathBlocker(sim, ac, sim.ftOf(transLvl), new Set(sequenceMembers(sim)));
     const blk = blk0 ?? (slot.ok && !holders.length && tr ? predictedConflict(sim, ac, asCleared(sim, tr.name, sim.ftOf(transLvl), rw.id), TRANSITION_HORIZON_S, TRANSITION_VERT_FT)?.with : undefined);
     const ok = slot.ok && !holders.length && !blk && !late(slot.etaS);
