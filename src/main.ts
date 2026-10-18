@@ -83,7 +83,8 @@ const handlers: MenuHandlers & {
   startLesson: (id: string | number, opts?: { toExam?: boolean }) => lesson(id, opts),
   liveMetar,
   startChallenge: (sc) => brief(sc, 'challenges'),
-  startFree: (o: FreePlayOpts) => brief(freePlay(pack, o), 'free'),
+  // today's date, so summer time moves the local curfew and the day's shape
+  startFree: (o: FreePlayOpts) => brief(freePlay(pack, { date: new Date().toISOString().slice(0, 10), ...o }), 'free'),
   startDaily: () => brief(dailyShift(pack, new Date()), 'home'),
   startCheckride: (def) => brief(def.scenario, 'career'),
   startDrill: (id) => brief(drillScenario(pack, id, nextDrillVariant(id)), 'drills'),

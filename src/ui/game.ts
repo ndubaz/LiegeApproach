@@ -5,7 +5,6 @@ import { itemChip, levelText, mergeItem, sortItems, unitName, type Clearance, ty
 import { parseShorthand, parseVoiceAlternatives } from '../engine/parser';
 import { landingOrder } from '../engine/sequence';
 import { createPtt, type PttController } from './ptt';
-import { wakeMinNm } from '../engine/perf';
 import { windComponents } from '../engine/weather';
 import { assess, liveStats, seqChain, type Result } from '../engine/assess';
 import { suggest, levelList, hdgItem, roundHdg, releaseAdvice, type Suggestion } from '../engine/suggest';
@@ -1113,7 +1112,7 @@ export class Game {
       const adv = releaseAdvice(sim, r.cs);
       return `<div class="ic-card">${head}<div class="ic-s">Request release. <span class="${adv.ok ? 'ok' : 'warn'}" data-adv="${esc(r.cs)}">${esc(adv.why)}</span></div><div class="ic-b"><button data-rel="${esc(r.cs)}" data-v="rel" class="ok">Release</button>${after ? `<button data-rel="${esc(r.cs)}" data-v="after:${esc(after)}">After ${esc(after)}</button>` : ''}<button data-rel="${esc(r.cs)}" data-v="hold">Hold 3 min</button></div></div>`;
     };
-    const milCard = (a: Aircraft) => `<div class="ic-card mil"><div class="ic-h"><span class="ic-from">MIL ⇄</span><b class="mono">${esc(a.cs)}${a.formation > 1 ? ` ×${a.formation}` : ''}</b><span class="mono dim">${esc(a.type)}</span></div><div class="ic-s">${esc(a.request!.text)}</div><div class="ic-b"><button data-rel="${esc(a.cs)}" data-v="milok" class="ok">Approve</button><button data-rel="${esc(a.cs)}" data-v="milno">Unable</button></div></div>`;
+    const milCard = (a: Aircraft) => `<div class="ic-card mil"><div class="ic-h"><span class="ic-from">${esc(a.request!.unit ? sim.units[a.request!.unit]?.id ?? sim.mil.id : sim.mil.id)} ⇄</span><b class="mono">${esc(a.cs)}${a.formation > 1 ? ` ×${a.formation}` : ''}</b><span class="mono dim">${esc(a.type)}</span></div><div class="ic-s">${esc(a.request!.text)}</div><div class="ic-b"><button data-rel="${esc(a.cs)}" data-v="milok" class="ok">Approve</button><button data-rel="${esc(a.cs)}" data-v="milno">Unable</button></div></div>`;
     this.icomHtml = rel.map(card).join('') + mil.map(milCard).join('');
     this.els.icom.innerHTML = this.icomHtml;
   }
@@ -1301,7 +1300,7 @@ export class Game {
       let eta = x.etaS / 60;
       let adv = 0;
       if (prev) {
-        const need = (Math.max(wakeMinNm(prev.perf.recat, x.ac.perf.recat, sim.finalMinNm), sim.lvp ? 5 : sim.finalMinNm) / 150) * 60 + 0.15;
+        const need = (Math.max(sim.wakeMin(prev, x.ac, sim.finalMinNm), sim.lvp ? 5 : sim.finalMinNm) / 150) * 60 + 0.15;
         adv = Math.max(0, prevEta + need - eta);
         eta = Math.max(eta, prevEta + need);
       }
@@ -1413,9 +1412,9 @@ export class Game {
     const reqs = sim.coordReqs.filter((r) => r.state === 'pending');
     const lastBy = (from: string) => { for (let i = sim.log.length - 1; i >= 0 && i > sim.log.length - 40; i--) { const t = sim.log[i]; if (t.channel === 'icom' && t.from === from) return sim.t - t.t0; } return 1e9; };
     const lit = {
-      [sim.twr.id]: sim.releases.some((r) => r.state === 'pending') || lastBy(sim.twr.id) < 20,
+      [sim.twr.id]: sim.releases.some((r) => r.state === 'pending') || sim.aircraft.some((a) => a.request?.kind === 'milxing' && a.request.unit === sim.twr.id && a.state === 'inbound') || lastBy(sim.twr.id) < 20,
       [sim.acc.id]: reqs.length > 0 || lastBy(sim.acc.id) < 20,
-      [sim.mil.id]: sim.aircraft.some((a) => a.request?.kind === 'milxing' && a.state === 'inbound') || sim.tsaPending.size > 0 || lastBy(sim.mil.id) < 20,
+      [sim.mil.id]: sim.aircraft.some((a) => a.request?.kind === 'milxing' && (a.request.unit ?? sim.mil.id) === sim.mil.id && a.state === 'inbound') || sim.tsaPending.size > 0 || lastBy(sim.mil.id) < 20,
       [sim.sup.id]: lastBy(sim.sup.id) < 30,
     } as Record<string, boolean>;
     const sig = JSON.stringify([this.icomSig, reqs.map((r) => r.id), lit]);

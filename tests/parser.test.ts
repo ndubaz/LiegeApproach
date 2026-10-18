@@ -115,3 +115,12 @@ describe('a Düsseldorf context (2.0): units and the hold fix come from the pack
     expect(x.shorthand).toBe('ETD398 ACC');
   });
 });
+
+describe('expect approach shorthand', () => {
+  it('EXP ILS 23R, EXP 23R and EXP alone', () => {
+    expect(parseShorthand('EXP ILS 23R', ctx).items).toEqual([{ k: 'expect', app: 'ILS', rwy: '23R' }]);
+    expect(parseShorthand('EXP 23R', ctx).items).toEqual([{ k: 'expect', app: 'ILS', rwy: '23R' }]);
+    expect(parseShorthand('EXP ILS23R D60', ctx).items).toEqual([{ k: 'expect', app: 'ILS', rwy: '23R' }, { k: 'lvl', lvl: { fl: 60 } }]);
+    expect(parseShorthand('EXP', ctx).items).toEqual([{ k: 'expect', app: 'ILS', rwy: '22L' }]);
+  });
+});

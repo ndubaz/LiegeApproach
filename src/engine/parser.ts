@@ -179,6 +179,15 @@ export function parseShorthand(input: string, ctx: ParseCtx): ParseResult {
       const f = t.slice(1);
       const fx = resolveFix(f, ctx.fixes);
       if (fx) items.push({ k: 'dct', fix: fx }); else errors.push(`Unknown fix ${f}`);
+    } else if (t === 'EXP' || t === 'EXPECT') {
+      // "expect ILS approach runway 23R": EXP ILS 23R, EXP ILS23R, EXP 23R (ILS by default)
+      let j = i + 1, app: 'ILS' | 'RNP' | 'VIS' = 'ILS', rwy = ctx.runway;
+      const a = toks[j]?.match(/^(ILS|RNP|VIS)(\d{2}[LRC]?)?$/);
+      if (a) { app = a[1] as typeof app; if (a[2]) rwy = a[2]; j++; }
+      const r = toks[j]?.match(/^(\d{2}[LRC]?)$/);
+      if (r) { rwy = r[1]; j++; }
+      items.push({ k: 'expect', app, rwy } as Item);
+      i = j - 1;
     } else if ((m = t.match(/^(ILS|RNP|VIS)(\d{2}[LRC]?)?$/))) {
       items.push({ k: 'app', app: m[1] as 'ILS' | 'RNP' | 'VIS', rwy: m[2] ?? ctx.runway });
     } else if (t === 'HOLD' || t === 'HLD') {
@@ -234,7 +243,7 @@ export function parseShorthand(input: string, ctx: ParseCtx): ParseResult {
 }
 
 function isCommand(t: string, ctx: ParseCtx) {
-  return /^(H|HDG|L|R|D|C|A|F|FL|S)\d/.test(t) || ['SMIN', 'SRES', 'DCT', 'ILS', 'RNP', 'VIS', 'HOLD', 'RON', 'Y', 'N', 'BRK', 'ATIS', 'REL', 'RH', 'R', 'ROG', 'ROGER', 'SB', 'STBY', 'STANDBY', 'SA', 'CORR', 'STAR'].includes(t) || !!unitOfToken(t, unitsOf(ctx)) || ctx.transitions.has(t) || !!ctx.stars?.has(t);
+  return /^(H|HDG|L|R|D|C|A|F|FL|S)\d/.test(t) || ['SMIN', 'SRES', 'DCT', 'EXP', 'EXPECT', 'ILS', 'RNP', 'VIS', 'HOLD', 'RON', 'Y', 'N', 'BRK', 'ATIS', 'REL', 'RH', 'R', 'ROG', 'ROGER', 'SB', 'STBY', 'STANDBY', 'SA', 'CORR', 'STAR'].includes(t) || !!unitOfToken(t, unitsOf(ctx)) || ctx.transitions.has(t) || !!ctx.stars?.has(t);
 }
 
 

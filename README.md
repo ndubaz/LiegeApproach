@@ -110,7 +110,7 @@ Write a new `PackSpec` (copy `src/pack/eblg.ts`) and register it in `src/pack/in
 | Releases | the Tower card: Release, After, Hold | `CHG7302 REL`, `REL/QTR586`, `RH3` |
 | Typed | ⌨ button | just type: `DHK7 L250 D40 S210 ILS`, then Enter |
 
-Shorthand: `D40` descend 4,000 ft, `C80` climb FL080, `S160/4` 160 kt until 4 NM, `DCT LIBVA` or `>lib`, `ALHUV1A`, `HOLD` (the airport's stack fix), `TWR`, `BRU` or `ACC` or the unit's name (`LANGEN`), `MIL`, `BRK` cancel approach, `ATIS`, `Y`/`N` for requests, `Q` queues a clearance, Backspace undoes a send within two seconds. Digits alone pick the aircraft (`81` for QTR8125). A clearance with a warning needs a second Enter or a second tap on TRANSMIT.
+Shorthand: `D40` descend 4,000 ft, `C80` climb FL080, `S160/4` 160 kt until 4 NM, `DCT LIBVA` or `>lib`, `ALHUV1A`, `EXP ILS 23R` (expect the approach), `HOLD` (the airport's stack fix), `TWR`, `BRU` or `ACC` or the unit's name (`LANGEN`), `MIL`, `BRK` cancel approach, `ATIS`, `Y`/`N` for requests, `Q` queues a clearance, Backspace undoes a send within two seconds. Digits alone pick the aircraft (`81` for QTR8125). A clearance with a warning needs a second Enter or a second tap on TRANSMIT.
 
 ## Version notes
 

@@ -6,7 +6,7 @@ import { dailyShift, templatesOf, utcPlus, type FreePlayOpts } from '../engine/t
 import { COMPS, COMP_NAMES, COMP_PLAIN, GRADE_NAMES, type Grade, type Result } from '../engine/assess';
 import { Sim } from '../engine/sim';
 import { parseMetar, presetMetar, selectConfig, windComponents } from '../engine/weather';
-import { PERF, wakeMinNm, type Recat } from '../engine/perf';
+import { ICAO_NM, PERF, wakeMinNm, type Recat } from '../engine/perf';
 import {
   LEVEL_FILTERS, RANKS, applySave, bestGrade, careerNow, currentSummary, dailyStatus, exportSave, levelFilterId, loadBest, loadCareer, loadDrills, loadLogbook, loadRecords, loadSettings,
   passedChallenges, saveFileName, saveSettings, storageAvailable, validateSave, type DrillRecord, type SaveFile, type Settings,
@@ -888,7 +888,14 @@ export function renderHelp(root: HTMLElement, pack?: Pack) {
   ];
   const recats: Recat[] = ['A', 'B', 'C', 'D', 'E', 'F'];
   const recatEx: Record<Recat, string> = { A: 'An-124', B: 'B747, B777, A330', C: 'MD-11, B767, A300', D: 'B757, C-130', E: 'A320, B737', F: 'Light' };
-  const wakeTable = `<div class="hp-scroll"><table class="hp-wake"><thead><tr><th>Leader ↓ / follower →</th>${recats.map((r) => `<th>${r}</th>`).join('')}</tr></thead><tbody>
+  // the airport's wake scheme: RECAT-EU at Liège, the ICAO categories at Düsseldorf
+  const icaoWake = pack?.spec.wakeScheme === 'ICAO';
+  const icaoCats: [string, string, string][] = [['J', 'Super', 'A380'], ['H', 'Heavy', 'B777, A330, B747'], ['M', 'Medium', 'A320, B737, E190'], ['L', 'Light', 'Cessna']];
+  const wakeTable = icaoWake
+    ? `<div class="hp-scroll"><table class="hp-wake"><thead><tr><th>Leader ↓ / follower →</th>${icaoCats.map(([, n]) => `<th>${n}</th>`).join('')}</tr></thead><tbody>
+    ${icaoCats.map(([l, n, ex]) => `<tr><th>${n} <small>${ex}</small></th>${icaoCats.map(([f]) => { const v = Math.max(ICAO_NM[l + f] ?? 0, 3); return `<td class="${v > 3 ? 'w' : ''}">${v}</td>`; }).join('')}</tr>`).join('')}
+    </tbody></table></div>`
+    : `<div class="hp-scroll"><table class="hp-wake"><thead><tr><th>Leader ↓ / follower →</th>${recats.map((r) => `<th>${r}</th>`).join('')}</tr></thead><tbody>
     ${recats.map((l) => `<tr><th>${l} <small>${recatEx[l]}</small></th>${recats.map((f) => { const v = wakeMinNm(l, f); return `<td class="${v > 3 ? 'w' : ''}">${v}</td>`; }).join('')}</tr>`).join('')}
     </tbody></table></div>`;
   const colours: [string, string, string][] = [
@@ -937,7 +944,7 @@ export function renderHelp(root: HTMLElement, pack?: Pack) {
           <div>LOC${esc(rwy)} D8.4</div>
         </div>
         <ol class="hp-callouts">
-          <li><b>Line 1</b> callsign, RECAT-EU wake category for heavies, then any alert: <span class="mono red">CLAM</span>, <span class="mono red">MSAW</span>, <span class="mono red">7700</span>, <span class="mono">REQ</span> for a pilot request.</li>
+          <li><b>Line 1</b> callsign, ${icaoWake ? 'ICAO' : 'RECAT-EU'} wake category for heavies, then any alert: <span class="mono red">CLAM</span>, <span class="mono red">MSAW</span>, <span class="mono red">7700</span>, <span class="mono">REQ</span> for a pilot request.</li>
           <li><b>Line 2</b> current level with climb or descent arrow, then the level you cleared (cyan). <span class="mono amb">≠050</span> means the pilot set something else (Mode S selected level). Tap it for the level ladder.</li>
           <li><b>Line 3</b> ground speed in tens of knots, then your assigned speed and heading. Tap for speeds.</li>
           <li><b>Line 4</b> what it is flying: next fix, hold, approach cleared, or LOC with distance to the threshold once established. Tap for approaches.</li>
@@ -951,7 +958,7 @@ export function renderHelp(root: HTMLElement, pack?: Pack) {
     </section>
 
     <section class="hp-sec" id="hp-wake">
-      <h3>RECAT-EU wake minima on final <small>NM; never less than 3</small></h3>
+      <h3>${icaoWake ? 'ICAO' : 'RECAT-EU'} wake minima on final <small>NM; never less than 3</small></h3>
       ${wakeTable}
       <p class="lede">${esc(airportParagraph(pack))}</p>
     </section>

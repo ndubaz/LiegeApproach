@@ -4,7 +4,6 @@ import type { Sim } from '../engine/sim';
 import type { Aircraft } from '../engine/types';
 import type { Item } from '../engine/clearance';
 import { levelShort } from '../engine/clearance';
-import { wakeMinNm } from '../engine/perf';
 import { predict, type PredPt } from '../engine/predict';
 import { Rng } from '../engine/rng';
 import type { Level } from '../pack/load';
@@ -1945,7 +1944,7 @@ export class Scope {
 
   // ================= final approach sequence =================
   private finalMin(lead: Aircraft, fol: Aircraft, leadD: number) {
-    return Math.max(wakeMinNm(lead.perf.recat, fol.perf.recat, 2.5), leadD < 10 ? 2.5 : 3, this.sim.lvp ? 4 : 0);
+    return Math.max(this.sim.wakeMin(lead, fol, 2.5), leadD < 10 ? 2.5 : 3, this.sim.lvp ? 4 : 0);
   }
   private gapColour(gap: number, min: number) {
     const S = this.skin;
