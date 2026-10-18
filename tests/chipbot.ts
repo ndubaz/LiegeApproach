@@ -20,7 +20,8 @@ export function chipBot(sim: Sim, advice = true) {
   for (const a of order) {
     if (a.remove || sim.readbackPending(a.cs)) continue;
     const prev = S.per.get(a.cs);
-    if (prev && sim.t - prev.t < 20) continue;
+    // a wrong readback is corrected at once (the readback card), whatever was said to it just before
+    if (prev && sim.t - prev.t < 20 && !a.wrong) continue;
     const s = suggest(sim, a).find((x) => x.primary);
     if (!s) continue;
     if (prev && prev.label === s.label && sim.t - prev.t < 60 && a.awaitingSince === undefined) continue;

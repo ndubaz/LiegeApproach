@@ -3,7 +3,10 @@ import type { Aircraft } from './types';
 import { dist } from '../geo';
 import { wakeMinNm } from './perf';
 import { distToThr } from './pilot';
-import { finalFixNmOf, legsNm, LONG_TRANSITION_NM, mvaAlong, overlayFtOf, pathBlocker } from './suggest';
+
+import { trackNm } from './sequence';
+import { finalFixNmOf, legsNm, LONG_TRANSITION_NM, mvaAlong, overlayFtOf, pathBlocker, releaseAdvice, suggest } from './suggest';
+import type { Item } from './clearance';
 
 interface AutoState {
   queue: string[];     // arrivals waiting for an approach clearance, in landing order
@@ -15,6 +18,8 @@ const stateOf = (sim: Sim): AutoState => ((sim as any)._autoSeq ??= { queue: [],
 
 /** Track miles to touchdown along the cleared path (via the stack fix and the published transition if not yet on it). */
 export function remainNm(sim: Sim, ac: Aircraft): number {
+  // holds on the transitions (Düsseldorf): the sequence tool's track miles
+  if (sim.stacksOnTransitions) return trackNm(sim, ac);
   const r = sim.rwy;
   if (ac.app?.locCap) return distToThr(ac.p, r);
   const sf = sim.stackFixOf(ac);
@@ -32,8 +37,49 @@ export function remainNm(sim: Sim, ac: Aircraft): number {
   return d + dist(p, r.thr) + 12;
 }
 
+/**
+ * 2.0 review: the controller for a unit that clears the approach on the downwind (Düsseldorf). It works the way the
+ * suggestion chips teach: transition, level and "expect ILS" on first contact, the shortcut off the downwind for the
+ * first in the sequence, the approach clearance with the descent for the others, the downwind holds when the sequence is
+ * full; departures get the agreed level or a roger, and the handoff by their exit. Wrong readbacks are corrected
+ * ("negative"), requests answered. One transmission at a time.
+ */
+function autoDownwind(sim: Sim) {
+  const S = ((sim as any)._autoDw ??= { last: -99, per: new Map<string, { t: number; label: string }>(), lastRel: -999 });
+  // Tower's release requests (after a go-around, in fog, the Köln agreement): the release advice
+  const pending = sim.releases.filter((r) => r.state === 'pending');
+  if (pending.length && sim.t - S.lastRel >= 30 && sim.t - pending[0].t >= 4) {
+    const adv = releaseAdvice(sim, pending[0].cs);
+    if (adv.ok || sim.t - pending[0].t > 100) { sim.issue({ cs: pending[0].cs, items: adv.ok ? adv.items : [{ k: 'relhold', mins: 2 }] }); S.lastRel = sim.t; }
+  }
+  for (const r of sim.coordReqs) if (r.state === 'pending' && sim.t - r.t >= 8) sim.issue({ cs: r.cs, items: [{ k: 'deny' }] });
+  for (const a of sim.aircraft) if (a.request?.kind === 'milxing' && a.state === 'inbound' && sim.t - a.request.t >= 5) sim.issue({ cs: a.cs, items: [{ k: 'appr' }] });
+  if (sim.freqBusy() || sim.t - S.last < 4) return;
+  const order = [...sim.callers(), ...sim.aircraft.filter((a) => a.awaitingSince === undefined)];
+  for (const a of order) {
+    if (a.remove || a.state !== 'assumed' || a.radioFail || sim.readbackPending(a.cs)) continue;
+    const calling = a.awaitingSince !== undefined && sim.t >= a.awaitingSince;
+    const prev = S.per.get(a.cs);
+    if (prev && sim.t - prev.t < 15 && !calling) continue;
+    let items: Item[] | undefined, label = '';
+    if (a.kind !== 'arr' && a.kind !== 'dep' && a.request) { items = [{ k: 'appr' }]; label = 'appr'; }
+    else {
+      const s = suggest(sim, a).find((x) => x.primary);
+      if (s) { items = s.items; label = s.label; }
+      else if (calling) { items = [{ k: 'roger' }]; label = 'roger'; }
+    }
+    if (!items) continue;
+    if (prev && prev.label === label && sim.t - prev.t < 60 && !calling) continue;
+    sim.issue({ cs: a.cs, items });
+    S.per.set(a.cs, { t: sim.t, label });
+    S.last = sim.t;
+    return;
+  }
+}
+
 /** Autopilot controller (start-page demo and tests) that re-issues until the pilot actually complies (handles "say again"). */
 export function autoControl(sim: Sim) {
+  if (sim.approachOnDownwind) { autoDownwind(sim); return; }
   const S = stateOf(sim);
   const live = (cs: string) => sim.find(cs);
   S.queue = S.queue.filter((cs) => { const a = live(cs); return a && !a.app && a.state === 'assumed' && !S.released.includes(cs); });

@@ -209,9 +209,9 @@ export const CHECKRIDES_EDDL: CheckrideDef[] = [
     AD(5, 'EWG2EK', 'A320', 'BIKMU1A', { spawnDist: 30 }), AD(220, 'CFG1414', 'A321', 'DOMUX1A', { goAroundAt: 1.2 }), AD(480, 'DLH7PK', 'A20N', 'PISAP1A'), AD(760, 'TUI3EA', 'B738', 'BIKMU1A'),
     D(360, 'EWG8766', 'A320', 'MODRU2T'), D(900, 'DLH1VL', 'A319', 'MEVEL4T'),
   ], [{ t: 1300, kind: 'goaround', cs: 'CFG1414' }, { t: 420, kind: 'qnh', dq: -3 }], 0.02, { icao: 'EDDL', runway: '23L', briefing: DUS_BRIEF }),
-  ride('dus-validated', 2, 'Checkride: OJT to Validated', 'A busy hour on runway 23L: six arrivals on both downwinds, three departures and a German Air Force transport wanting to climb through the BIKMU stack. The examiner wants to see you run it alone.', 'pass', 702, '08:20', DUS_GOOD, [
+  ride('dus-validated', 2, 'Checkride: OJT to Validated', 'A busy hour on runway 23L: six arrivals on both downwinds, three departures and a German Air Force transport wanting to climb through the arrivals from BIKMU. The examiner wants to see you run it alone.', 'pass', 702, '08:20', DUS_GOOD, [
     AD(5, 'EWG1KL', 'A320', 'BIKMU1A', { spawnDist: 32 }), AD(180, 'CFG1012', 'A333', 'PISAP1A'), AD(360, 'DLH2WT', 'A21N', 'DOMUX1A'), AD(540, 'SXS1DL', 'B738', 'BIKMU1A'),
-    AD(720, 'KLM1853', 'E190', 'HALME1A'), AD(900, 'PGT1083', 'A321', 'DOMUX1A'),
+    AD(720, 'KLC1853', 'E190', 'HALME1A'), AD(900, 'PGT1083', 'A321', 'DOMUX1A'),
     D(250, 'EWG3DT', 'A320', 'COL6T'), D(700, 'CFG3192', 'B753', 'SONEB8T'), D(1150, 'DLH4YC', 'A20N', 'KUMIK7T'),
     GAF(300, 'GAF651'),
   ], [{ t: 300, kind: 'milxing', cs: 'GAF651' }, { t: 660, kind: 'birds', min: 4 }], 0.02, { icao: 'EDDL', runway: '23L', briefing: DUS_BRIEF }),
@@ -223,7 +223,7 @@ export const CHECKRIDES_EDDL: CheckrideDef[] = [
   ride('dus-supervisor', 4, 'Checkride: Senior to Supervisor', 'A gusty evening wave with everything at once: the northern runway closes mid-shift, a radio failure, birds on the runway and a go-around. The examiner is looking for a controller who stays ahead of the room.', 'good', 704, '16:05', DUS_GUSTY, [
     AD(5, 'EWG1AB', 'A320', 'BIKMU1A', { spawnDist: 30 }), AD(140, 'CFG1310', 'A333', 'DOMUX1A'), AD(280, 'DLH4KA', 'A20N', 'PISAP1A'), AD(420, 'TUI7RE', 'B738', 'BIKMU1A', { emergency: { after: 200, type: 'radio' } }),
     AD(560, 'EWG1BA', 'A319', 'HALME1A'), AD(700, 'SXS4KL', 'B738', 'DOMUX1A', { goAroundAt: 1.3 }), AD(840, 'UAE57', 'B77W', 'BIKMU1A'), AD(980, 'EJU73QX', 'A320', 'PISAP1A'),
-    AD(1120, 'EWG5GH', 'A21N', 'DOMUX1A'), AD(1260, 'KLM1859', 'E190', 'HALME1A'),
+    AD(1120, 'EWG5GH', 'A21N', 'DOMUX1A'), AD(1260, 'KLC1859', 'E190', 'HALME1A'),
     D(300, 'EWG2DF', 'A320', 'MODRU2T'), D(760, 'DLH6WA', 'A321', 'SONEB8T'), D(1200, 'CFG1311', 'A333', 'KUMIK7T'), D(1500, 'TUI7RF', 'B738', 'COL6T'),
     GAF(520, 'GAF673'),
   ], [{ t: 520, kind: 'milxing', cs: 'GAF673' }, { t: 650, kind: 'radio', cs: 'TUI7RE' }, { t: 840, kind: 'birds', min: 4 }, { t: 1100, kind: 'goaround', cs: 'SXS4KL' }, { t: 1300, kind: 'qnh', dq: -2 }], 0.05,

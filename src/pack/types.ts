@@ -69,6 +69,8 @@ export interface HoldSpec {
   inboundMag?: number;
   /** Outbound leg, minutes. */
   legMin?: number;
+  /** 2.0 review: false for a hold the AIP does not publish (an en-route hold the centre uses): ATC describes it. Default true. */
+  published?: boolean;
 }
 
 export type PolySpec = Array<{ lat: string; lon: string } | { arcCentre: { lat: string; lon: string }; radius: number; to: { lat: string; lon: string }; dir: 'cw' | 'ccw' }>;
@@ -126,6 +128,11 @@ export interface PackSpec {
      * 10 NM, where the unit is approved for it (Düsseldorf AD 2.22: 2.5 NM diagonal). Wake minima always apply on top.
      */
     parallelApproachSepNm?: number;
+    /**
+     * 2.0 review: the parallel runways are closer than 760 m (Düsseldorf: 500 m). Wake minima apply between arrivals to
+     * either runway of a direction, departures from one count for the other, and in low visibility the two are one runway.
+     */
+    closeParallels?: boolean;
   };
   fixes: Record<string, FixSpec>;
   runways: RunwaySpec[];
@@ -177,8 +184,13 @@ export interface PackSpec {
   places?: PlaceSpec[];
   /** Other aerodromes in the area, drawn as small symbols with their ICAO code. */
   airports?: AirportSpec[];
-  /** Night flight restriction as published (AD 2.20), local clock times "HH:MM"; the sim starves demand between them. */
-  curfew?: { fromLocal: string; toLocal: string; note?: string };
+  /**
+   * Night flight restriction as published (AD 2.20), local clock times "HH:MM" in winter; the sim starves demand between
+   * them. `fromLocal`/`toLocal` close the field to take-offs; the optional `arr` times close it to scheduled landings
+   * (Düsseldorf: 23:00 to 06:00), with delayed landings allowed until `arrLateLocal` and home-based carriers until
+   * `arrHomeLocal`.
+   */
+  curfew?: { fromLocal: string; toLocal: string; note?: string; arrFromLocal?: string; arrToLocal?: string; arrLateLocal?: string; arrHomeLocal?: string };
   /** Segregated parallel operations (AD 2.22): which runway lands and which departs when both are in use, per direction. */
   parallelOps?: { arrivals: string; departures: string; note?: string }[];
   // ---- 2.0 gameplay (GAMEPLAY track); all optional ----
@@ -187,6 +199,43 @@ export interface PackSpec {
    * passing 2,000 ft). The sim's player works that frequency for departures; the check-in names the unit's callsign.
    */
   depCheckIn?: { unitId: string; passingFt: number };
+  // ---- 2.0 independent review (Düsseldorf operating method); all optional, Liège keeps its 1.0 behaviour ----
+  /**
+   * The arrival holds per runway direction (the first two characters of the runway id): where the stack forms when the
+   * sequence is full. Düsseldorf: DL429 and DL409 on the 23 downwinds, DL524 and DL503 on the 05 downwinds. When set,
+   * the holds sit on the transitions (an arrival holds at the one on its own transition) and the transitions start at
+   * the entry fixes. Without it the stack is `stackFix` plus the first fix of every transition (Liège).
+   */
+  stacksByDirection?: Record<string, string[]>;
+  /**
+   * The clearance limit of the published STARs when it lies beyond the sim's last STAR fix (Düsseldorf: the STARs end at
+   * DUS). An arrival at the end of its STAR without onward clearance continues to it and holds there.
+   */
+  starLimit?: string;
+  /**
+   * Who asks for departure releases. 'all' (default, Liège): Tower asks for every departure. 'conditional' (Düsseldorf):
+   * Tower launches on the SIDs into the gaps it sees, and asks for a release only after a missed approach, in low
+   * visibility, and for the `releaseExits` while the neighbour's agreement is in force (scenario `neighbourBusy`).
+   */
+  departureRelease?: 'all' | 'conditional';
+  /** Departure exit fixes that need a release while the neighbour's agreement is in force, per runway direction. */
+  releaseExits?: Record<string, string[]>;
+  /** Wake turbulence scheme: 'RECAT' (RECAT-EU, default) or 'ICAO' (Doc 4444 four categories). */
+  wakeScheme?: 'RECAT' | 'ICAO';
+  /** Departure transfer level by runway direction (letter of agreement); `depXfl` is the default. */
+  depXflByDirection?: Record<string, LevelSpec>;
+  /** The unit a departure is handed to, by SID exit fix (default: the centre, the unit with role 'acc'). */
+  xfrByExit?: Record<string, string>;
+  /** Arrivals name their STAR on first contact (default true; Düsseldorf crews report the level and the ATIS only). */
+  checkInStar?: boolean;
+  /** First reply to an arrival the centre has already identified: 'identified' (default) or 'callsign' ("EWG1AB, Langen Radar"). */
+  arrivalFirstReply?: 'identified' | 'callsign';
+  /**
+   * How the approach clearance is given on a long RNAV transition. 'with-transition' (default): transition, level and
+   * approach in one call. 'on-downwind' (Düsseldorf, chart 3-1-4 "on downwind expect vectors to final"): transition,
+   * level and "expect ILS" first; the approach clearance with the descent on the downwind or base, or a shortcut.
+   */
+  approachClearance?: 'with-transition' | 'on-downwind';
 }
 
 export interface TerrainSpec {
@@ -229,7 +278,7 @@ export interface TrafficSpec {
   /** telephony designators for operators not in the engine's table */
   telephony?: Record<string, string>;
   /** hourly demand: movements per hour and the share that is passenger traffic, 24 entries starting at 00:00 local */
-  demand?: { perHour: number; paxShare: number }[];
+  demand?: { perHour: number; paxShare: number; /** 2.0 review: arrivals and departures this hour when they are not an even split of perHour */ arr?: number; dep?: number }[];
   /** general aviation, VFR and helicopter callsign patterns (ICAO registration prefixes) */
   gaPrefixes?: string[];
   /** military callsigns that cross or use the field */
@@ -260,6 +309,11 @@ export interface TrafficSpec {
   arrStars?: { name: string; w: number }[];
   /** departure SIDs per runway id and their share of the outbound flow */
   depSids?: Record<string, { name: string; w: number }[]>;
+  /**
+   * 2.0 review: the 'shift' template's demand as fractions of the traffic window (like the engine's cargo-night curve),
+   * movements per hour. Düsseldorf: the 06:00 departure wave with the first arrivals behind it.
+   */
+  shiftCurve?: { arr: [number, number][]; dep: [number, number][]; max: { arr: number; dep: number } };
 }
 
 export interface PhaseSpec { from: number; to: number; phase: string; label: string; paxShare: number }
@@ -287,4 +341,8 @@ export interface PatternSpec {
   /** event-deck cards this pattern can play ('hems', 'military'), with a weight among the tagged patterns */
   deck?: 'hems' | 'military';
   w?: number;
+  /** 2.0 review: traffic inside the control zone works with Tower; Tower coordinates its crossing with you on the intercom. */
+  twr?: boolean;
+  /** 2.0 review: local hours [from, to) when this pattern flies (a HEMS helicopter by day only). */
+  hoursLocal?: [number, number];
 }

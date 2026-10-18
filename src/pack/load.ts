@@ -24,7 +24,7 @@ export interface Runway {
   contingency: boolean; notes?: string;
   gpDeg?: number; tch?: number; missedAlt?: number; missedSpd?: number;
 }
-export interface Hold { fix: string; p: XY; inbound: number; turn: 'L' | 'R'; min: Level; max: Level; spd: number; atcDiscretion?: boolean }
+export interface Hold { fix: string; p: XY; inbound: number; turn: 'L' | 'R'; min: Level; max: Level; spd: number; atcDiscretion?: boolean; published?: boolean; inboundMag?: number }
 export interface Area { name: string; poly: XY[]; floor: Level; ceiling: Level; approx?: boolean; note?: string; cls?: string; hours?: string }
 
 export interface Pack {
@@ -143,7 +143,7 @@ export function loadPack(spec: PackSpec): Pack {
     stars: spec.stars.map((s) => ({ name: s.name, runways: s.runways, legs: legs(s.legs), handoffLevel: parseLevel(s.handoffLevel)!, atcDiscretion: s.atcDiscretion })),
     transitions: spec.transitions.map((s) => ({ name: s.name, runways: s.runways, legs: legs(s.legs), atcDiscretion: s.atcDiscretion })),
     sids: spec.sids.map((s) => ({ name: s.name, runways: s.runways, legs: legs(s.legs), initialClimb: parseLevel(s.initialClimb)!, exitFix: s.exitFix, atcDiscretion: s.atcDiscretion })),
-    holds: spec.holds.map((h) => ({ fix: h.fix, p: fx(h.fix), inbound: h.inboundTrue, turn: h.turn, min: parseLevel(h.minAlt)!, max: parseLevel(h.maxAlt)!, spd: h.maxSpd, atcDiscretion: h.atcDiscretion })),
+    holds: spec.holds.map((h) => ({ fix: h.fix, p: fx(h.fix), inbound: h.inboundTrue, turn: h.turn, min: parseLevel(h.minAlt)!, max: parseLevel(h.maxAlt)!, spd: h.maxSpd, atcDiscretion: h.atcDiscretion, published: h.published, inboundMag: h.inboundMag })),
     ctr: area(spec.ctr), tma: area(spec.tma), tsas: spec.tsas.map(area),
     mva: spec.mva.map((m) => ({ alt: m.alt, poly: poly(m.poly) })),
     vfrRoutes: spec.vfrRoutes,

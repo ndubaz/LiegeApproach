@@ -19,7 +19,7 @@ export function transitionNm(tr: Procedure, r: Runway): number {
 
 /** The STAR-to-final transition from the aircraft's stack fix whose first leg points most nearly at the aircraft. */
 export function bestTransition(sim: Sim, ac: Aircraft) {
-  const sf = sim.stackFixOf(ac);
+  const sf = sim.entryFixOf(ac);
   const all = sim.transitionsFor(sim.runway).filter((t) => !t.atcDiscretion);
   const mine = all.filter((t) => t.legs[0]?.fix === sf);
   const trs = mine.length ? mine : all;
@@ -43,16 +43,29 @@ const isTransition = (sim: Sim, name?: string) => !!name && sim.pack.transitions
 export function trackNm(sim: Sim, ac: Aircraft, via?: Procedure): number {
   const r = ac.app?.rwy ?? sim.pack.runways.get(ac.expectRwy ?? sim.runway) ?? sim.rwy;
   if (ac.app?.locCap) return Math.max(0, distToThr(ac.p, r));
-  const stacks = sim.stackFixes(r.id);
-  const alh = sim.pack.fixes.get(sim.stackFixOf(ac, r.id))?.p ?? r.thr;
+  const stacks = sim.entryFixes(r.id);
+  const alh = sim.pack.fixes.get(sim.entryFixOf(ac, r.id))?.p ?? r.thr;
   const tr = via ?? bestTransition(sim, ac);
   const trLen = tr ? transitionNm(tr, r) : 20;
-  if (ac.mode === 'HOLD' && ac.hold) return dist(ac.p, ac.hold.p) + (stacks.includes(ac.hold.fix) ? trLen : dist(ac.hold.p, r.thr) + 12);
+  // a hold on the transition (the Düsseldorf downwind holds): the rest of the transition from the hold fix
+  const restFrom = (fix: string): number | undefined => {
+    if (!sim.stacksOnTransitions) return undefined;
+    const legs = ac.savedRoute?.[0]?.fix === fix ? ac.savedRoute : tr?.legs.slice(tr.legs.findIndex((l) => l.fix === fix));
+    if (!legs?.length || legs[0].fix !== fix) return undefined;
+    const end = legs[legs.length - 1];
+    if (end.fix !== r.ifFix && !sim.isFinalFix(end.fix, r.id)) return undefined;
+    let d = 0;
+    for (let i = 1; i < legs.length; i++) d += dist(legs[i - 1].p, legs[i].p);
+    return d + Math.max(0, distToThr(end.p, r));
+  };
+  if (ac.mode === 'HOLD' && ac.hold) { const rest = restFrom(ac.hold.fix); return dist(ac.p, ac.hold.p) + (rest ?? (stacks.includes(ac.hold.fix) ? trLen : dist(ac.hold.p, r.thr) + 12)); }
   if (ac.mode === 'NAV' && ac.route.length) {
     let p = ac.p, d = 0;
     for (const l of ac.route) { d += dist(p, l.p); p = l.p; }
     const last = ac.route[ac.route.length - 1];
     if (last.fix === r.ifFix || sim.isFinalFix(last.fix, r.id)) return d + Math.max(0, distToThr(last.p, r));
+    const rest = restFrom(last.fix);
+    if (rest !== undefined) return d + rest;
     if (stacks.includes(last.fix)) return d + trLen;
     return d + dist(p, r.thr) + 12;
   }
@@ -94,7 +107,7 @@ export function nmIn(ac: Aircraft, s: number): number {
 }
 
 /** Time the follower needs behind the leader at the threshold: the wake (or 3 NM radar) minimum at its final speed. */
-export const sepS = (lead: Aircraft, foll: Aircraft) => etaS(foll, wakeMinNm(lead.perf.recat, foll.perf.recat, 3));
+export const sepS = (lead: Aircraft, foll: Aircraft, sim?: Sim) => etaS(foll, sim ? sim.wakeMin(lead, foll, 3) : wakeMinNm(lead.perf.recat, foll.perf.recat, 3));
 
 /** Arrivals committed to the final: cleared for the approach, on a transition, vectored near the final, or in an emergency. */
 export function sequenceMembers(sim: Sim, except?: Aircraft): Aircraft[] {
@@ -159,7 +172,10 @@ const bufferS = (eta: number) => Math.min(60, 20 + eta * 0.035);
 
 /** Would `ac`, sent now along `via` (or its current path), land clear of every committed arrival by the wake minimum? */
 export function slotFor(sim: Sim, ac: Aircraft, via?: Procedure): Slot {
-  const d = trackNm(sim, ac, via);
+  return slotAt(sim, ac, trackNm(sim, ac, via));
+}
+/** The same check for a path of `d` track miles to touchdown (a shortcut off the transition). */
+export function slotAt(sim: Sim, ac: Aircraft, d: number): Slot {
   const t = etaS(ac, d);
   const buf = bufferS(t);
   const others = sequenceMembers(sim, ac).map((o) => ({ o, t: etaS(o, trackNm(sim, o)) })).sort((a, b) => a.t - b.t);
@@ -170,21 +186,21 @@ export function slotFor(sim: Sim, ac: Aircraft, via?: Procedure): Slot {
   // an aircraft on vectors near the final (not yet on the localizer) has a rough ETA: 30 s more margin either side
   const bufFor = (o: Aircraft) => buf + (o.mode === 'HDG' && !o.app?.locCap ? 30 : 0);
   const fits = (tc: number) => others.every(({ o, t: to }) => {
-    if (isAhead(o, to, tc)) return tc - to >= sepS(o, ac) + bufFor(o);
+    if (isAhead(o, to, tc)) return tc - to >= sepS(o, ac, sim) + bufFor(o);
     // sequenced behind it but still able to give way (not yet on the localizer): its spacing is a later problem
     if (mine !== undefined && si.has(o.cs) && !o.app?.locCap) return true;
-    return to - tc >= sepS(ac, o) + bufFor(o);
+    return to - tc >= sepS(ac, o, sim) + bufFor(o);
   });
   const ok = fits(t);
   let waitS = 0;
   if (!ok) {
-    const cands = others.map(({ o, t: to }) => to + sepS(o, ac) + bufFor(o) - t).filter((x) => x > 0).sort((a, b) => a - b);
+    const cands = others.map(({ o, t: to }) => to + sepS(o, ac, sim) + bufFor(o) - t).filter((x) => x > 0).sort((a, b) => a - b);
     waitS = cands.find((w) => fits(t + w)) ?? (cands.length ? cands[cands.length - 1] : 0);
   }
   const ahead = others.filter((x) => isAhead(x.o, x.t, t)).sort((a, b) => a.t - b.t);
   const lead = mine !== undefined ? ahead.filter((x) => si.has(x.o.cs)).sort((a, b) => si.get(a.o.cs)! - si.get(b.o.cs)!).pop() ?? ahead[ahead.length - 1] : ahead[ahead.length - 1];
   let clash: Aircraft | undefined;
-  if (!ok) clash = others.find(({ o, t: to }) => (isAhead(o, to, t) ? t - to < sepS(o, ac) + buf : !(mine !== undefined && si.has(o.cs) && !o.app?.locCap) && to - t < sepS(ac, o) + buf))?.o;
+  if (!ok) clash = others.find(({ o, t: to }) => (isAhead(o, to, t) ? t - to < sepS(o, ac, sim) + buf : !(mine !== undefined && si.has(o.cs) && !o.app?.locCap) && to - t < sepS(ac, o, sim) + buf))?.o;
   const pos = mine !== undefined ? (landingOrder(sim).find((x) => x.ac === ac)?.pos ?? ahead.length + 1) : ahead.length + 1;
   return { ok, pos, leader: lead?.o, gapNm: lead ? nmIn(ac, Math.max(0, t - lead.t)) : undefined, clash, waitS, etaS: t };
 }
@@ -199,8 +215,8 @@ export function shortfall(sim: Sim, ac: Aircraft): { leader?: Aircraft; shortS: 
   const seqLead = mine !== undefined ? members.filter((x) => (si.get(x.o.cs) ?? Infinity) < mine).sort((a, b) => si.get(b.o.cs)! - si.get(a.o.cs)!)[0] : undefined;
   const ahead = seqLead ?? members.filter((x) => x.t <= t).sort((a, b) => b.t - a.t)[0];
   if (!ahead) return { shortS: -Infinity };
-  const need = sepS(ahead.o, ac) + 15;
-  return { leader: ahead.o, shortS: need - (t - ahead.t), gapNm: nmIn(ac, Math.max(0, t - ahead.t)), needNm: wakeMinNm(ahead.o.perf.recat, ac.perf.recat, 3) };
+  const need = sepS(ahead.o, ac, sim) + 15;
+  return { leader: ahead.o, shortS: need - (t - ahead.t), gapNm: nmIn(ac, Math.max(0, t - ahead.t)), needNm: sim.wakeMin(ahead.o, ac, 3) };
 }
 
 /** Try a transition, level and approach clearance on a prediction clone (what Sim.apply would do). */
