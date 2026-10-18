@@ -77,17 +77,21 @@ export const EDDL: PackSpec = {
       'Traffic mix, fleets and the hourly demand curve are estimates built from the 2025 traffic figures and the published night restrictions',
     ],
     // ENR 1.7: TA 5,000 ft; TL = the lowest FL at least 1,000 ft above the TA at the current QNH (computed, see approximations).
-    // Whole-hPa bands as German ATIS broadcasts them: FL60 at QNH 1013 and above, FL70 from 977 to 1012, FL80 below 977.
+    // Whole-hPa bands: FL60 at QNH 1014 and above (at 1013 hPa FL60 is 5,993 ft, less than 1,000 ft above the TA),
+    // FL70 from 977 to 1013, FL80 below 977.
     tlTable: [
       { qnhMin: 942, qnhMax: 976.9, fl: 80 },
-      { qnhMin: 977, qnhMax: 1012.9, fl: 70 },
-      { qnhMin: 1013, qnhMax: 1051, fl: 60 },
+      { qnhMin: 977, qnhMax: 1013.9, fl: 70 },
+      { qnhMin: 1014, qnhMax: 1051, fl: 60 },
     ],
     gndFreq: '121.680',
     effective: '2026-10-01',
     // AD 2.22 item 1.2: 2.5 NM between alternating approaches to the two parallel runways inside 10 NM (dependent
     // parallel operations); wake separation applies on top whenever the follower is behind a heavier aircraft.
     parallelApproachSepNm: 2.5,
+    // AD 2.12: the runway centrelines are 500 m apart, less than 760 m: wake minima apply between the two (Doc 4444 5.8,
+    // 8.7.3), and AD 2.22 item 1.2 allows the 2.5 NM diagonal only "provided no wake turbulence separation is to be applied"
+    closeParallels: true,
   },
 
   fixes: {
@@ -160,6 +164,15 @@ export const EDDL: PackSpec = {
     I05R: { from: 'NATOS', brg: 232.8, dist: 4, note: 'Sim construct: 12.9 NM final 05R' },
     I23L: { from: 'METMA', brg: 52.8, dist: 4, note: 'Sim construct: 13 NM final 23L' },
     I23R: { from: 'REGNO', brg: 52.8, dist: 4, note: 'Sim construct: 13 NM final 23R' },
+    // ---- Missed approach turn points (AD 2 EDDL 4-2-1 to 4-2-4), computed from the published DME and radial limits ----
+    M23L1: { from: 'DUS', brg: 230.0, dist: 2.6, kind: 'map', note: 'Missed approach 23L: heading 230 until 2.6 DME DUS' },
+    M23L2: { from: 'DUS', brg: 279.9, dist: 5.08, kind: 'map', note: 'Missed approach 23L: right heading 307 until DUS R277' },
+    M23R1: { from: 'DUS', brg: 246.1, dist: 0.61, kind: 'map', note: 'Missed approach 23R: heading 230 until 0.6 DME west of DUS' },
+    M23R2: { from: 'DUS', brg: 316.0, dist: 6.4, kind: 'map', note: 'Missed approach 23R: right heading 318 until 6.4 DME DUS' },
+    M05R1: { from: 'DUS', brg: 54.1, dist: 6.0, kind: 'map', note: 'Missed approach 05R: heading 050 until 6.0 DME DUS' },
+    M05R2: { from: 'DUS', brg: 15.5, dist: 7.59, kind: 'map', note: 'Missed approach 05R: left heading 320 until DUS R012' },
+    M05L1: { from: 'DUS', brg: 48.4, dist: 1.8, kind: 'map', note: 'Missed approach 05L: heading 050 until 1.6 DME IDNE (1.8 DME DUS)' },
+    M05L2: { from: 'DUS', brg: 19.0, dist: 7.3, kind: 'map', note: 'Missed approach 05L: left heading 007 until 7.0 DME IDNE (7.3 DME DUS)' },
     // ---- SID waypoints (AD 2 EDDL 6-5) ----
     DL050: { lat: '511953.79N', lon: '0065142.56E' },
     DL051: { lat: '512028.59N', lon: '0065300.51E' },
@@ -283,34 +296,35 @@ export const EDDL: PackSpec = {
 
   // AD 2.12 thresholds and true bearings (05L/23R 2,700 m; 05R/23L 2,997 m), AD 2.19 ILS, AD 2 EDDL 4-2-x finals.
   // Threshold elevations are the AD 2.12 values rounded to the foot. All four ILS have a 3.0 degree glide path.
-  // Missed approaches: climb on runway track, then a turn towards DUS climbing 4,000 ft; speed limit 190 or 220 kt
-  // during the first turn and 230 kt afterwards (AD 2 EDDL 4-2-1 to 4-2-4).
+  // Missed approaches (AD 2 EDDL 4-2-1 to 4-2-4): climb on runway heading to a DME distance, one turn onto a published
+  // heading to a radial or a DME distance, then direct DUS climbing 4,000 ft; 190 or 220 kt during the first turn and
+  // 230 kt afterwards. The turn points are the M-fixes above.
   runways: [
     {
       id: '23L', thr: { lat: '511739.431N', lon: '0064658.073E' }, crsTrue: 232.8, elevation: 138, lengthM: 2997,
       ils: { ident: 'IDSW', freq: '109.900', cat: 'III', gp: '333.800' }, rnp: true,
-      if: { fix: 'I23L', alt: 3000 }, faf: { fix: 'METMA', alt: 3000 }, missed: ['DUS'],
+      if: { fix: 'I23L', alt: 3000 }, faf: { fix: 'METMA', alt: 3000 }, missed: ['M23L1', 'M23L2', 'DUS'],
       gpDeg: 3, tch: 58, missedAlt: 4000, missedSpd: 220,
       notes: 'Southern runway: all departures and, in single-runway operation, all arrivals. Threshold displaced 301 m (LDA 2,696 m). Missed approach: heading 230 to 2.6 DME DUS, right onto 307 to R277 DUS, right direct DUS climbing 4,000 ft',
     },
     {
       id: '23R', thr: { lat: '511748.248N', lon: '0064633.931E' }, crsTrue: 232.8, elevation: 123, lengthM: 2700,
       ils: { ident: 'IDNW', freq: '109.300', cat: 'III', gp: '332.000' }, rnp: true,
-      if: { fix: 'I23R', alt: 3000 }, faf: { fix: 'REGNO', alt: 3000 }, missed: ['DUS'],
+      if: { fix: 'I23R', alt: 3000 }, faf: { fix: 'REGNO', alt: 3000 }, missed: ['M23R1', 'M23R2', 'DUS'],
       gpDeg: 3, tch: 57, missedAlt: 4000, missedSpd: 190,
       notes: 'Northern runway: landings only, and only in the 56 hours a week it may be used (AD 2.20). Threshold displaced 300 m (LDA 2,400 m). Missed approach: heading 230 to 0.6 DME west of DUS, right onto 318 to 6.4 DME DUS, right direct DUS climbing 4,000 ft',
     },
     {
       id: '05R', thr: { lat: '511652.445N', lon: '0064519.467E' }, crsTrue: 52.8, elevation: 120, lengthM: 2997,
       ils: { ident: 'IDSE', freq: '110.150', cat: 'III', gp: '334.250' }, rnp: true,
-      if: { fix: 'I05R', alt: 3000 }, faf: { fix: 'NATOS', alt: 3000 }, missed: ['DUS'],
+      if: { fix: 'I05R', alt: 3000 }, faf: { fix: 'NATOS', alt: 3000 }, missed: ['M05R1', 'M05R2', 'DUS'],
       gpDeg: 3, tch: 52, missedAlt: 4000, missedSpd: 220,
       notes: 'Southern runway. Threshold displaced 301 m (LDA 2,696 m). Missed approach: heading 050 to 6.0 DME DUS, left onto 320 to R012 DUS, left direct DUS climbing 4,000 ft',
     },
     {
       id: '05L', thr: { lat: '511707.132N', lon: '0064507.643E' }, crsTrue: 52.8, elevation: 116, lengthM: 2700,
       ils: { ident: 'IDNE', freq: '110.950', cat: 'I', gp: '330.650' }, rnp: true,
-      if: { fix: 'I05L', alt: 3000 }, faf: { fix: 'DIKMI', alt: 3000 }, missed: ['DUS'],
+      if: { fix: 'I05L', alt: 3000 }, faf: { fix: 'DIKMI', alt: 3000 }, missed: ['M05L1', 'M05L2', 'DUS'],
       gpDeg: 3, tch: 52, missedAlt: 4000, missedSpd: 190,
       notes: 'Northern runway, ILS CAT I only. Threshold displaced 300 m (LDA 2,400 m). Missed approach: heading 050 to 1.6 DME IDNE, left onto 007 to 7.0 DME IDNE, left direct DUS climbing 4,000 ft',
     },
@@ -418,27 +432,21 @@ export const EDDL: PackSpec = {
     { name: 'COL5J', runways: ['05L'], initialClimb: 5000, exitFix: 'COL', legs: [{ fix: 'DL050', min: 600 }, { fix: 'DL058' }, { fix: 'BAM' }, { fix: 'LIPMI', min: 'F150' }, { fix: 'COL' }], atcDiscretion: true },
   ],
 
-  // Holdings. DUS: the missed approach holding (MAHF 4,000 ft on the ILS charts; 3,000 ft to FL240 in the VATSIM SOP).
-  // DL503 / DL524 (05 operations) and DL409 / DL429 (23 operations): the downwind holds drawn on the transition
-  // charts, 4,000 ft to FL070 (chart: "4000 (FL70*)", operational FL). Inbound tracks are the downwind tracks
-  // (050 / 230 magnetic, variation 3 E); turn directions as read from the charts. DOMEG, NVO and ELDAR: the
-  // en-route holds Langen uses to keep the arrival sector clear (VATSIM SOP; not in the AD section).
+  // Holdings. The approach holds are the downwind holds drawn on the RNAV transition charts (3-1-3, 3-1-4): DL429 and
+  // DL409 for 23 operations, DL524 and DL503 for 05 operations, 4,000 ft to FL070 (chart: "4000 (FL70*)", operational
+  // FL), 220 kt, inbound along the downwind (050 / 230 magnetic, variation 3 E), turns as drawn. The charts publish no
+  // holding at the entry fixes BIKMU, DOMUX, HALME or PISAP. DUS is the missed approach holding (MAHF on the ILS charts),
+  // 3,000 ft to FL240 when Approach uses it for arrivals (VATSIM Germany SOP). NVO, ELDAR and DOMEG are en-route holds
+  // Langen ACC uses before the handover (VATSIM SOP, not in the AD section): ATC describes them when it uses them.
   holds: [
-    // Transition entry holdings (the IAFs of the sim) at the sector transfer points: drawn on the RNAV transition charts
-    // (3-1-3, 3-1-4) at the entry fixes; levels per the AD 2.22 transfer bands and the VATSIM Germany SOP (not an
-    // AD 2.22 holding table, which EDDL does not publish). Inbound tracks follow the transition's first leg.
-    { fix: 'BIKMU', inboundTrue: 26, turn: 'R', minAlt: 'F070', maxAlt: 'F150', maxSpd: 230, legMin: 1, inboundMag: 23 },
-    { fix: 'DOMUX', inboundTrue: 230, turn: 'L', minAlt: 'F070', maxAlt: 'F140', maxSpd: 230, legMin: 1, inboundMag: 227 },
-    { fix: 'HALME', inboundTrue: 174, turn: 'L', minAlt: 'F070', maxAlt: 'F140', maxSpd: 230, legMin: 1, inboundMag: 171 },
-    { fix: 'PISAP', inboundTrue: 167, turn: 'R', minAlt: 'F070', maxAlt: 'F150', maxSpd: 230, legMin: 1, inboundMag: 164 },
-    { fix: 'DUS', inboundTrue: 149, turn: 'L', minAlt: 4000, maxAlt: 'F240', maxSpd: 230, inboundMag: 146, legMin: 1 },
+    { fix: 'DUS', inboundTrue: 149, turn: 'L', minAlt: 3000, maxAlt: 'F240', maxSpd: 230, inboundMag: 146, legMin: 1 },
     { fix: 'DL524', inboundTrue: 233, turn: 'R', minAlt: 4000, maxAlt: 'F070', maxSpd: 220, inboundMag: 230, legMin: 1 },
     { fix: 'DL503', inboundTrue: 233, turn: 'L', minAlt: 4000, maxAlt: 'F070', maxSpd: 220, inboundMag: 230, legMin: 1 },
     { fix: 'DL429', inboundTrue: 53, turn: 'L', minAlt: 4000, maxAlt: 'F070', maxSpd: 220, inboundMag: 50, legMin: 1 },
     { fix: 'DL409', inboundTrue: 53, turn: 'R', minAlt: 4000, maxAlt: 'F070', maxSpd: 220, inboundMag: 50, legMin: 1 },
-    { fix: 'DOMEG', inboundTrue: 173, turn: 'L', minAlt: 5000, maxAlt: 'F140', maxSpd: 250, atcDiscretion: true, inboundMag: 170, legMin: 1 },
-    { fix: 'NVO', inboundTrue: 71, turn: 'R', minAlt: 6000, maxAlt: 'F140', maxSpd: 250, atcDiscretion: true, inboundMag: 68, legMin: 1 },
-    { fix: 'ELDAR', inboundTrue: 1, turn: 'L', minAlt: 6000, maxAlt: 'F140', maxSpd: 250, atcDiscretion: true, inboundMag: 358, legMin: 1 },
+    { fix: 'DOMEG', inboundTrue: 173, turn: 'L', minAlt: 5000, maxAlt: 'F140', maxSpd: 250, atcDiscretion: true, published: false, inboundMag: 170, legMin: 1 },
+    { fix: 'NVO', inboundTrue: 71, turn: 'R', minAlt: 6000, maxAlt: 'F140', maxSpd: 250, atcDiscretion: true, published: false, inboundMag: 68, legMin: 1 },
+    { fix: 'ELDAR', inboundTrue: 1, turn: 'L', minAlt: 6000, maxAlt: 'F140', maxSpd: 250, atcDiscretion: true, published: false, inboundMag: 358, legMin: 1 },
   ],
 
   // ENR 2.1 CTR Düsseldorf: GND to 2,500 ft MSL, class D (AD 2.17), Düsseldorf Tower 118.305 (124.355 standby).
@@ -654,8 +662,8 @@ export const EDDL: PackSpec = {
   ],
 
   // ---- 2.0 fields ----
-  // The arrival flow has one entry fix per direction. BIKMU is the busiest (traffic from the south and west,
-  // and all Köln-side arrivals); it feeds both the 05 and the 23 structure, so the stack forms there.
+  // BIKMU is the busiest entry fix (traffic from the south and west, and all Köln-side arrivals) and feeds both the 05
+  // and the 23 structure. The stacks are not at the entry fixes: see stacksByDirection.
   stackFix: 'BIKMU',
   units: [
     { id: 'TWR', role: 'tower', callsign: 'Düsseldorf Tower', freq: '118.305', label: 'Tower', source: 'AD 2 EDDL 2.18 (124.355 standby)', voices: ['de'] },
@@ -665,6 +673,7 @@ export const EDDL: PackSpec = {
     { id: 'ACC', role: 'acc', callsign: 'Langen Radar', freq: '119.110', label: 'Bottrop', source: 'ENR 2.1: Langen ACC sector Bottrop (EDGGBOT) 119.110, the sector above and north of Düsseldorf', voices: ['de'] },
     { id: 'KOLN', role: 'neighbour', callsign: 'Langen Radar', freq: '135.350', label: 'Köln', source: 'ENR 2.1: Langen ACC sector Köln Arrival (EDGGDKA) 135.350', voices: ['de'] },
     { id: 'PAD', role: 'neighbour', callsign: 'Langen Radar', freq: '135.650', label: 'Paderborn', source: 'ENR 2.1: Langen sector Paderborn High (EDGGPADH) 135.650; Paderborn Low works the Dortmund area', voices: ['de'] },
+    { id: 'NOR', role: 'neighbour', callsign: 'Langen Radar', freq: '127.365', label: 'Nörvenich', source: 'ENR 2.1: Langen sector Nörvenich (EDGGNOR) 127.365; which exits it takes is not verified (the letter of agreement is not public)', voices: ['de'] },
     { id: 'MUAC', role: 'upper', callsign: 'Maastricht Radar', freq: '134.455', label: 'Maastricht', source: 'not verified', voices: ['nl', 'de', 'uk'] },
     { id: 'MIL', role: 'military', callsign: 'Frisbee Radar', freq: '131.800', label: 'Frisbee', source: 'Geilenkirchen (ETNG) approach per the VATSIM Germany SOP; frequency not verified', voices: ['de', 'uk', 'us'] },
     { id: 'SUP', role: 'supervisor', callsign: 'Supervisor', freq: '', label: 'SUP', source: 'sim construct (Langen ACC supervisor, AD 2.20 item 12)', voices: ['de'] },
@@ -689,7 +698,7 @@ export const EDDL: PackSpec = {
       { op: 'RYR', types: ['B738'], w: 3 },
       { op: 'EJU', types: ['A320', 'A321'], w: 3, telephony: 'Alpine', voices: ['de', 'uk', 'es'] },
       { op: 'EZY', types: ['A320'], w: 1, telephony: 'Easy', voices: ['uk', 'scot'] },
-      { op: 'KLM', types: ['E190', 'B738'], w: 2, telephony: 'KLM', voices: ['nl'] },
+      { op: 'KLC', types: ['E190', 'E195'], w: 2, telephony: 'City', voices: ['nl'] },
       { op: 'BAW', types: ['A320', 'A321'], w: 2, telephony: 'Speedbird', voices: ['uk', 'scot'] },
       { op: 'AUA', types: ['A320', 'E190'], w: 2, telephony: 'Austrian', voices: ['de'] },
       { op: 'SWR', types: ['A320', 'E190'], w: 2, telephony: 'Swiss', voices: ['de', 'fr'] },
@@ -701,27 +710,32 @@ export const EDDL: PackSpec = {
     ],
     cargo: [
       { op: 'UPS', types: ['B763'], w: 2 },
-      { op: 'ASL', types: ['B738'], w: 1, telephony: 'Contract', voices: ['ie', 'uk'] },
+      { op: 'ABR', types: ['B738'], w: 1, telephony: 'Contract', voices: ['ie', 'uk'] },
     ],
     bank: [],
     telephony: {
       EWG: 'Eurowings', DLH: 'Lufthansa', CFG: 'Condor', TUI: 'Tuijet', SXS: 'Sunexpress', PGT: 'Sunturk', UAE: 'Emirates',
-      ETD: 'Etihad', EJU: 'Alpine', EZY: 'Easy', KLM: 'KLM', BAW: 'Speedbird', AUA: 'Austrian', SWR: 'Swiss', AFR: 'Airfrans',
-      AEE: 'Aegean', CAI: 'Corendon', DAL: 'Delta', WZZ: 'Wizz Air', ASL: 'Contract', GAF: 'German Air Force', BPO: 'Pirol',
+      ETD: 'Etihad', EJU: 'Alpine', EZY: 'Easy', KLM: 'KLM', KLC: 'City', BAW: 'Speedbird', AUA: 'Austrian', SWR: 'Swiss', AFR: 'Airfrans',
+      AEE: 'Aegean', CAI: 'Corendon', DAL: 'Delta', WZZ: 'Wizz Air', ABR: 'Contract', ASL: 'Air Serbia', GAF: 'German Air Force', BPO: 'Pirol',
       HUMMEL: 'Hummel', CHRISTOPH: 'Christoph',
     },
-    // Movements per hour, local time from 00:00, typical summer weekday (about 440 to 460 movements a day, from the
-    // 2025 figure of 159,900 movements a year with a summer weekday about 10 percent above the daily mean). The
-    // field is shut to scheduled traffic 22:00 to 06:00 local; the few movements in those hours are late landings
-    // with an exemption, HEMS and the first positioning flights.
+    // Movements per hour, local time from 00:00, typical weekday (about 460 movements a day, from the 2025 figure of
+    // 159,900 movements a year with a busy weekday above the daily mean), split into arrivals and departures. AD 2.20:
+    // no scheduled take-offs 22:00 to 06:00 local and no scheduled landings 23:00 to 06:00 local (delayed landings to
+    // 23:30, home-based carriers to 00:00). So the day opens with a departure wave at 06:00 (the based fleet leaves, few
+    // arrivals), the evening closes with an arrival wave: 21:00 is arrival-heavy and 22:00 to 23:00 is all arrivals (about
+    // 25 of the 33 coordinated landings), no departures. A summer day is the same in local time (the engine applies DST).
     demand: [
-      { perHour: 1, paxShare: 0.9 }, { perHour: 0, paxShare: 0.9 }, { perHour: 0, paxShare: 0.9 }, { perHour: 0, paxShare: 0.9 },
-      { perHour: 0, paxShare: 0.9 }, { perHour: 3, paxShare: 0.8 }, { perHour: 28, paxShare: 0.95 }, { perHour: 32, paxShare: 0.95 },
-      { perHour: 28, paxShare: 0.94 }, { perHour: 25, paxShare: 0.92 }, { perHour: 26, paxShare: 0.92 }, { perHour: 27, paxShare: 0.92 },
-      { perHour: 26, paxShare: 0.92 }, { perHour: 25, paxShare: 0.92 }, { perHour: 26, paxShare: 0.92 }, { perHour: 27, paxShare: 0.93 },
-      { perHour: 29, paxShare: 0.94 }, { perHour: 30, paxShare: 0.95 }, { perHour: 29, paxShare: 0.95 }, { perHour: 27, paxShare: 0.95 },
-      { perHour: 24, paxShare: 0.95 }, { perHour: 19, paxShare: 0.95 }, { perHour: 8, paxShare: 0.95 }, { perHour: 2, paxShare: 0.9 },
+      { perHour: 1, paxShare: 0.9, arr: 1, dep: 0 }, { perHour: 0, paxShare: 0.9, arr: 0, dep: 0 }, { perHour: 0, paxShare: 0.9, arr: 0, dep: 0 }, { perHour: 0, paxShare: 0.9, arr: 0, dep: 0 },
+      { perHour: 0, paxShare: 0.9, arr: 0, dep: 0 }, { perHour: 1, paxShare: 0.8, arr: 1, dep: 0 }, { perHour: 28, paxShare: 0.95, arr: 6, dep: 22 }, { perHour: 32, paxShare: 0.95, arr: 14, dep: 18 },
+      { perHour: 28, paxShare: 0.94, arr: 14, dep: 14 }, { perHour: 25, paxShare: 0.92, arr: 12, dep: 13 }, { perHour: 25, paxShare: 0.92, arr: 12, dep: 13 }, { perHour: 25, paxShare: 0.92, arr: 12, dep: 13 },
+      { perHour: 25, paxShare: 0.92, arr: 12, dep: 13 }, { perHour: 25, paxShare: 0.92, arr: 12, dep: 13 }, { perHour: 25, paxShare: 0.92, arr: 12, dep: 13 }, { perHour: 25, paxShare: 0.93, arr: 12, dep: 13 },
+      { perHour: 29, paxShare: 0.94, arr: 15, dep: 14 }, { perHour: 29, paxShare: 0.95, arr: 15, dep: 14 }, { perHour: 29, paxShare: 0.95, arr: 15, dep: 14 }, { perHour: 28, paxShare: 0.95, arr: 14, dep: 14 },
+      { perHour: 28, paxShare: 0.95, arr: 14, dep: 14 }, { perHour: 28, paxShare: 0.95, arr: 18, dep: 10 }, { perHour: 25, paxShare: 0.95, arr: 25, dep: 0 }, { perHour: 3, paxShare: 0.9, arr: 3, dep: 0 },
     ],
+    // The 'shift' template (the morning shift from 05:50 local): the departure wave from 06:00 local and the first
+    // arrivals of the day behind it, as fractions of the traffic window (movements per hour).
+    shiftCurve: { arr: [[0, 4], [0.25, 6], [0.5, 12], [1, 14]], dep: [[0, 0], [0.2, 0], [0.22, 22], [0.6, 20], [1, 16]], max: { arr: 14, dep: 22 } },
     gaPrefixes: ['D-E', 'D-I', 'D-C', 'PH-', 'OO-', 'G-'],
     registration: { prefix: 'DE', length: 5 },
     military: [
@@ -732,14 +746,16 @@ export const EDDL: PackSpec = {
     // Free-play templates. The night one is honest: AD 2.20 closes the field to scheduled traffic 22:00 to 06:00 local,
     // so a night at Düsseldorf is a delayed home-based landing, HEMS or a diversion at most, and the 06:00 rush at the end.
     templates: {
-      night: { title: 'Night curfew', arrPerHr: 2, depPerHr: 0, start: '00:30', paxShare: 0.9, note: 'Night flight restriction: no scheduled take-offs or landings between 22:00 and 06:00 local. Expect a delayed home-based arrival, a medical flight or a diversion at most.' },
+      night: { title: 'Night curfew', arrPerHr: 2, depPerHr: 0, start: '00:30', paxShare: 0.9, note: 'Night flight restriction: no scheduled take-offs between 22:00 and 06:00 local and no scheduled landings between 23:00 and 06:00 local. Expect a delayed home-based arrival or a diversion at most.' },
       day: { title: 'Afternoon wave', arrPerHr: 15, depPerHr: 14, start: '15:00', paxShare: 0.93 },
       quiet: { title: 'Midday lull', arrPerHr: 10, depPerHr: 9, start: '12:00', paxShare: 0.92 },
-      shift: { title: 'Morning rush shift', arrPerHr: 15, depPerHr: 14, start: '04:50', paxShare: 0.95, note: 'The field opens at 06:00 local: the first wave lands from the opening minute and the outbound push follows.' },
+      shift: { title: 'Morning rush shift', arrPerHr: 15, depPerHr: 14, start: '04:50', paxShare: 0.95, note: 'The field opens at 06:00 local: the based fleet leaves first, about twenty departures in the first hour, and the first arrivals of the day come in behind them.' },
     },
     patterns: [
-      { at: 1, deck: 'hems', w: 2, kind: 'heli', cs: 'CHRISTOPH9', types: ['EC45'], route: ['BGU', 'UKD'], from: { brg: 20, dist: 4 }, level: 1500, request: { kind: 'direct', fix: 'UKD' } },
-      { at: 1, deck: 'hems', w: 1, kind: 'vfr', csReg: true, types: ['C172', 'PA28'], route: ['NOVEMBER', 'SIERRA'], from: { brg: 350, dist: 5 }, level: 2000, request: { kind: 'crossing', route: ['NOVEMBER', 'SIERRA'] } },
+      // Control-zone traffic works with Düsseldorf Tower: Tower coordinates its crossing of the final with you. Christoph 9
+      // (BG Klinikum Duisburg) flies by day only.
+      { at: 1, deck: 'hems', w: 2, kind: 'heli', cs: 'CHRISTOPH9', types: ['EC45'], route: ['BGU', 'UKD'], from: { brg: 20, dist: 4 }, level: 1500, request: { kind: 'direct', fix: 'UKD' }, twr: true, hoursLocal: [7, 20] },
+      { at: 1, deck: 'hems', w: 1, kind: 'vfr', csReg: true, types: ['C172', 'PA28'], route: ['NOVEMBER', 'SIERRA'], from: { brg: 350, dist: 5 }, level: 2000, request: { kind: 'crossing', route: ['NOVEMBER', 'SIERRA'] }, twr: true, hoursLocal: [7, 21] },
       { at: 2, deck: 'military', w: 1, kind: 'mil', csOp: 'GAF', csNum: [10, 99], types: ['A400'], route: ['NVO', 'BIKMU', 'DL426', 'HALME'], from: { brg: 200, dist: 8 }, level: 'F070', request: { kind: 'climb', level: 'F110' } },
       { at: 3, deck: 'military', w: 1, kind: 'mil', cs: 'NATO11', types: ['E3TF'], route: ['MHV', 'LMA', 'VEBAK'], from: { brg: 240, dist: 14 }, level: 'F060', request: { kind: 'climb', level: 'F150' } },
     ],
@@ -755,7 +771,7 @@ export const EDDL: PackSpec = {
   },
   // How crews say the five-letter fixes and the local names (German crews say them as German words).
   fixSay: {
-    BIKMU: 'Bik-moo', DOMUX: 'Doh-mux', HALME: 'Hal-may', PISAP: 'Pee-sap', ELDAR: 'El-dar', XAMOD: 'Za-mod', TEBRO: 'Teb-roh',
+    LMA: 'Lima', BIKMU: 'Bik-moo', DOMUX: 'Doh-mux', HALME: 'Hal-may', PISAP: 'Pee-sap', ELDAR: 'El-dar', XAMOD: 'Za-mod', TEBRO: 'Teb-roh',
     DOMEG: 'Doh-meg', BARAG: 'Bah-rag', VEBAK: 'Vay-bak', VALSU: 'Val-soo', GAPNU: 'Gap-noo', RONAD: 'Roh-nad', DIKMI: 'Dik-mee',
     BOMBA: 'Bom-bah', DOLAV: 'Doh-lav', NATOS: 'Nah-tos', IBIKO: 'Ee-bee-ko', AGEDA: 'Ah-gay-dah', REGNO: 'Reg-no', METMA: 'Met-mah',
     ANAVI: 'Ah-nah-vee', BETZO: 'Bet-zo', DEGOM: 'Day-gom', DODEN: 'Doh-den', ELBAL: 'El-bal', ERKUM: 'Air-koom', KULIX: 'Koo-lix',
@@ -767,13 +783,41 @@ export const EDDL: PackSpec = {
   },
   utcOffsetWinter: 1,
   depXfl: 'F100',
+  // Departures stop below the arrivals: FL080 on runway 05, whose SIDs cross the inbound flows at FL100 and above
+  // (VATSIM Germany SOP: outbounds below FL090, inbounds FL100 or above), FL100 on runway 23 (FL130 for the southern
+  // exits once clear of the BIKMU arrivals is left to the centre). The letter of agreement is not public.
+  depXflByDirection: { '05': 'F080', '23': 'F100' },
+  // Which Langen sector takes a departure, by SID exit: Bottrop (above and north) only for MEVEL and SONEB; Paderborn
+  // High the eastern exits; Nörvenich the southern and western ones. Approximate (no public letter of agreement).
+  xfrByExit: { MEVEL: 'ACC', SONEB: 'ACC', NUDGO: 'PAD', GMH: 'PAD', KUMIK: 'NOR', DODEN: 'NOR', COL: 'NOR', NVO: 'NOR', MODRU: 'NOR', NETEX: 'NOR', LMA: 'NOR' },
   reservedAreasName: 'ED-R',
   country: 'DE',
-  curfew: { fromLocal: '22:00', toLocal: '06:00', note: 'AD 2.20: no scheduled take-offs 21:00 to 05:00 UTC winter (22:00 to 06:00 local) and no scheduled landings 22:00 to 06:00 local; delayed landings to 23:00 local, home-based carriers to 00:00; exemptions for diversions, HEMS and calibration flights' },
+  // AD 2.20 (times UTC in winter, one hour earlier in summer): scheduled take-offs not 2100 to 0500 UTC, scheduled
+  // landings not 2200 to 0500, delayed landings not 2230 to 0500, delayed landings of home-based carriers not 2300 to
+  // 0400. In local time all year: take-offs 22:00 to 06:00, landings 23:00 to 06:00 (delayed 23:30, home-based 00:00).
+  curfew: { fromLocal: '22:00', toLocal: '06:00', arrFromLocal: '23:00', arrToLocal: '06:00', arrLateLocal: '23:30', arrHomeLocal: '00:00', note: 'AD 2.20: no scheduled take-offs 22:00 to 06:00 local and no scheduled landings 23:00 to 06:00 local; delayed landings to 23:30, home-based carriers to 00:00; exemptions for diversions, HEMS and calibration flights' },
   parallelOps: [
     { arrivals: '23R', departures: '23L', note: 'AD 2.22 item 1.1: dependent parallel operations; the northern runway lands, the southern departs; 2.5 NM between alternating approaches to the two runways inside 10 NM (item 1.2)' },
     { arrivals: '05L', departures: '05R', note: 'As for 23; the northern runway may be used 56 hours a week (AD 2.20 item 5.1)' },
   ],
   // SID pages: "remain on Tower frequency until passing 2,000 ft, then contact Langen Radar 121.355".
   depCheckIn: { unitId: 'DEP', passingFt: 2000 },
+
+  // ---- 2.0 independent review: the Düsseldorf operating method ----
+  // The approach holds are the downwind holds, per runway direction (charts 3-1-3 and 3-1-4).
+  stacksByDirection: { '23': ['DL429', 'DL409'], '05': ['DL524', 'DL503'] },
+  // The published STARs end at DUS (AD 2 EDDL 3-1-2): an arrival with no onward clearance continues there and holds.
+  starLimit: 'DUS',
+  // Tower launches on the SIDs; a release is needed only after a missed approach, in low visibility, and for the
+  // southern exits off 23 while the Köln agreement is in force (VATSIM Germany SOP: "startup and departure release by
+  // DLA" for DODEN, KUMIK, NUDGO, COL, NVO, GMH).
+  departureRelease: 'conditional',
+  releaseExits: { '23': ['DODEN', 'KUMIK', 'NUDGO', 'COL', 'NVO', 'GMH'] },
+  // DFS uses RECAT-EU at Leipzig/Halle (2018, the first German airport); no source shows it at Düsseldorf, so the
+  // ICAO Doc 4444 categories apply (docs/REALISM-EDDL.md).
+  wakeScheme: 'ICAO',
+  checkInStar: false,
+  arrivalFirstReply: 'callsign',
+  // Chart 3-1-4 remark 2: "on downwind expect vectors to final": the transition is the longest path, not the plan.
+  approachClearance: 'on-downwind',
 };

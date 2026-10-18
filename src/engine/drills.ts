@@ -445,7 +445,7 @@ const RELEASE: DrillDef = {
 
 const DUS_GOOD = 'EDDL 120550Z 23008KT 9999 FEW035 12/07 Q1018 NOSIG';
 const DUS_PAX = ['A320', 'A321', 'B738', 'A319', 'A20N'];
-const DUS_CS = ['EWG4KL', 'DLH9TW', 'CFG2EP', 'TUI7MD', 'SXS3LR', 'RYR8JB', 'EJU59KE', 'KLM1855'];
+const DUS_CS = ['EWG4KL', 'DLH9TW', 'CFG2EP', 'TUI7MD', 'SXS3LR', 'RYR8JB', 'EJU59KE', 'KLC1855'];
 const dusArr = (cs: string, type: string, star = 'BIKMU1A', x: Partial<SpawnSpec> = {}): SpawnSpec => ({ t: 1, kind: 'arr', cs, type, star, spawnDist: 30, ...x });
 
 const DUS_INTERCEPT: DrillDef = {
@@ -465,7 +465,7 @@ const DUS_WAKE: DrillDef = {
   summary: 'An Emirates heavy and a Eurowings on the 23L localizer. One speed call to the follower sets the gap at touchdown.',
   params(seed) {
     const r = rnd(seed, 'dus-wake');
-    return { dL: +r.range(5.5, 7.5).toFixed(1), delta: +r.range(-1.5, 0.4).toFixed(1), lead: r.pick(['A388', 'B77W', 'A333']), fol: r.pick(['A320', 'B738', 'A321', 'E190']), csL: r.pick(['UAE55', 'UAE57', 'CFG1708']), csF: r.pick(['EWG2EK', 'DLH7PK', 'TUI3EA', 'KLM1853']) };
+    return { dL: +r.range(5.5, 7.5).toFixed(1), delta: +r.range(-1.5, 0.4).toFixed(1), lead: r.pick(['A388', 'B77W', 'A333']), fol: r.pick(['A320', 'B738', 'A321', 'E190']), csL: r.pick(['UAE55', 'UAE57', 'CFG1708']), csF: r.pick(['EWG2EK', 'DLH7PK', 'TUI3EA', 'KLC1853']) };
   },
   scenario(_pack, _seed, p) {
     return { startUtc: '12:05', metar: DUS_GOOD, runway: '23L', readbackErr: 0, events: [], spawns: [dusArr(p.csL, p.lead, 'DOMUX1A', { spawnDist: 40 }), dusArr(p.csF, p.fol, 'BIKMU1A', { spawnDist: 40 })] };
@@ -523,17 +523,18 @@ const DUS_DESCENT: DrillDef = {
 
 const DUS_RELEASE: DrillDef = {
   ...RELEASE, id: 'dus-release' as DrillId, icao: 'EDDL', base: 8000,
-  summary: 'Single-runway operation on 23L: Tower has a departure ready and two arrivals on final. Fit it in the gap.',
+  summary: 'The Köln agreement is in force: a southern departure off 23L needs your release, and two arrivals are on final. Fit it in the gap.',
   params(seed) {
     const r = rnd(seed, 'dus-release');
     return {
-      d1: +r.range(3, 4).toFixed(1), d2: +r.range(13.4, 14.4).toFixed(1), dep: r.pick(['A320', 'B738', 'A321', 'B753']), sid: r.pick(['MODRU2T', 'MEVEL4T', 'COL6T', 'KUMIK7T']),
+      d1: +r.range(3, 4).toFixed(1), d2: +r.range(13.4, 14.4).toFixed(1), dep: r.pick(['A320', 'B738', 'A321', 'B753']), sid: r.pick(['NVO2T', 'GMH1T', 'COL6T', 'KUMIK7T']),
       cs1: r.pick(['EWG2EK', 'CFG1414']), cs2: r.pick(['DLH7PK', 'TUI3EA']), csD: r.pick(['EWG8766', 'DLH1VL', 'SXS6KA', 'CFG3192']),
     };
   },
   scenario(_pack, _seed, p) {
     const sp: SpawnSpec[] = [dusArr(p.cs1, 'A321', 'BIKMU1A', { spawnDist: 40 }), dusArr(p.cs2, 'B738', 'DOMUX1A', { spawnDist: 40 }), { t: 3, kind: 'dep', cs: p.csD, type: p.dep, sid: p.sid }];
-    return { startUtc: '07:40', metar: DUS_GOOD, runway: '23L', readbackErr: 0, events: [], spawns: sp };
+    // Düsseldorf Tower launches on its own except where a release is needed: here, the Köln agreement
+    return { startUtc: '07:40', metar: DUS_GOOD, runway: '23L', readbackErr: 0, events: [], spawns: sp, neighbourBusy: true };
   },
 };
 
@@ -545,7 +546,7 @@ const DUS_PARALLEL: DrillDef = {
   cs: (p) => [p.csL, p.csF],
   params(seed) {
     const r = rnd(seed, 'dus-parallel');
-    return { dL: +r.range(6, 8).toFixed(1), delta: +r.range(-1.2, 0.6).toFixed(1), lead: r.pick(['A320', 'B738', 'A321']), fol: r.pick(['A320', 'A319', 'E190', 'B738']), csL: r.pick(['EWG2EK', 'CFG1414', 'TUI3EA']), csF: r.pick(['DLH7PK', 'SXS6KA', 'KLM1853']) };
+    return { dL: +r.range(6, 8).toFixed(1), delta: +r.range(-1.2, 0.6).toFixed(1), lead: r.pick(['A320', 'B738', 'A321']), fol: r.pick(['A320', 'A319', 'E190', 'B738']), csL: r.pick(['EWG2EK', 'CFG1414', 'TUI3EA']), csF: r.pick(['DLH7PK', 'SXS6KA', 'KLC1853']) };
   },
   scenario(_pack, _seed, p) {
     return { startUtc: '15:10', metar: DUS_GOOD, runway: '23R', readbackErr: 0, events: [], spawns: [dusArr(p.csL, p.lead, 'BIKMU1A', { spawnDist: 40 }), dusArr(p.csF, p.fol, 'DOMUX1A', { spawnDist: 40 })] };

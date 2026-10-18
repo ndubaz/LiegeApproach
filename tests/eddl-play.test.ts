@@ -55,14 +55,18 @@ describe('Düsseldorf operations', () => {
     expect(sched.length).toBeLessThanOrEqual(2);
   });
 
-  it('a daytime hour is busy, uses the IAF stacks and calls the departures to Langen Radar', () => {
+  it('a daytime hour is busy, holds only where a hold is published or described, and calls the departures to Langen Radar', () => {
     const sim = run(new Sim(pack, day(7, 15)), autoControl, 3600);
     expect(sim.landings.length + sim.departuresHandled).toBeGreaterThan(10);
     const said = sim.log.map((t) => t.text).join('\n');
     expect(said).toMatch(/Langen/);
     expect(said.match(banned)?.[0]).toBeUndefined();
-    const holds = sim.log.filter((t) => /hold at (\w+)/.test(t.text)).map((t) => t.text.match(/hold at (\w+)/)![1]);
-    for (const h of holds) expect(pack.holds.some((x) => x.fix === h), h).toBe(true);
+    // a hold the AD section publishes ("as published"), or one ATC describes: inbound track and turns
+    for (const t of sim.log.filter((x) => x.from === 'ATC' && /hold at (\w+)/.test(x.text))) {
+      const h = t.text.match(/hold at (\w+)/)![1];
+      const spec = pack.holds.find((x) => x.fix === h);
+      expect((!!spec && spec.published !== false) || /inbound track \d{3}/.test(t.text), t.text).toBe(true);
+    }
   });
 
   it('the supervisor announces a shift plan at the start', () => {

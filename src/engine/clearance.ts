@@ -28,16 +28,17 @@ export type Item =
   | { k: 'standby' }                                // "CS, standby": answers a call for now; the pilot calls again if nothing follows
   | { k: 'star'; name: string }                     // "cleared KOK7D arrival" (after a runway change: "runway change, now runway 04R, expect ILS 04R, ...")
   | { k: 'sayagain' }                               // "CS, say again": the pilot repeats their last call
-  | { k: 'eat' };                                   // "CS, revised expected approach time 0215" (to an aircraft already holding)
+  | { k: 'eat' }                                    // "CS, revised expected approach time 0215" (to an aircraft already holding)
+  | { k: 'expect'; app: ApproachType; rwy: string }; // 2.0 review: "expect ILS approach runway 23R" (with a transition; the clearance comes later)
 
 export interface Clearance { cs: string; items: Item[] }
 
-export const ITEM_ORDER: Item['k'][] = ['sayagain', 'roger', 'standby', 'rel', 'relhold', 'atis', 'brk', 'hdg', 'dct', 'star', 'trans', 'ron', 'hold', 'eat', 'lvl', 'spd', 'spdmin', 'spdres', 'app', 'sqk', 'appr', 'deny', 'xfr'];
+export const ITEM_ORDER: Item['k'][] = ['sayagain', 'roger', 'standby', 'rel', 'relhold', 'atis', 'brk', 'hdg', 'dct', 'star', 'trans', 'ron', 'hold', 'eat', 'lvl', 'spd', 'spdmin', 'spdres', 'app', 'expect', 'sqk', 'appr', 'deny', 'xfr'];
 export const sortItems = (items: Item[]) => [...items].sort((a, b) => ITEM_ORDER.indexOf(a.k) - ITEM_ORDER.indexOf(b.k));
 
 /** Merge a new item into a list: one item per kind (approve/deny exclusive, spd variants exclusive). */
 export function mergeItem(items: Item[], it: Item): Item[] {
-  const group = (k: Item['k']) => (k === 'spd' || k === 'spdmin' || k === 'spdres' ? 'spd' : k === 'appr' || k === 'deny' ? 'ans' : k === 'rel' || k === 'relhold' ? 'rel' : k === 'roger' || k === 'standby' || k === 'sayagain' ? 'ack' : k === 'hdg' || k === 'dct' || k === 'trans' || k === 'ron' || k === 'hold' || k === 'star' ? 'lat' : k);
+  const group = (k: Item['k']) => (k === 'spd' || k === 'spdmin' || k === 'spdres' ? 'spd' : k === 'appr' || k === 'deny' ? 'ans' : k === 'rel' || k === 'relhold' ? 'rel' : k === 'roger' || k === 'standby' || k === 'sayagain' ? 'ack' : k === 'hdg' || k === 'dct' || k === 'trans' || k === 'ron' || k === 'hold' || k === 'star' ? 'lat' : k === 'expect' ? 'app' : k);
   return sortItems([...items.filter((x) => group(x.k) !== group(it.k)), it]);
 }
 
@@ -149,6 +150,10 @@ export interface Ctx {
   starChange?: { rwy: string; app: ApproachType };
   /** the position's own callsign ("Liège Approach"); default Liège */
   appCallsign?: string;
+  /** 2.0 review: a hold the AIP does not publish is described ("hold at NVO, inbound track 068, right turns") */
+  holdDesc?: { inboundMag: number; turn: 'L' | 'R' };
+  /** 2.0 review: the first reply to an arrival the centre has identified is the position's callsign alone ("EWG1AB, Langen Radar") */
+  plainFirstReply?: boolean;
   /** the pack's units, for "contact ..." (default: the active table) */
   units?: UnitTable;
   /** telephony designators (the engine's plus the pack's) */
@@ -218,10 +223,13 @@ export function phraseology(cl: Clearance, ctx: Ctx): { text: string; speech: st
         break;
       }
       case 'dct': t.push(`proceed direct ${it.fix}`); s.push(`proceed direct ${it.fix}`); break;
-      case 'trans': t.push(`cleared ${it.name} transition`); s.push(`cleared ${it.name.replace(/(\d)([A-Z])$/, (_m, d, l) => ` ${digits(d)} ${digits(l)}`)} transition`); break;
+      case 'trans': t.push(`cleared ${it.name} transition`); s.push(`cleared ${it.name.replace(/(\d)([A-Z])$/, (_m, d, l) => ` ${digits(d)} ${digits(l)}`).replace(/([A-Z])(\d)(\d)$/, (_m, l, d1, d2) => `${l} ${digits(d1)} ${digits(d2)}`)} transition`); break;
       case 'ron': t.push('resume own navigation'); s.push('resume own navigation'); break;
       case 'hold':
-        t.push(`hold at ${it.fix} as published`); s.push(`hold at ${it.fix} as published`);
+        if (ctx.holdDesc) {
+          const ib = String(Math.round(ctx.holdDesc.inboundMag) % 360 || 360).padStart(3, '0'), turn = ctx.holdDesc.turn === 'L' ? 'left' : 'right';
+          t.push(`hold at ${it.fix}, inbound track ${ib}, ${turn} turns`); s.push(`hold at ${it.fix}, inbound track ${digits(ib)}, ${turn} turns`);
+        } else { t.push(`hold at ${it.fix} as published`); s.push(`hold at ${it.fix} as published`); }
         if (ctx.efc === null) { t.push('no delay expected'); s.push('no delay expected'); }
         else if (ctx.efc) { t.push(`expected approach time ${ctx.efc}`); s.push(`expected approach time ${digits(ctx.efc)}`); }
         break;
@@ -231,7 +239,7 @@ export function phraseology(cl: Clearance, ctx: Ctx): { text: string; speech: st
         else { t.push('no delay expected'); s.push('no delay expected'); }
         break;
       case 'roger':
-        if (ctx.firstCall) { const n = ctx.appCallsign ?? 'Liège Approach'; t.push(`${n}, identified`); s.push(`${n}, identified`); } else { t.push('roger'); s.push('roger'); }
+        if (ctx.firstCall) { const n = ctx.appCallsign ?? 'Liège Approach'; const w = ctx.plainFirstReply ? n : `${n}, identified`; t.push(w); s.push(w); } else { t.push('roger'); s.push('roger'); }
         break;
       case 'standby': t.push('standby'); s.push('standby'); break;
       case 'sayagain': t.push('say again'); s.push('say again'); break;
@@ -266,6 +274,11 @@ export function phraseology(cl: Clearance, ctx: Ctx): { text: string; speech: st
       case 'app': {
         const a = appName(it.app);
         t.push(`cleared ${a.t} approach runway ${it.rwy}`); s.push(`cleared ${a.s} approach runway ${rwySpeech(it.rwy)}`);
+        break;
+      }
+      case 'expect': {
+        const a = appName(it.app);
+        t.push(`expect ${a.t} approach runway ${it.rwy}`); s.push(`expect ${a.s} approach runway ${rwySpeech(it.rwy)}`);
         break;
       }
       case 'sqk': t.push(`squawk ${it.code}`); s.push(`squawk ${digits(it.code)}`); break;
@@ -355,6 +368,7 @@ export function itemChip(it: Item): string {
     case 'star': return it.name;
     case 'sayagain': return 'SAY AGAIN';
     case 'eat': return 'EAT';
+    case 'expect': return `EXP ${it.app} ${it.rwy}`;
   }
 }
 

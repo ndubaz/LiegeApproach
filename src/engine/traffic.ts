@@ -1,6 +1,6 @@
 import { Rng } from './rng';
 import type { Scenario, ScEvent, SpawnSpec, Storm } from './types';
-import { parseMetar, presetMetar, selectConfig } from './weather';
+import { isDst, parseMetar, presetMetar, selectConfig } from './weather';
 import { PERF } from './perf';
 import { bearing, dist, move, type XY } from '../geo';
 import { parseLevel, type Level, type Pack } from '../pack/load';
@@ -99,6 +99,8 @@ export interface FreePlayOpts {
   reserved?: 0 | 1 | 2;
   /** Expected emergencies per hour (0 to 2). Overrides `emergencies` when set. */
   emergencyRate?: number;
+  /** 2.0 review: calendar date of the session (yyyy-mm-dd): summer time moves the airport's local day one hour earlier in UTC. */
+  date?: string;
 }
 
 /** What the free-play designer can offer at an airport: which sliders make sense and what the pack calls things. */
@@ -110,9 +112,32 @@ export function designerOptions(pack: Pack): { mix: { cargo: boolean; pax: boole
     reserved: t?.reserved?.name,
     trends: ['steady', 'deteriorating', 'improving', 'wind-shift'],
     templates: templatesOf(pack),
-    curfew: pack.spec.curfew ? `${pack.spec.curfew.fromLocal} to ${pack.spec.curfew.toLocal} local` : undefined,
+    curfew: curfewText(pack),
   };
 }
+
+/** The night flight restriction in words: "22:00 to 06:00 local", or per movement type where the pack splits it. */
+export function curfewText(pack: Pack): string | undefined {
+  const c = pack.spec.curfew;
+  if (!c) return undefined;
+  if (c.arrFromLocal) return `take-offs ${c.fromLocal} to ${c.toLocal}, landings ${c.arrFromLocal} to ${c.arrToLocal ?? c.toLocal} local`;
+  return `${c.fromLocal} to ${c.toLocal} local`;
+}
+const hm = (s: string) => { const [h, m] = s.split(':').map(Number); return h + (m || 0) / 60; };
+const inWindow = (h: number, from: number, to: number) => (from <= to ? h >= from && h < to : h >= from || h < to);
+/**
+ * 2.0 review: the movement is inside the night restriction at this local time (hours). Departures: `fromLocal` to
+ * `toLocal`. Arrivals: landings after the latest delayed landing (`arrLateLocal`, else `arrFromLocal`) until `arrToLocal`.
+ */
+export function inCurfew(pack: Pack, kind: 'arr' | 'dep', localH: number): boolean {
+  const c = pack.spec.curfew;
+  if (!c) return false;
+  if (kind === 'dep') return inWindow(((localH % 24) + 24) % 24, hm(c.fromLocal), hm(c.toLocal));
+  const from = c.arrLateLocal ?? c.arrFromLocal ?? c.fromLocal, to = c.arrToLocal ?? c.toLocal;
+  return inWindow(((localH % 24) + 24) % 24, hm(from), hm(to));
+}
+/** The airport's local offset from UTC for a session (summer time when the date is in it). */
+export const localOffsetOf = (pack: Pack, date?: string) => pack.utcOffsetWinter + (date && isDst(date) ? 1 : 0);
 
 /** The engine's fallback templates (a cargo hub's night and day); packs give their own in `traffic.templates`. */
 export const TEMPLATES: Record<'night' | 'day' | 'quiet' | 'shift', TemplateSpec> = {
@@ -219,15 +244,16 @@ export const DEFAULT_CURVE: HourCurve = {
   ],
 };
 /** The pack's demand curve: `traffic.curve`, else built from the hourly `demand` table (local time), else the generic day. */
-export function curveOf(pack: Pack): HourCurve {
+export function curveOf(pack: Pack, offsetH = pack.utcOffsetWinter): HourCurve {
   const t = pack.spec.traffic;
   if (t?.curve) return t.curve;
   if (t?.demand?.length === 24) {
-    const off = pack.utcOffsetWinter;
+    const off = offsetH;
     const arr: [number, number][] = [], dep: [number, number][] = [];
     for (let u = 0; u <= 24; u++) {
       const d = t.demand[(((u + off) % 24) + 24) % 24];
-      arr.push([u, d.perHour / 2]); dep.push([u, d.perHour / 2]);
+      // an even split unless the pack gives arrivals and departures (Düsseldorf: the 06:00 departure wave, the 22:00 arrivals)
+      arr.push([u, d.arr ?? d.perHour / 2]); dep.push([u, d.dep ?? d.perHour / 2]);
     }
     const phases: PhaseSpec[] = [];
     for (let u = 0; u < 24; u++) {
@@ -458,13 +484,15 @@ function spawnFromPattern(p: PatternSpec, t: number, rng: Rng, cs: CallsignPool)
   const callsign = p.cs ?? (p.csReg ? cs.reg() : `${p.csOp ?? 'GA'}${rng.int(p.csNum?.[0] ?? 1, p.csNum?.[1] ?? 99)}`);
   const type = p.types.length > 1 ? rng.pick(p.types) : p.types[0];
   const req = p.request ? { kind: p.request.kind, level: parseLevel(p.request.level), fix: p.request.fix, route: p.request.route } : undefined;
-  return { t, kind: p.kind, cs: callsign, type, route: p.route, from: p.from, level: parseLevel(p.level), spd: p.spd, formation: p.formation, request: req };
+  return { t, kind: p.kind, cs: callsign, type, route: p.route, from: p.from, level: parseLevel(p.level), spd: p.spd, formation: p.formation, request: req, ...(p.twr ? { twr: true as const } : {}) };
 }
+/** 2.0 review: the pattern flies at this local hour (a HEMS helicopter by day only); patterns without hours always do. */
+const patternFlies = (p: PatternSpec, localH: number) => !p.hoursLocal || inWindow(((localH % 24) + 24) % 24, p.hoursLocal[0], p.hoursLocal[1]);
 /** Magnetic heading of a runway rounded to 10 degrees (the wind direction that favours it). */
 const rwyWindDir = (pack: Pack, rwy: string) => { const r = pack.runways.get(rwy); return r ? (Math.round((((r.crs - pack.meta.magVar) % 360) + 360) % 360 / 10) * 10 || 360) : 220; };
 const accName = (pack: Pack) => pack.meta.upstream[0]?.name ?? 'The centre';
 
-interface DeckCtx { rng: Rng; cs: CallsignPool; spawns: SpawnSpec[]; events: ScEvent[]; objectives: NonNullable<Scenario['objectives']>; rwy: string; notes: string[]; start: string; pack: Pack }
+interface DeckCtx { rng: Rng; cs: CallsignPool; spawns: SpawnSpec[]; events: ScEvent[]; objectives: NonNullable<Scenario['objectives']>; rwy: string; notes: string[]; start: string; pack: Pack; offsetH?: number }
 
 function playCard(card: DeckCard, t: number, c: DeckCtx) {
   const { rng, pack } = c;
@@ -496,7 +524,8 @@ function playCard(card: DeckCard, t: number, c: DeckCtx) {
       break;
     }
     case 'hems': case 'military': {
-      const pats = tagged(card);
+      const localH = hm(c.start) + t / 3600 + (c.offsetH ?? pack.utcOffsetWinter);
+      const pats = tagged(card).filter((p) => patternFlies(p, localH));
       if (!pats.length) break;
       const p = pats.length > 1 ? rng.weighted(pats.map((x) => ({ w: x.w ?? 1, v: x }))) : pats[0];
       c.spawns.push(spawnFromPattern(p, t, rng, c.cs));
@@ -558,7 +587,8 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
   const seed = o.seed ?? Math.floor(Math.random() * 1e9);
   const rng = new Rng(seed);
   const templates = templatesOf(pack);
-  const curve = curveOf(pack);
+  const offsetH = localOffsetOf(pack, o.date);
+  const curve = curveOf(pack, offsetH);
   const tpl0 = templates[o.template];
   const byHour = o.startHour !== undefined;
   const tpl = byHour ? { ...tpl0, start: hhmmOfHour(o.startHour!) } : tpl0;
@@ -575,10 +605,14 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
   const arrCurve = shiftArrCurve(W);
   const compressed = shift && !byHour;
 
-  const arrRate = (t: number) => (byHour ? mixAt(t).arr : compressed ? curveAt(arrCurve, t / W) : tpl.arrPerHr);
-  const depRate = (t: number) => (byHour ? mixAt(t).dep : compressed ? curveAt(SHIFT_CURVE.dep, t / W) : tpl.depPerHr);
-  const arrT = poissonTimes(rng, W, arrRate, byHour ? curve.max.arr : compressed ? 24 : tpl.arrPerHr);
-  const depT = poissonTimes(rng, W, depRate, byHour ? curve.max.dep : compressed ? 20 : tpl.depPerHr).filter((t) => t >= 60);
+  // the pack's own shift (Düsseldorf: the 06:00 departure wave) instead of the cargo night
+  const own = compressed ? pack.spec.traffic?.shiftCurve : undefined;
+  const arrRate = (t: number) => (byHour ? mixAt(t).arr : own ? curveAt(own.arr, t / W) : compressed ? curveAt(arrCurve, t / W) : tpl.arrPerHr);
+  const depRate = (t: number) => (byHour ? mixAt(t).dep : own ? curveAt(own.dep, t / W) : compressed ? curveAt(SHIFT_CURVE.dep, t / W) : tpl.depPerHr);
+  const arrT = poissonTimes(rng, W, arrRate, byHour ? curve.max.arr : own ? own.max.arr : compressed ? 24 : tpl.arrPerHr);
+  // the night restriction (AD 2.20 at Düsseldorf): no scheduled take-off inside it, whatever the template
+  const localAt = (t: number) => hm(tpl.start) + t / 3600 + offsetH;
+  const depT = poissonTimes(rng, W, depRate, byHour ? curve.max.dep : own ? own.max.dep : compressed ? 20 : tpl.depPerHr).filter((t) => t >= 60 && !inCurfew(pack, 'dep', localAt(t)));
   // a curfew (rate 0 over the whole window) stays empty; otherwise the session starts hot
   const curfew = byHour && arrT.length === 0 && depT.length === 0 && arrRate(0) === 0 && arrRate(W) === 0;
   if (!curfew) {
@@ -609,7 +643,8 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
   for (const p of patternsOf(pack)) {
     if (!p.at || p.at > o.military) continue;
     if (p.at === 1 && shift) continue;
-    extras.push(spawnFromPattern(p, at(), rng, cs));
+    const sp = spawnFromPattern(p, at(), rng, cs);
+    if (patternFlies(p, localAt(sp.t))) extras.push(sp);
   }
   // the designer's general-aviation and military shares: VFR crossings and military transits on top of the schedule
   if (o.mix) {
@@ -653,7 +688,7 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
   let storms: Storm[] | undefined;
   if (o.weather === 'storms') storms = [{ p: { x: -14, y: -10 }, r: 4, vx: 8, vy: 10 }, { p: { x: -22, y: 6 }, r: 3.5, vx: 9, vy: 6 }, { p: { x: 8, y: -20 }, r: 5, vx: 4, vy: 9 }];
   const reserved = pack.spec.traffic?.reserved;
-  if (shift) drawDeck({ rng, cs, spawns, events, objectives, rwy, notes, start: tpl.start, pack }, W);
+  if (shift) drawDeck({ rng, cs, spawns, events, objectives, rwy, notes, start: tpl.start, pack, offsetH }, W);
   else if (o.reserved === undefined && o.military >= 2 && reserved && reservedActive(pack, tpl.start, Math.round(W * 0.4)) && reservedActive(pack, tpl.start, Math.round(W * 0.9))) {
     const on = Math.round(W * 0.4);
     events.push({ t: on, kind: 'tsa', name: reserved.name, on: true }, { t: Math.round(W * 0.9), kind: 'tsa', name: reserved.name, on: false });
@@ -721,6 +756,7 @@ export function freePlay(pack: Pack, o: FreePlayOpts): Scenario {
     id: 'free', title: `Free play · ${byHour ? `${cap(mixAt(0).label)} from ${tpl.start}Z` : tpl.title}`, desc: 'Generated session', seed, durationMin: o.durationMin, startUtc: tpl.start, metar,
     runway: rwy, spawns, events, storms, readbackErr: [0, 0.02, 0.04, 0.06, 0.08, 0.1][o.difficulty], confusion: o.difficulty >= 4, freePlay: true,
     briefing: parts.join(' '), objectives: objectives.length ? objectives : undefined, icao: pack.meta.icao,
+    ...(o.date ? { date: o.date } : {}),
   };
 }
 

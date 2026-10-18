@@ -104,3 +104,20 @@ export const DEP_S: Record<string, number> = {
 export function depMinS(leader: Recat, follower: Recat): number {
   return Math.max(DEP_S[leader + follower] ?? 0, 60);
 }
+
+// ---- 2.0 review: the ICAO scheme, for units that do not use RECAT-EU (Düsseldorf) ----
+export type WakeScheme = 'RECAT' | 'ICAO';
+/** ICAO Doc 4444 8.7.3.4 arrival wake minima, NM (leader → follower), with the A380 (J) guidance. Missing = radar minimum. */
+export const ICAO_NM: Record<string, number> = { JH: 6, JM: 7, JL: 8, HH: 4, HM: 5, HL: 6, ML: 5 };
+/** ICAO Doc 4444 departure wake minima, seconds: 2 minutes behind a heavy (and a super for a heavy), 3 minutes behind a super for medium and light. */
+export const ICAO_DEP_S: Record<string, number> = { JH: 120, JM: 180, JL: 180, HM: 120, HL: 120, ML: 120 };
+/** Arrival wake minimum between two aircraft under a scheme (RECAT-EU by default). */
+export function wakeNmOf(scheme: WakeScheme | undefined, leader: Perf, follower: Perf, radarMin = 3): number {
+  if (scheme === 'ICAO') return Math.max(ICAO_NM[leader.wake + follower.wake] ?? 0, radarMin);
+  return wakeMinNm(leader.recat, follower.recat, radarMin);
+}
+/** Departure wake time minimum between two aircraft under a scheme, never less than 60 s. */
+export function depMinSOf(scheme: WakeScheme | undefined, leader: Perf, follower: Perf): number {
+  if (scheme === 'ICAO') return Math.max(ICAO_DEP_S[leader.wake + follower.wake] ?? 0, 60);
+  return depMinS(leader.recat, follower.recat);
+}

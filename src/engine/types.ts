@@ -20,6 +20,8 @@ export interface Request {
   t: number;
   /** MIL crossing: the level block the formation wants to cross in (lowest, highest). */
   band?: [Level, Level];
+  /** 2.0 review: the unit that coordinates a 'milxing' crossing on the intercom (default the military unit; Tower for traffic in the control zone). */
+  unit?: string;
 }
 
 export interface HoldState { fix: string; p: XY; inbound: number; turn: 'L' | 'R'; phase: 'entry' | 'turnOut' | 'outbound' | 'turnIn' | 'inbound' | 'teardrop' | 'parallel' | 'parTurn'; tPhase: number; entry?: 'direct' | 'teardrop' | 'parallel' }
@@ -209,6 +211,7 @@ export type SpawnSpec = {
   goAroundAt?: number;      // forced go-around (tower) at this distance from threshold
   released?: true;          // departures: skip the release protocol and appear airborne
   callNow?: boolean;        // arrivals: call at once on spawn (hot start)
+  twr?: boolean;            // 2.0 review: control-zone traffic that works with Tower; Tower coordinates its crossing on the intercom
 };
 
 export type ScEvent =
@@ -270,6 +273,8 @@ export interface Scenario {
   date?: string;
   /** 2.0: the supervisor announces the shift plan at the start and an update halfway. Default: on, except in tutorial scenarios. */
   plan?: boolean;
+  /** 2.0 review: the neighbour's agreement is in force (Düsseldorf: Köln is busy), so departures via the pack's `releaseExits` need your release. */
+  neighbourBusy?: boolean;
 }
 
 /** Brussels' estimate for an arrival, sent on the intercom 2 to 4 minutes before the transfer. */

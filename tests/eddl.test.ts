@@ -103,7 +103,13 @@ describe('EDDL pack: loads and is self-consistent', () => {
       expect(h.spd).toBeGreaterThanOrEqual(220);
     }
     const dus = pack.holds.find((h) => h.fix === 'DUS')!;
-    expect(dus.min.ft).toBe(4000);
+    expect(dus.min.ft).toBe(3000);
+    // the transition charts (3-1-3, 3-1-4) publish no holding at the entry fixes
+    for (const f of ['BIKMU', 'DOMUX', 'HALME', 'PISAP']) expect(pack.holds.some((h) => h.fix === f), `no hold at ${f}`).toBe(false);
+    // the centre's en-route holds are not in the AD section: ATC describes them
+    for (const f of ['NVO', 'ELDAR', 'DOMEG']) expect(pack.holds.find((h) => h.fix === f)!.published).toBe(false);
+    // the stacks are the downwind holds, per runway direction
+    expect(EDDL.stacksByDirection).toEqual({ '23': ['DL429', 'DL409'], '05': ['DL524', 'DL503'] });
     // the 23 downwind holds are on the 050 (053 true) track between DL426 and DL430 / DL406 and DL410
     expect(bearing(p('DL426'), p('DL429'))).toBeCloseTo(53, 0);
     expect(bearing(p('DL406'), p('DL409'))).toBeCloseTo(53, 0);
@@ -193,6 +199,8 @@ describe('EDDL pack: loads and is self-consistent', () => {
       }
     }
     expect(pack.meta.tlTable!.map((r) => r.fl)).toEqual([80, 70, 60]);
+    // FL060 needs QNH 1014: at 1013 hPa it is 5,993 ft
+    expect(pack.meta.tlTable!.find((r) => r.fl === 60)!.qnhMin).toBe(1014);
   });
 });
 
@@ -231,8 +239,15 @@ describe('EDDL pack: 2.0 fields', () => {
       expect(h.perHour).toBeGreaterThanOrEqual(0);
       expect(h.paxShare).toBeGreaterThan(0.5);
     }
-    // curfew 22:00 to 06:00 local: next to nothing moves
-    for (const h of [23, 0, 1, 2, 3, 4]) expect(t.demand![h].perHour).toBeLessThanOrEqual(2);
+    // AD 2.20: no take-offs 22:00 to 06:00 local, no scheduled landings 23:00 to 06:00 (delayed to 23:30)
+    for (const h of [22, 23, 0, 1, 2, 3, 4, 5]) expect(t.demand![h].dep ?? 0).toBe(0);
+    for (const h of [0, 1, 2, 3, 4, 5]) expect(t.demand![h].perHour).toBeLessThanOrEqual(1);
+    expect(t.demand![23].arr).toBeLessThanOrEqual(4);
+    // the 06:00 departure wave and the 22:00 arrival hour
+    expect(t.demand![6].dep!).toBeGreaterThan(3 * t.demand![6].arr!);
+    expect(t.demand![22].arr!).toBeGreaterThanOrEqual(20);
+    expect(t.demand![21].arr!).toBeGreaterThan(t.demand![21].dep!);
+    for (const h of t.demand!) expect((h.arr ?? 0) + (h.dep ?? 0)).toBe(h.perHour);
     // a real day: 400 to 500 movements, morning and evening peaks
     const total = t.demand!.reduce((s, h) => s + h.perHour, 0);
     expect(total).toBeGreaterThan(400);
