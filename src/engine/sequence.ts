@@ -52,7 +52,7 @@ export function trackNm(sim: Sim, ac: Aircraft, via?: Procedure): number {
     let p = ac.p, d = 0;
     for (const l of ac.route) { d += dist(p, l.p); p = l.p; }
     const last = ac.route[ac.route.length - 1];
-    if (last.fix === r.ifFix) return d + distToThr(last.p, r);
+    if (last.fix === r.ifFix || sim.isFinalFix(last.fix, r.id)) return d + Math.max(0, distToThr(last.p, r));
     if (stacks.includes(last.fix)) return d + trLen;
     return d + dist(p, r.thr) + 12;
   }
@@ -105,7 +105,7 @@ export function sequenceMembers(sim: Sim, except?: Aircraft): Aircraft[] {
     if (o.app || o.emergency) return true;
     if (o.mode === 'HOLD') return false;
     // on a transition to the final (an earlier hold instruction no longer counts once it is on one)
-    if (o.mode === 'NAV' && o.route.some((l) => l.fix === sim.rwy.ifFix || l.fix === (o.expectRwy && sim.pack.runways.get(o.expectRwy)?.ifFix)) && isTransition(sim, o.proc)) return true;
+    if (o.mode === 'NAV' && o.route.some((l) => l.fix === sim.rwy.ifFix || l.fix === (o.expectRwy && sim.pack.runways.get(o.expectRwy)?.ifFix) || sim.isFinalFix(l.fix, o.expectRwy ?? sim.runway)) && isTransition(sim, o.proc)) return true;
     if ((o as any)._holdAt) return false;
     if (o.mode === 'HDG' && o.state === 'assumed') {
       const r = sim.rwy;
@@ -167,16 +167,18 @@ export function slotFor(sim: Sim, ac: Aircraft, via?: Procedure): Slot {
   const si = seqIndex(sim);
   const mine = si.get(ac.cs);
   const isAhead = (o: Aircraft, to: number, tc: number) => { const oi = si.get(o.cs); return mine !== undefined && oi !== undefined ? oi < mine : to <= tc; };
+  // an aircraft on vectors near the final (not yet on the localizer) has a rough ETA: 30 s more margin either side
+  const bufFor = (o: Aircraft) => buf + (o.mode === 'HDG' && !o.app?.locCap ? 30 : 0);
   const fits = (tc: number) => others.every(({ o, t: to }) => {
-    if (isAhead(o, to, tc)) return tc - to >= sepS(o, ac) + buf;
+    if (isAhead(o, to, tc)) return tc - to >= sepS(o, ac) + bufFor(o);
     // sequenced behind it but still able to give way (not yet on the localizer): its spacing is a later problem
     if (mine !== undefined && si.has(o.cs) && !o.app?.locCap) return true;
-    return to - tc >= sepS(ac, o) + buf;
+    return to - tc >= sepS(ac, o) + bufFor(o);
   });
   const ok = fits(t);
   let waitS = 0;
   if (!ok) {
-    const cands = others.map(({ o, t: to }) => to + sepS(o, ac) + buf - t).filter((x) => x > 0).sort((a, b) => a - b);
+    const cands = others.map(({ o, t: to }) => to + sepS(o, ac) + bufFor(o) - t).filter((x) => x > 0).sort((a, b) => a - b);
     waitS = cands.find((w) => fits(t + w)) ?? (cands.length ? cands[cands.length - 1] : 0);
   }
   const ahead = others.filter((x) => isAhead(x.o, x.t, t)).sort((a, b) => a.t - b.t);
@@ -224,7 +226,7 @@ export const TRANSITION_HORIZON_S = 600;
  * The first aircraft this one would lose separation with (3 NM, 1,000 ft) in the next `horizon` seconds,
  * stepping the real pilot model for everyone; `mutate` tries a candidate clearance first.
  */
-export function predictedConflict(sim: Sim, ac: Aircraft, mutate?: (c: Aircraft) => void, horizon = 300): { with: Aircraft; t: number } | undefined {
+export function predictedConflict(sim: Sim, ac: Aircraft, mutate?: (c: Aircraft) => void, horizon = 300, vertFt = 950): { with: Aircraft; t: number } | undefined {
   const on10 = (q: { t: number }) => Math.abs(q.t / 10 - Math.round(q.t / 10)) < 1e-6;
   const mine = predict(sim, ac, horizon, 10, mutate, 2.5).filter(on10);
   const prev = (sim as any)._predCache as { t: number; h: number; m: Map<Aircraft, ReturnType<typeof predict>> } | undefined;
@@ -242,7 +244,8 @@ export function predictedConflict(sim: Sim, ac: Aircraft, mutate?: (c: Aircraft)
       const near = (q: typeof a) => Math.hypot(q.p.x, q.p.y) < 4 && q.alt < 1500 && !q.locCap;
       if (near(a) || near(b)) continue;
       if (a.locCap && b.locCap) continue; // spacing on the final is the slot check's job
-      if (dist(a.p, b.p) < 3.2 && Math.abs(a.alt - b.alt) < 950) { if (!best || a.t < best.t) best = { with: o, t: a.t }; break; }
+      // the wider margin applies against traffic descending on the final (the turn onto the transition over short final)
+      if (dist(a.p, b.p) < 3.2 && Math.abs(a.alt - b.alt) < (b.locCap ? vertFt : 950)) { if (!best || a.t < best.t) best = { with: o, t: a.t }; break; }
     }
   }
   return best;

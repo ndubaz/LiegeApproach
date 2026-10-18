@@ -35,7 +35,7 @@ const GRADES: Grade[] = ['fail', 'pass', 'good', 'rated'];
 const gRank = (g?: Grade) => (g ? GRADES.indexOf(g) : -1);
 
 /** A logged shift: a free-play or daily session of at least 15 minutes on position. */
-export interface ShiftLog { date: string; id: string; title: string; grade: Grade; min: number }
+export interface ShiftLog { date: string; id: string; title: string; grade: Grade; min: number; /** 2.0: the airport (ICAO) the shift was worked at */ icao?: string }
 export interface CheckrideLog { id: string; date: string; pass: boolean; score?: number; credited?: boolean }
 export interface CareerData { v: 1; shifts: ShiftLog[]; checkrides: CheckrideLog[] }
 export const emptyCareer = (): CareerData => ({ v: 1, shifts: [], checkrides: [] });
@@ -77,8 +77,18 @@ const STEPS: StepSpec[] = [
   { shifts: { n: 8, min: 'good' }, challenges: ['night-bank', 'runway-change', 'hot-tsa'], moves: 400 },
   { shifts: { n: 12, min: 'good', rated: 3 }, challenges: ['go-around', 'radio-failure', 'compound-night'], hours: 20 },
 ];
+/** The Düsseldorf ladder: the same shifts and hours, its own challenges. */
+const STEPS_EDDL: StepSpec[] = [
+  { lessons: 3, shifts: { n: 2, min: 'pass' }, challenges: ['dus-super'] },
+  { shifts: { n: 5, min: 'pass' }, challenges: ['dus-quiet-night', 'dus-koeln', 'dus-morning-rush'], hours: 2 },
+  { shifts: { n: 8, min: 'good' }, challenges: ['dus-runway-change', 'dus-parallel', 'dus-fog'], moves: 400 },
+  { shifts: { n: 12, min: 'good', rated: 3 }, challenges: ['dus-north-closure', 'dus-emergency-return', 'dus-full-hour'], hours: 20 },
+];
+/** The rank requirements for an airport's ladder. */
+export const stepsFor = (icao: string): StepSpec[] => (icao === 'EDDL' ? STEPS_EDDL : STEPS);
 
 const chTitle = (id: string) => CHALLENGES.find((c) => c.id === id)?.title ?? id;
+export type { StepSpec };
 
 export function careerStatus(inp: CareerInput, rides: CheckrideDef[] = CHECKRIDES): CareerStatus {
   const passedRide = (id: string) => inp.career.checkrides.find((c) => c.id === id && c.pass);
@@ -86,8 +96,9 @@ export function careerStatus(inp: CareerInput, rides: CheckrideDef[] = CHECKRIDE
   const promotedOn: (string | undefined)[] = [undefined];
   while (index < rides.length && passedRide(rides[index].id)) { promotedOn.push(passedRide(rides[index].id)!.date); index++; }
   const name = RANKS[index];
-  if (index >= STEPS.length || index >= rides.length) return { index, name, promotedOn };
-  const st = STEPS[index];
+  const STEPS_HERE = stepsFor(rides[0]?.icao ?? 'EBLG');
+  if (index >= STEPS_HERE.length || index >= rides.length) return { index, name, promotedOn };
+  const st = STEPS_HERE[index];
   const reqs: Requirement[] = [];
   if (st.lessons) {
     const n = Math.min(st.lessons, inp.lessonsPassed);
@@ -153,15 +164,20 @@ const A = (t: number, cs: string, type: string, star: string, x: Partial<SpawnSp
 const D = (t: number, cs: string, type: string, sid: string, x: Partial<SpawnSpec> = {}): SpawnSpec => ({ t, kind: 'dep', cs, type, sid, ...x });
 const FIGHTERS = (t: number, cs: string): SpawnSpec => ({ t, kind: 'mil', cs, type: 'F35', formation: 2, route: ['GILOM', 'ALHUV', 'VERVIERS'], from: { brg: 282, dist: 18 }, level: { fl: 70 }, spd: 300 });
 
-function ride(id: string, to: number, title: string, brief: string, minGrade: Grade, seed: number, startUtc: string, metar: string, spawns: SpawnSpec[], script: ExamEvent[], readbackErr = 0.02): CheckrideDef {
+function ride(id: string, to: number, title: string, brief: string, minGrade: Grade, seed: number, startUtc: string, metar: string, spawns: SpawnSpec[], script: ExamEvent[], readbackErr = 0.02, where: { icao: string; runway: string; events?: Scenario['events']; briefing?: string } = { icao: 'EBLG', runway: '22L' }): CheckrideDef {
   const sp = spawns.map((s) => ({ ...s }));
   hotStart(sp);
   const scenario: Scenario = {
-    id: `checkride-${id}`, title, desc: brief, seed, durationMin: durationFor(sp), startUtc, metar, runway: '22L', readbackErr, icao: 'EBLG',
-    spawns: sp, events: [], briefing: 'An examiner is plugged in behind you. Work the traffic as you would on any night. Expect the unexpected.',
+    id: `checkride-${id}`, title, desc: brief, seed, durationMin: durationFor(sp), startUtc, metar, runway: where.runway, readbackErr, icao: where.icao,
+    spawns: sp, events: where.events ?? [], briefing: where.briefing ?? 'An examiner is plugged in behind you. Work the traffic as you would on any night. Expect the unexpected.',
   };
-  return { id, icao: 'EBLG', to, title, brief, minGrade, script, scenario };
+  return { id, icao: where.icao, to, title, brief, minGrade, script, scenario };
 }
+const DUS_GOOD = 'EDDL 120550Z 23008KT 9999 FEW035 12/07 Q1018 NOSIG';
+const DUS_GUSTY = 'EDDL 121505Z 25016G26KT 9999 SCT025 BKN040 11/05 Q1009 NOSIG';
+const AD = (t: number, cs: string, type: string, star: string, x: Partial<SpawnSpec> = {}): SpawnSpec => ({ t, kind: 'arr', cs, type, star, spawnDist: 38, ...x });
+const GAF = (t: number, cs: string): SpawnSpec => ({ t, kind: 'mil', cs, type: 'A400', route: ['NVO', 'BIKMU', 'DL426', 'HALME'], from: { brg: 200, dist: 8 }, level: { fl: 70 }, request: { kind: 'climb', level: { fl: 110 } } });
+const DUS_BRIEF = 'An examiner from Langen is plugged in behind you. Work the traffic as you would on any day. Expect the unexpected.';
 
 export const CHECKRIDES: CheckrideDef[] = [
   ride('ojt', 1, 'Checkride: Student to OJT', 'Four freighters and two departures on a quiet night. Your instructor watches how you handle the basics and one or two surprises.', 'pass', 501, '02:10', GOOD22, [
@@ -187,9 +203,35 @@ export const CHECKRIDES: CheckrideDef[] = [
     FIGHTERS(520, 'BAF73'),
   ], [{ t: 520, kind: 'milxing', cs: 'BAF73' }, { t: 650, kind: 'radio', cs: 'ETH3721' }, { t: 840, kind: 'birds', min: 4 }, { t: 1100, kind: 'goaround', cs: 'AZG7321' }, { t: 1300, kind: 'qnh', dq: -2 }], 0.05),
 ];
-export const checkrideById = (id: string) => CHECKRIDES.find((c) => c.id === id || c.scenario.id === id);
+/** The Düsseldorf ladder: the same four ranks, examined on the Langen Radar pickup position. */
+export const CHECKRIDES_EDDL: CheckrideDef[] = [
+  ride('dus-ojt', 1, 'Checkride: Student to OJT', 'Four arrivals from three entry fixes and two departures on a quiet morning. Your instructor watches the basics: the transition, the descent for the final, the handoff, and one or two surprises.', 'pass', 701, '07:40', DUS_GOOD, [
+    AD(5, 'EWG2EK', 'A320', 'BIKMU1A', { spawnDist: 30 }), AD(220, 'CFG1414', 'A321', 'DOMUX1A', { goAroundAt: 1.2 }), AD(480, 'DLH7PK', 'A20N', 'PISAP1A'), AD(760, 'TUI3EA', 'B738', 'BIKMU1A'),
+    D(360, 'EWG8766', 'A320', 'MODRU2T'), D(900, 'DLH1VL', 'A319', 'MEVEL4T'),
+  ], [{ t: 1300, kind: 'goaround', cs: 'CFG1414' }, { t: 420, kind: 'qnh', dq: -3 }], 0.02, { icao: 'EDDL', runway: '23L', briefing: DUS_BRIEF }),
+  ride('dus-validated', 2, 'Checkride: OJT to Validated', 'A busy hour on runway 23L: six arrivals on both downwinds, three departures and a German Air Force transport wanting to climb through the BIKMU stack. The examiner wants to see you run it alone.', 'pass', 702, '08:20', DUS_GOOD, [
+    AD(5, 'EWG1KL', 'A320', 'BIKMU1A', { spawnDist: 32 }), AD(180, 'CFG1012', 'A333', 'PISAP1A'), AD(360, 'DLH2WT', 'A21N', 'DOMUX1A'), AD(540, 'SXS1DL', 'B738', 'BIKMU1A'),
+    AD(720, 'KLM1853', 'E190', 'HALME1A'), AD(900, 'PGT1083', 'A321', 'DOMUX1A'),
+    D(250, 'EWG3DT', 'A320', 'COL6T'), D(700, 'CFG3192', 'B753', 'SONEB8T'), D(1150, 'DLH4YC', 'A20N', 'KUMIK7T'),
+    GAF(300, 'GAF651'),
+  ], [{ t: 300, kind: 'milxing', cs: 'GAF651' }, { t: 660, kind: 'birds', min: 4 }], 0.02, { icao: 'EDDL', runway: '23L', briefing: DUS_BRIEF }),
+  ride('dus-senior', 3, 'Checkride: Validated to Senior', 'Both runways open, arrivals on 23R and departures on 23L, with a mixed fleet. The examiner will throw the abnormal at you while the sequence is full.', 'pass', 703, '15:20', DUS_GOOD, [
+    AD(5, 'EWG8ZA', 'A320', 'BIKMU1A', { spawnDist: 30 }), AD(160, 'UAE55', 'A388', 'DOMUX1A'), AD(320, 'THY1899', 'A333', 'BIKMU1A', { emergency: { after: 140, type: 'radio' } }),
+    AD(480, 'DLH3UF', 'A20N', 'PISAP1A'), AD(640, 'SWR924', 'E190', 'HALME1A', { goAroundAt: 1.4 }), AD(800, 'RYR2BC', 'B738', 'DOMUX1A'), AD(960, 'EWG4EP', 'A319', 'BIKMU1A'), AD(1120, 'CFG2310', 'A339', 'PISAP1A'),
+    D(380, 'EWG6YE', 'A321', 'MODRU2T'), D(820, 'DLH2PH', 'A320', 'MEVEL4T'), D(1250, 'TUI2LE', 'B738', 'COL6T'),
+  ], [{ t: 460, kind: 'radio', cs: 'THY1899' }, { t: 900, kind: 'qnh', dq: 2 }, { t: 1500, kind: 'goaround', cs: 'SWR924' }], 0.04, { icao: 'EDDL', runway: '23R', briefing: DUS_BRIEF }),
+  ride('dus-supervisor', 4, 'Checkride: Senior to Supervisor', 'A gusty evening wave with everything at once: the northern runway closes mid-shift, a radio failure, birds on the runway and a go-around. The examiner is looking for a controller who stays ahead of the room.', 'good', 704, '16:05', DUS_GUSTY, [
+    AD(5, 'EWG1AB', 'A320', 'BIKMU1A', { spawnDist: 30 }), AD(140, 'CFG1310', 'A333', 'DOMUX1A'), AD(280, 'DLH4KA', 'A20N', 'PISAP1A'), AD(420, 'TUI7RE', 'B738', 'BIKMU1A', { emergency: { after: 200, type: 'radio' } }),
+    AD(560, 'EWG1BA', 'A319', 'HALME1A'), AD(700, 'SXS4KL', 'B738', 'DOMUX1A', { goAroundAt: 1.3 }), AD(840, 'UAE57', 'B77W', 'BIKMU1A'), AD(980, 'EJU73QX', 'A320', 'PISAP1A'),
+    AD(1120, 'EWG5GH', 'A21N', 'DOMUX1A'), AD(1260, 'KLM1859', 'E190', 'HALME1A'),
+    D(300, 'EWG2DF', 'A320', 'MODRU2T'), D(760, 'DLH6WA', 'A321', 'SONEB8T'), D(1200, 'CFG1311', 'A333', 'KUMIK7T'), D(1500, 'TUI7RF', 'B738', 'COL6T'),
+    GAF(520, 'GAF673'),
+  ], [{ t: 520, kind: 'milxing', cs: 'GAF673' }, { t: 650, kind: 'radio', cs: 'TUI7RE' }, { t: 840, kind: 'birds', min: 4 }, { t: 1100, kind: 'goaround', cs: 'SXS4KL' }, { t: 1300, kind: 'qnh', dq: -2 }], 0.05,
+  { icao: 'EDDL', runway: '23R', briefing: DUS_BRIEF, events: [{ t: 900, kind: 'parallel', on: false, notice: 600 }] }),
+];
+export const checkrideById = (id: string) => [...CHECKRIDES, ...CHECKRIDES_EDDL].find((c) => c.id === id || c.scenario.id === id);
 /** The checkrides written for an airport (Liège has the full ladder; another airport without rides stays at Student until its rides exist). */
-export const checkridesFor = (icao: string) => CHECKRIDES.filter((c) => c.icao === icao);
+export const checkridesFor = (icao: string) => [...CHECKRIDES, ...CHECKRIDES_EDDL].filter((c) => c.icao === icao);
 
 /** What the examiner saw happen, collected while the session runs. */
 export interface ExamState {
@@ -589,9 +631,11 @@ export interface ReportInput {
   checkride?: { pass: boolean };
   /** A drill: the report is about the drill result, not the traffic. */
   drill?: { pass: boolean; score: number; title: string };
+  /** 2.0: the airport's name ("Düsseldorf"), for the sign-off. */
+  airport?: string;
 }
 
-export function reportInputOf(r: Result, rank: number, x: { departures: number; emergencies: { cs: string; landed: boolean }[]; endedEarly?: boolean; checkride?: { pass: boolean }; drill?: { pass: boolean; score: number; title: string } }): ReportInput {
+export function reportInputOf(r: Result, rank: number, x: { departures: number; emergencies: { cs: string; landed: boolean }[]; endedEarly?: boolean; checkride?: { pass: boolean }; drill?: { pass: boolean; score: number; title: string }; airport?: string }): ReportInput {
   const num = (k: string) => r.metrics.find((m) => m.key === k)?.raw ?? null;
   const losses = Number(/Losses of separation: (\d+)/.exec(r.gate.lines[0]?.text ?? '')?.[1] ?? 0);
   const alerts = Number(/(\d+) conflict alerts/.exec(r.evidence.SEPC ?? '')?.[1] ?? 0);
@@ -602,7 +646,7 @@ export function reportInputOf(r: Result, rank: number, x: { departures: number; 
     rank, grade: r.grade, gatePass: r.gate.pass, landed: r.landed, arrivals: r.arrivals, departures: x.departures, alerts, losses,
     spacing: num('spacing'), holdMin: num('hold') ?? 0, answerS: num('resp'), emergencies: x.emergencies,
     weakest: weakest && r.ratings[weakest]! <= 3 ? weakest : undefined, strongest: strongest && r.ratings[strongest]! >= 4 ? strongest : undefined,
-    endedEarly: x.endedEarly, checkride: x.checkride, drill: x.drill,
+    endedEarly: x.endedEarly, checkride: x.checkride, drill: x.drill, airport: x.airport,
   };
 }
 
@@ -667,6 +711,7 @@ export function supervisorReport(x: ReportInput): string[] {
   if (x.checkride) sign = x.checkride.pass ? ['Congratulations on the checkride. You have earned it.', 'Checkride done. Well earned.', 'Checkride passed. Well done.', 'Checkride passed.', 'Passed.'][rk] : ['The checkride did not go your way this time. Two more shifts and you can try again, and you will be ready.', 'Not the checkride result you wanted. Two more shifts, then again.', 'Checkride not passed. Two shifts, then retake.', 'Retake after two shifts.', 'Retake.'][rk];
   else if (x.endedEarly) sign = rk <= 2 ? 'You handed over early. Stay for the whole shift next time; the end is where the bank gets busy.' : 'Left early.';
   else sign = ['Get some rest. You are learning fast.', 'See you next shift.', 'Thanks for tonight.', 'Thanks.', 'Cheers.'][rk];
+  if (x.airport && !x.checkride) sign = rk <= 2 ? `${sign.replace(/\.$/, '')}, and thanks for taking the ${x.airport} position.` : `${sign} ${x.airport} logged.`;
   // terser with rank: students up to 5 lines, supervisors 3
   const max = [5, 4, 4, 3, 3][rk];
   const body = lines.slice(0, max - 1);

@@ -61,6 +61,7 @@ export const PERF: Record<string, Perf> = {
   A359: P({ type: 'A359', name: 'A350-900', recat: 'B', wake: 'H', vapp: 140, vminClean: 215, vminFlap: 165, vcruiseLow: 250, climbFpm: 2500, descentFpm: 2200, accel: 1.2, decel: 0.75, fuelKgH: 5800 }),
   A333: P({ type: 'A333', name: 'A330-300', recat: 'B', wake: 'H', vapp: 140, vminClean: 210, vminFlap: 160, vcruiseLow: 250, climbFpm: 2200, descentFpm: 2000, accel: 1.1, decel: 0.75, fuelKgH: 5900 }),
   A339: P({ type: 'A339', name: 'A330-900', recat: 'B', wake: 'H', vapp: 140, vminClean: 210, vminFlap: 160, vcruiseLow: 250, climbFpm: 2300, descentFpm: 2000, accel: 1.1, decel: 0.75, fuelKgH: 5500 }),
+  B764: P({ type: 'B764', name: 'B767-400ER', recat: 'C', wake: 'H', vapp: 145, vminClean: 215, vminFlap: 165, vcruiseLow: 250, climbFpm: 2400, descentFpm: 2200, accel: 1.2, decel: 0.8, fuelKgH: 5300 }),
   B753: P({ type: 'B753', name: 'B757-300', recat: 'C', wake: 'M', vapp: 140, vminClean: 205, vminFlap: 155, vcruiseLow: 250, climbFpm: 2800, descentFpm: 2300, accel: 1.3, decel: 0.9, fuelKgH: 3400 }),
   A21N: P({ type: 'A21N', name: 'A321neo', recat: 'D', wake: 'M', vapp: 140, vminClean: 210, vminFlap: 155, vcruiseLow: 250, climbFpm: 2800, descentFpm: 2300, accel: 1.5, decel: 1.0, fuelKgH: 2400 }),
   A20N: P({ type: 'A20N', name: 'A320neo', recat: 'D', wake: 'M', vapp: 135, vminClean: 200, vminFlap: 150, vcruiseLow: 250, climbFpm: 3000, descentFpm: 2300, accel: 1.5, decel: 1.0, fuelKgH: 2200 }),

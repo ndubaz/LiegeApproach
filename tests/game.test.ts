@@ -4,6 +4,7 @@ import { EBLG } from '../src/pack/eblg';
 import { Sim } from '../src/engine/sim';
 import type { Scenario, SimEvent, SpawnSpec } from '../src/engine/types';
 import { CHALLENGES, unlockedTiers } from '../src/engine/scenarios';
+import { loadPackById } from '../src/pack/index';
 import { assess, explain, liveStats, seqChain, track } from '../src/engine/assess';
 import { dailyShift, freePlay, handoverViolations, shiftPhases, type FreePlayOpts } from '../src/engine/traffic';
 import { PERF } from '../src/engine/perf';
@@ -129,7 +130,7 @@ describe('challenges', () => {
       expect(first.callNow, sc.id).toBe(true);
       const last = Math.max(...sc.spawns.map((s) => s.t));
       expect(sc.durationMin * 60 - last, sc.id).toBeLessThanOrEqual(31 * 60);
-      expect(handoverViolations(pack, sc.spawns), sc.id).toEqual([]);
+      expect(handoverViolations(loadPackById(sc.icao ?? 'EBLG'), sc.spawns), sc.id).toEqual([]);
     }
   });
   it('ids are stable and the new ones exist', () => {
@@ -144,9 +145,9 @@ describe('challenges', () => {
     expect([...unlockedTiers(new Set(t1.slice(1)))]).toEqual([1]);
     expect([...unlockedTiers(new Set(t1))]).toEqual([1, 2]);
   });
-  it('the autopilot passes Tier 1', () => {
-    for (const sc of CHALLENGES.filter((c) => c.tier === 1)) {
-      const sim = new Sim(pack, sc);
+  it('the autopilot passes Tier 1 at Liège (Düsseldorf: tests/eddl-play.test.ts)', () => {
+    for (const sc of CHALLENGES.filter((c) => c.tier === 1 && (c.icao ?? 'EBLG') === 'EBLG')) {
+      const sim = new Sim(loadPackById(sc.icao ?? 'EBLG'), sc);
       while (!sim.ended) { sim.step(); autoControl(sim); }
       expect(assess(sim).pass?.ok, sc.id).toBe(true);
     }

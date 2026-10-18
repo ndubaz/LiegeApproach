@@ -4,6 +4,7 @@ import { EBLG } from '../src/pack/eblg';
 import { Sim } from '../src/engine/sim';
 import type { Scenario, SpawnSpec } from '../src/engine/types';
 import { CHALLENGES } from '../src/engine/scenarios';
+import { loadPackById } from '../src/pack/index';
 import { assess } from '../src/engine/assess';
 import { autoControl } from './auto';
 import { move } from '../src/geo';
@@ -63,7 +64,7 @@ describe('determinism and replay', () => {
 describe('challenges run headless', () => {
   for (const sc of CHALLENGES) {
     it(`${sc.id} runs to completion and assesses`, () => {
-      const sim = new Sim(pack, sc);
+      const sim = new Sim(loadPackById(sc.icao ?? 'EBLG'), sc);
       run(sim, sc.durationMin * 60 + 5);
       const r = assess(sim);
       expect(r.metrics.length).toBeGreaterThan(5);
@@ -317,7 +318,7 @@ describe('session flow', () => {
   it('ends 30 s after the supervisor announces traffic complete', () => {
     const sim = new Sim(pack, scenario('22L', [DEP('TST2')], 30));
     run(sim, 30 * 60);
-    const sup = sim.log.find((x) => x.from === 'SUP')!;
+    const sup = sim.log.find((x) => x.from === 'SUP' && /Traffic complete/.test(x.text))!;
     expect(sup.text).toBe('Traffic complete. Hand-over in 30 s');
     expect(sup.channel).toBe('icom');
     expect(sim.ended).toBe(true);

@@ -51,6 +51,10 @@ export interface Result {
   /** Longest run of consecutive landings each within +0.0 to +0.7 NM of the applicable minimum. */
   seqBest: number;
   objectives?: { cs: string; text: string; byT: number; met: boolean }[];
+  /** 2.0: the airport the session was worked at (ICAO). Optional for results saved by 1.0. */
+  icao?: string;
+  /** 2.0: per competency, one specific line on what would have scored higher: the aircraft and the moment. Only for competencies rated below 5. */
+  better?: Partial<Record<Comp, string>>;
 }
 
 const median = (xs: number[]) => {
@@ -572,6 +576,81 @@ export function assess(sim: Sim): Result {
   return {
     id: `${Date.now()}`, scenarioId: sim.sc.id, title: sim.sc.title, date: new Date().toISOString(), durationMin: Math.round(sim.t / 60), seed: sim.sc.seed,
     gate, ratings, evidence, metrics, costliest, pass, narrative, suggested, landed: sim.landings.length, arrivals: sim.arrivalsSpawned,
-    grade, gradeNotes, seqBest, objectives,
+    grade, gradeNotes, seqBest, objectives, icao: sim.pack.meta.icao, better: betterLines(sim, ratings, { respMed, spacingMed, holdPer }),
   };
+}
+
+// ---------------------------------------------------------------------------
+// "What would have scored higher": one specific line per competency below 5, naming the aircraft and the moment.
+function betterLines(sim: Sim, ratings: Record<Comp, number | null>, x: { respMed: number | null; spacingMed: number | null; holdPer: number }): Partial<Record<Comp, string>> {
+  const out: Partial<Record<Comp, string>> = {};
+  const ev = sim.events;
+  const at = (t: number) => hhmm(sim, t);
+  const first = (k: string) => ev.find((e) => e.kind === k);
+  const below = (c: Comp) => ratings[c] !== null && ratings[c]! < 5;
+  if (below('SEPC')) {
+    const los = ev.filter((e) => e.kind === 'los').sort((a, b) => (a.value ?? 9) - (b.value ?? 9))[0];
+    const wake = first('wake'), mva = first('mva'), stca = first('stca');
+    if (los) {
+      const a = los.cs ?? '', b = los.cs2 ?? '';
+      const la = lastWith(sim, a, los.t, 'lvl'), lb = lastWith(sim, b, los.t, 'lvl');
+      const who = la && (!lb || la.t > lb.t) ? a : lb ? b : a;
+      const other = who === a ? b : a;
+      const cmd = who === a ? la : lb;
+      out.SEPC = cmd ? `Holding ${who} 1,000 ft above ${other} at ${at(cmd.t)}, instead of ${describeItem(cmd.it)}, would have kept them apart at ${at(los.t)}.` : `A turn or 1,000 ft for ${a} before ${at(los.t)} would have kept it clear of ${b}.`;
+    } else if (wake) out.SEPC = `${wake.cs} needed ${wake.text.match(/minimum ([\d.]+) NM/)?.[1] ?? 'more'} NM behind ${wake.cs2} at ${at(wake.t)}: a speed reduction one call earlier, on the downwind, would have scored higher.`;
+    else if (mva) out.SEPC = `${mva.cs} went below the vectoring minimum at ${at(mva.t)}: ${mva.text.match(/MVA (\d+)/)?.[1] ?? 'the published'} ft or above until it is established would have scored higher.`;
+    else if (stca) out.SEPC = `${stca.cs} and ${stca.cs2} set off the alert at ${at(stca.t)}: moving one of them a minute earlier would have scored higher.`;
+  }
+  if (below('SITU')) {
+    const stca = first('stca'), un = first('unanswered'), ex = first('exit_unxfr');
+    if (stca) out.SITU = `Seeing ${stca.cs} and ${stca.cs2} converge before ${at(stca.t)}, and turning one of them, would have scored higher than waiting for the alert.`;
+    else if (ex) out.SITU = `${ex.cs} left the sector unhanded at ${at(ex.t)}: a transfer a minute earlier would have scored higher.`;
+    else if (un) out.SITU = `${un.cs} waited unanswered at ${at(un.t)}: a quick roger would have scored higher.`;
+  }
+  if (below('TRAF')) {
+    const ga = ev.find((e) => e.kind === 'goaround' && e.comp === 'TRAF');
+    const longest = [...sim.landings].sort((a, b) => b.holdSec - a.holdSec)[0];
+    const loose = [...sim.spacing].sort((a, b) => (b.gap - b.min) - (a.gap - a.min))[0];
+    if (ga) out.TRAF = `${ga.cs} went around unstable at ${at(ga.t)}: down to the intercept altitude and 180 kt before the localizer would have scored higher.`;
+    else if (longest && longest.holdSec > 120) out.TRAF = `${longest.cs} held ${Math.round(longest.holdSec / 60)} minutes: a speed reduction on the arrival instead of the hold, or the transition one slot earlier, would have scored higher.`;
+    else if (loose && loose.gap - loose.min > 1.5) out.TRAF = `${loose.follower} landed ${(loose.gap - loose.min).toFixed(1)} NM wider than needed behind ${loose.leader} at ${at(loose.t ?? sim.t)}: slowing it later, or the leader earlier, would have scored higher.`;
+    else if (sim.landings.length < sim.arrivalsSpawned) { const left = sim.aircraft.find((a) => a.kind === 'arr' && !a.landed && !a.remove); if (left) out.TRAF = `${left.cs} was still airborne at the end: its transition one slot earlier would have scored higher.`; }
+  }
+  if (below('COMM')) {
+    const rb = first('readback_missed');
+    const busy = [...sim.aircraft, ...[]].filter((a) => a.txCount > 8).sort((a, b) => b.txCount - a.txCount)[0];
+    if (rb) out.COMM = `${rb.cs} read back wrongly at ${at(rb.t)} and nobody corrected it: saying the level or heading again within 30 seconds would have scored higher.`;
+    else if (busy) out.COMM = `${busy.cs} took ${busy.txCount} transmissions: one combined call (transition, level and approach together) would have scored higher.`;
+  }
+  if (below('CORD')) {
+    const late = first('late_xfr'), slot = first('slot_missed'), rel = first('release_delay'), co = first('coord_unanswered'), fl = first('flow'), xl = first('xfr_level');
+    if (slot) out.CORD = `${slot.cs} missed its slot at ${at(slot.t)}: answering Tower's release request within three minutes would have scored higher.`;
+    else if (late) out.CORD = `${late.cs} went to Tower late at ${at(late.t)}: the transfer as soon as it was established on the localizer would have scored higher.`;
+    else if (rel) out.CORD = `Tower waited three minutes for a release for ${rel.cs} at ${at(rel.t)}: an answer within a minute, even hold, would have scored higher.`;
+    else if (co) out.CORD = `${sim.acc.say} got no answer on ${co.cs} at ${at(co.t)}: approve or unable within a minute would have scored higher.`;
+    else if (fl) out.CORD = `${fl.cs} went to ${sim.acc.say} too close behind ${fl.cs2} at ${at(fl.t)}: a speed or heading for the flow gap would have scored higher.`;
+    else if (xl) out.CORD = `${xl.cs} was handed on below the agreed level at ${at(xl.t)}: a climb to ${levelText(sim.depXfl)} first would have scored higher.`;
+  }
+  if (below('WORK')) {
+    const un = first('unanswered');
+    const slow = sim.responseTimes.length ? Math.max(...sim.responseTimes) : 0;
+    if (un) out.WORK = `${un.cs} called and waited 25 seconds at ${at(un.t)}: a roger or a standby would have scored higher.`;
+    else if (x.respMed !== null && x.respMed > 4) out.WORK = `Pilots waited a median ${x.respMed.toFixed(0)} s (the longest ${Math.round(slow)} s): answering the check-in before planning the next call would have scored higher.`;
+  }
+  if (below('NONR')) {
+    const e = sim.emergencies[0];
+    if (e) {
+      const firstS = e.firstClrT !== undefined ? e.firstClrT - e.t0 : undefined;
+      out.NONR = firstS === undefined || firstS > 20 ? `${e.cs} declared at ${at(e.t0)} and waited ${firstS === undefined ? 'for an instruction' : Math.round(firstS) + ' s'}: a direct to the final within 20 seconds would have scored higher.`
+        : e.landedT === undefined ? `${e.cs} never landed: the shortest route to the final, with everyone else moved aside, would have scored higher.`
+        : `${e.cs} took ${((e.landedT - e.t0) / 60).toFixed(0)} minutes to land: a straight-in from ${at(e.t0)} would have scored higher.`;
+    }
+  }
+  if (below('SPP')) {
+    const w = first('warning_sent'), sp = first('speed_limit');
+    if (w) out.SPP = `${w.text.replace(/^[^:]+: /, '').replace(/^sent with /, 'Sending ')} to ${w.cs} at ${at(w.t)} cost a point: reading the warning and changing the call would have scored higher.`;
+    else if (sp) out.SPP = `${sp.cs} was above 250 kt below FL100 at ${at(sp.t)}: a speed limit with the descent would have scored higher.`;
+  }
+  return out;
 }

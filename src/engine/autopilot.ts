@@ -3,6 +3,7 @@ import type { Aircraft } from './types';
 import { dist } from '../geo';
 import { wakeMinNm } from './perf';
 import { distToThr } from './pilot';
+import { finalFixNmOf, legsNm, LONG_TRANSITION_NM, mvaAlong, overlayFtOf, pathBlocker } from './suggest';
 
 interface AutoState {
   queue: string[];     // arrivals waiting for an approach clearance, in landing order
@@ -26,7 +27,7 @@ export function remainNm(sim: Sim, ac: Aircraft): number {
     const alh = sim.pack.fixes.get(sf)?.p ?? r.thr;
     return dist(ac.p, alh) + trLen;
   }
-  if (last.fix === r.ifFix) return d + distToThr(last.p, r);
+  if (last.fix === r.ifFix || sim.isFinalFix(last.fix)) return d + Math.max(0, distToThr(last.p, r));
   if (sim.stackFixes().includes(last.fix)) return d + trLen;
   return d + dist(p, r.thr) + 12;
 }
@@ -41,7 +42,7 @@ export function autoControl(sim: Sim) {
   // departure releases (engine protocol: departures wait at the holding point for {k:'rel'})
   {
     const pending = sim.releases.filter((r) => r.state === 'pending').map((r) => r.cs);
-    const finalBusy = sim.aircraft.some((a) => a.app?.locCap && distToThr(a.p, a.app.rwy) < 5);
+    const finalBusy = sim.aircraft.some((a) => a.app?.locCap && a.app.rwy.id === sim.depRunway && distToThr(a.p, a.app.rwy) < 5);
     if (pending.length && !finalBusy && sim.t - S.lastRel >= 90) {
       const res = sim.issue({ cs: pending[0], items: [{ k: 'rel' }] });
       if (res.ok) S.lastRel = sim.t;
@@ -60,7 +61,12 @@ export function autoControl(sim: Sim) {
       if (ac.app && !ac.app.locCap) {
         // already released: the new runway's transition from the stack fix at its present level, in the same order
         const tr = sim.transitionsFrom(sim.stackFixOf(ac)).find((t) => !t.atcDiscretion) ?? sim.transitionsFor(sim.runway).find((t) => !t.atcDiscretion);
-        if (tr) { sim.issue({ cs: ac.cs, items: [{ k: 'trans', name: tr.name }, { k: 'app', app: 'ILS', rwy: sim.runway }] }); break; }
+        if (tr) {
+          // one level per re-cleared aircraft, so the new transitions do not merge at one altitude
+          const n = (sim as any)._autoReclear = ((sim as any)._autoReclear ?? 0) + 1;
+          const ft = Math.min(sim.ftOf(ac.cleared), Math.max(3000, sim.rwy.ifAlt) + 1000 * (n % 4));
+          sim.issue({ cs: ac.cs, items: [{ k: 'trans', name: tr.name }, { k: 'lvl', lvl: sim.levelFor(ft) }, { k: 'app', app: 'ILS', rwy: sim.runway }] }); break;
+        }
       }
     }
   }
@@ -74,6 +80,21 @@ export function autoControl(sim: Sim) {
     }
   }
 
+  const rw = sim.rwy;
+  const finalFt = Math.max(3000, rw.ifAlt);
+  const overlayFt = overlayFtOf(sim);
+  // an airport with long downwind transitions (Düsseldorf) gets the conflict look-ahead on every clearance; the short
+  // Liège transitions keep the 1.0 timing, which the lesson exams and the ghost runs were tuned to
+  const careful = sim.pack.transitions.some((t) => legsNm(t) > LONG_TRANSITION_NM);
+  const blockedBy = (ac: Aircraft, ft: number, members?: Set<Aircraft>) => (careful ? pathBlocker(sim, ac, ft, members) : undefined);
+  /** Track miles to the final approach fix along the route. */
+  const toFaf = (ac: Aircraft) => Math.max(0, remainNm(sim, ac) - finalFixNmOf(sim, rw));
+  /** The transition level: the chart overlay on a long transition, the final approach altitude on a short one. */
+  const transFt = (trName: string | undefined) => {
+    const tr = trName ? sim.pack.transitions.find((t) => t.name === trName) : undefined;
+    return tr && legsNm(tr) > LONG_TRANSITION_NM ? overlayFt : finalFt;
+  };
+
   // one transmission at a time, leaving room on the frequency for readbacks
   let sent = sim.freqBusy() || sim.t - ((sim as any)._autoLastTx ?? -99) < 4;
   for (const ac of sim.aircraft) {
@@ -84,35 +105,46 @@ export function autoControl(sim: Sim) {
     const send = (items: any[]) => { sim.issue({ cs: ac.cs, items }); st.last = sim.t; sent = true; (sim as any)._autoLastTx = sim.t; };
     if (ac.request && ac.kind !== 'arr') { send([{ k: 'appr' }]); continue; }
     if (ac.kind === 'arr') {
-      const rw = sim.rwy;
       if (ac.request && ac.request.kind !== 'vectors') { send([{ k: 'appr' }]); continue; }
       if (ac.app?.locCap) { send([{ k: 'xfr', unit: sim.twr.id }]); continue; }
+      // an emergency, or a diversion asking for vectors with no approach yet: straight to the intermediate fix, above the vectoring minimum
+      if ((ac.emergency && ac.emergency !== 'radio' && !ac.app) || (ac.request?.kind === 'vectors' && !ac.app)) {
+        const ifP = sim.fixP(rw.ifFix);
+        const mva = Math.ceil(mvaAlong(sim, ac.p, ifP) / 500) * 500;
+        const ft = Math.min(sim.ftOf(ac.cleared), Math.max(finalFt, mva));
+        if (!S.released.includes(ac.cs)) { S.released.push(ac.cs); S.queue = S.queue.filter((x) => x !== ac.cs); }
+        send([{ k: 'dct', fix: rw.ifFix }, { k: 'lvl', lvl: sim.levelFor(ft) }, { k: 'app', app: 'ILS', rwy: rw.id }]);
+        continue;
+      }
       const sf = sim.stackFixOf(ac);
       const alh = sim.pack.fixes.get(sf)?.p ?? rw.thr;
       const nearAlh = !ac.route.some((l) => l.fix === sf) || dist(ac.p, alh) < 12;
       if (ac.app) {
-        // released: descend for the transition near ALHUV, then match the leader's speed if closing
+        // released: on the transition at the overlay level until the descent for the final is due, then 1,000 ft above
+        // every released aircraft ahead not yet on the localizer (the transition doubles back on itself)
         const i = S.released.indexOf(ac.cs);
         const leader = i > 0 ? live(S.released[i - 1]) : undefined;
-        // the transition doubles back on itself: 1,000 ft above every released aircraft ahead not yet on the localizer
-        const depth = S.released.slice(0, Math.max(0, i)).filter((x) => { const o = live(x); return o && (!o.app?.locCap || dist(o.p, ac.p) < 5); }).length;
-        const want = rw.ifAlt + 1000 * depth;
-        if ((nearAlh || depth > 0) && sim.ftOf(ac.cleared) > want + 50) { send([{ k: 'lvl', lvl: { ft: want } }, { k: 'app', app: 'ILS', rwy: rw.id }]); continue; }
+        const depth = S.released.slice(0, Math.max(0, i)).filter((x) => { const o = live(x); return o && o.app && (!o.app.locCap || dist(o.p, ac.p) < 5); }).length;
+        const want = finalFt + 1000 * depth;
+        const need = ((ac.alt - finalFt) / 1000) * 3 + 3;
+        const due = careful ? toFaf(ac) <= need + 2 || ac.mode === 'HDG' : nearAlh || depth > 0;
+        if (due && sim.ftOf(ac.cleared) > want + 50 && !blockedBy(ac, want, new Set(S.released.map(live).filter((x): x is Aircraft => !!x)))) { send([{ k: 'lvl', lvl: sim.levelFor(want) }, { k: 'app', app: 'ILS', rwy: ac.app.rwy.id }]); continue; }
         if (leader) {
-          const need = wakeMinNm(leader.perf.recat, ac.perf.recat, 3) + 2.5;
+          const minNm = wakeMinNm(leader.perf.recat, ac.perf.recat, 3) + 2.5;
           const gap = remainNm(sim, ac) - remainNm(sim, leader);
           const minSpd = distToThr(ac.p, rw) < 15 ? Math.max(ac.perf.vminFlap, 160) : ac.perf.vminClean;
-          if (gap < need + 4) {
-            const tgt = Math.max(minSpd, Math.round((leader.ias - (gap < need + 1 ? 25 : 5)) / 10) * 10);
+          if (gap < minNm + 4) {
+            const tgt = Math.max(minSpd, Math.round((leader.ias - (gap < minNm + 1 ? 25 : 5)) / 10) * 10);
             if (tgt < ac.ias - 5 && (ac.spdAssigned === undefined || Math.abs(ac.spdAssigned - tgt) >= 10)) { send([{ k: 'spd', spd: tgt }]); continue; }
-          } else if (gap > need + 6 && ac.spdAssigned !== undefined) { send([{ k: 'spdres' }]); continue; }
+          } else if (gap > minNm + 6 && ac.spdAssigned !== undefined) { send([{ k: 'spdres' }]); continue; }
         }
         if (ac.awaitingSince !== undefined) send([{ k: 'lvl', lvl: ac.cleared }]);
         continue;
       }
       const tr = sim.transitionsFrom(sf).find((t) => !t.atcDiscretion) ?? sim.transitionsFor(rw.id).find((t) => !t.atcDiscretion)!;
       const ahead = S.released.filter((x) => !live(x)?.app?.locCap).length;
-      const relFt = Math.min(sim.ftOf(ac.cleared), nearAlh || ahead ? rw.ifAlt + 1000 * ahead : 4000);
+      const tFt = transFt(tr.name);
+      const relFt = Math.min(sim.ftOf(ac.cleared), tFt > finalFt ? tFt + 1000 * Math.min(ahead, 3) : nearAlh || ahead ? finalFt + 1000 * ahead : 4000);
       const approach: any[] = [{ k: 'trans', name: tr.name }, { k: 'lvl', lvl: sim.levelFor(relFt) }, { k: 'app', app: 'ILS', rwy: rw.id }];
       if (ac.spdAssigned !== undefined) approach.push({ k: 'spdres' });
       if (S.released.includes(ac.cs)) { send(approach); continue; } // not complied yet (say again or still reading back)
@@ -121,7 +153,7 @@ export function autoControl(sim: Sim) {
         const leaderCs = S.released[S.released.length - 1];
         const leader = leaderCs ? live(leaderCs) : undefined;
         const need = leader ? wakeMinNm(leader.perf.recat, ac.perf.recat, 3) + 8 : 0;
-        if (!leader || remainNm(sim, ac) - remainNm(sim, leader) >= need) {
+        if ((!leader || remainNm(sim, ac) - remainNm(sim, leader) >= need) && !blockedBy(ac, relFt)) {
           send(approach);
           S.released.push(ac.cs);
           S.queue.shift();
@@ -129,8 +161,8 @@ export function autoControl(sim: Sim) {
         }
       }
       // waiting: a slot in the stack from 6,000 ft, 1,000 ft per place in the queue, only ever lower
-      const slot = sim.levelFor(6000 + 1000 * Math.max(0, k));
-      if (sim.ftOf(slot) < sim.ftOf(ac.cleared) - 50) {
+      const slot = sim.levelFor((careful ? overlayFt + 1000 : 6000) + 1000 * Math.max(0, k));
+      if (sim.ftOf(slot) < sim.ftOf(ac.cleared) - 50 && !blockedBy(ac, sim.ftOf(slot))) {
         const items: any[] = [{ k: 'lvl', lvl: slot }];
         if (k > 0 && ac.spdAssigned === undefined && ac.mode !== 'HOLD') items.push({ k: 'spd', spd: Math.max(ac.perf.vminClean + 10, 210) });
         send(items); continue;
@@ -140,10 +172,11 @@ export function autoControl(sim: Sim) {
       continue;
     }
     if (ac.kind === 'dep') {
-      const conflict = sim.aircraft.some((o) => o !== ac && o.kind === 'arr' && !o.remove && dist(o.p, ac.p) < 12 && o.alt > ac.alt - 1000 && o.alt < 10000);
       const xfl = sim.depXfl;
       const atXfl = ac.cleared.fl === xfl.fl && ac.cleared.ft === xfl.ft;
-      if (!atXfl && (ac.alt > 5000 || ac.awaitingSince !== undefined) && !conflict) send([{ k: 'lvl', lvl: xfl }]);
+      const conflict = sim.aircraft.some((o) => o !== ac && o.kind === 'arr' && !o.remove && dist(o.p, ac.p) < 12 && o.alt > ac.alt - 1000 && o.alt < 10000);
+      const blocked = conflict || !!blockedBy(ac, sim.ftOf(xfl));
+      if (!atXfl && (ac.alt > (careful ? 5000 : 3000) || ac.awaitingSince !== undefined) && !blocked) send([{ k: 'lvl', lvl: xfl }]);
       else if (Math.hypot(ac.p.x, ac.p.y) > 20 && (atXfl || Math.hypot(ac.p.x, ac.p.y) > 30)) send([{ k: 'xfr', unit: sim.acc.id }]);
       else if (ac.awaitingSince !== undefined) send([{ k: 'lvl', lvl: ac.cleared }]);
     }

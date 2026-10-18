@@ -315,7 +315,8 @@ describe('lessons fly the way the coach says', () => {
       trans: (f) => lead(f, 'AZG7321', 'ALHUV1A · 3000 · ILS 22L'),
       hold: (f) => { pick(f, 'QTR8152', { k: 'hold', fix: 'ALHUV' }); transmit(f); },
       stack: (f) => { pick(f, 'QTR8152', { k: 'lvl', lvl: { ft: 5000 } }); expect(transmit(f).warnings).toEqual([]); },
-      release: (f) => lead(f, 'QTR8152', 'Leave hold'),
+      // the chip turns bright a moment after AZG7321 captures the localizer (the slot and conflict checks run first)
+      release: { when: (f) => !!chips(f.sim, 'QTR8152')[0]?.label.startsWith('Leave hold') && !!chips(f.sim, 'QTR8152')[0]?.primary, do: (f) => lead(f, 'QTR8152', 'Leave hold') },
       twr: { when: (f) => chips(f.sim, 'AZG7321').some((s) => s.label === 'Tower'), do: (f) => chip(f, 'AZG7321', 'Tower') },
       land: { when: (f) => chips(f.sim, 'QTR8152').some((s) => s.label === 'Tower'), do: (f) => chip(f, 'QTR8152', 'Tower') },
     }, { answers: { tl: 1 } });
